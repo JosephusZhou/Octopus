@@ -71,6 +71,9 @@ Desktop.ini
 # Claude Code local config (machine-specific, never commit)
 .claude/
 
+# Local git worktrees (per-machine, managed separately)
+worktree-*/
+
 # Optional local notes / scratch
 *.bak
 *.tmp
