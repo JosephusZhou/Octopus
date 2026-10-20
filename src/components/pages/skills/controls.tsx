@@ -1,6 +1,7 @@
 /** SkillsManage 页的自包含可复用控件：来源筛选 chips、标签下拉，及来源归组辅助函数。 */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { IconChevron, IconPlus } from "./icons";
 import type { SkillRecord, SkillSource } from "./types";
 
@@ -127,7 +128,9 @@ export function TagSelect({ value, onChange, knownTags, disabled }: TagSelectPro
   const [creating, setCreating] = useState(false);
   const [newText, setNewText] = useState("");
   const [notice, setNotice] = useState("");
-  const rootRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const resetCreate = useCallback(() => {
@@ -136,18 +139,53 @@ export function TagSelect({ value, onChange, knownTags, disabled }: TagSelectPro
     setNotice("");
   }, []);
 
-  // 点击外部关闭
+  // 浮层定位：默认在触发框下方，下方空间不足翻到上方；水平收拢进视口，不溢出
+  const place = useCallback(() => {
+    const trig = triggerRef.current;
+    const menu = menuRef.current;
+    if (!trig || !menu) return;
+    const r = trig.getBoundingClientRect();
+    const gap = 6;
+    const mh = menu.offsetHeight;
+    const mw = menu.offsetWidth;
+    let top = r.bottom + gap;
+    if (top + mh > window.innerHeight - 8) {
+      top = r.top - gap - mh;
+      if (top < 8) top = 8;
+    }
+    let left = r.left;
+    if (left + mw > window.innerWidth - 8) {
+      left = Math.max(8, window.innerWidth - 8 - mw);
+    }
+    setPos({ top, left, width: r.width });
+  }, []);
+
+  // 点击外部关闭（触发框与 portal 菜单之外）
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false);
-        resetCreate();
-      }
+      const t = e.target as Node;
+      if (triggerRef.current?.contains(t) || menuRef.current?.contains(t)) return;
+      setOpen(false);
+      resetCreate();
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [open, resetCreate]);
+
+  // 打开时定位，并随 resize / 滚动重算
+  useEffect(() => {
+    if (!open) return;
+    place();
+    const raf = requestAnimationFrame(place);
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, place]);
 
   // 进入新增输入态时自动聚焦
   useEffect(() => {
@@ -168,8 +206,9 @@ export function TagSelect({ value, onChange, knownTags, disabled }: TagSelectPro
   }, [newText, knownTags, onChange, resetCreate]);
 
   return (
-    <div className={`app-select ${open ? "open" : ""} ${disabled ? "disabled" : ""}`} ref={rootRef}>
+    <div className={`app-select ${open ? "open" : ""} ${disabled ? "disabled" : ""}`}>
       <button
+        ref={triggerRef}
         type="button"
         className="app-select-trigger form-input"
         aria-haspopup="listbox"
@@ -187,80 +226,87 @@ export function TagSelect({ value, onChange, knownTags, disabled }: TagSelectPro
           <IconChevron open={open} />
         </span>
       </button>
-      {open && (
-        <div className="app-select-menu" role="listbox">
-          <button
-            type="button"
-            role="option"
-            aria-selected={!value}
-            className={`app-select-option ${value ? "" : "selected"}`}
-            onClick={() => {
-              onChange("");
-              setOpen(false);
-            }}
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="app-select-menu app-select-menu--portal"
+            role="listbox"
+            style={{ top: pos?.top ?? 0, left: pos?.left ?? 0, minWidth: pos?.width }}
           >
-            <span className="app-select-option-title">无标签</span>
-          </button>
-          {knownTags.map((t) => (
             <button
-              key={t}
               type="button"
               role="option"
-              aria-selected={value === t}
-              className={`app-select-option ${value === t ? "selected" : ""}`}
+              aria-selected={!value}
+              className={`app-select-option ${value ? "" : "selected"}`}
               onClick={() => {
-                onChange(t);
+                onChange("");
                 setOpen(false);
               }}
             >
-              <span className="app-select-option-title">{t}</span>
+              <span className="app-select-option-title">无标签</span>
             </button>
-          ))}
-          {creating ? (
-            <div className="app-select-option app-select-newtag">
-              <input
-                ref={inputRef}
-                type="text"
-                className="form-input app-select-newtag-input"
-                placeholder="输入新标签后回车"
-                value={newText}
-                maxLength={20}
-                onChange={(e) => {
-                  setNewText(e.target.value);
-                  if (notice) setNotice("");
+            {knownTags.map((t) => (
+              <button
+                key={t}
+                type="button"
+                role="option"
+                aria-selected={value === t}
+                className={`app-select-option ${value === t ? "selected" : ""}`}
+                onClick={() => {
+                  onChange(t);
+                  setOpen(false);
                 }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    commit();
-                  } else if (e.key === "Escape") {
-                    e.stopPropagation();
-                    resetCreate();
-                  }
+              >
+                <span className="app-select-option-title">{t}</span>
+              </button>
+            ))}
+            {creating ? (
+              <div className="app-select-option app-select-newtag">
+                <input
+                  ref={inputRef}
+                  type="text"
+                  className="form-input app-select-newtag-input"
+                  placeholder="输入新标签后回车"
+                  value={newText}
+                  maxLength={20}
+                  onChange={(e) => {
+                    setNewText(e.target.value);
+                    if (notice) setNotice("");
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      commit();
+                    } else if (e.key === "Escape") {
+                      e.stopPropagation();
+                      resetCreate();
+                    }
+                  }}
+                />
+                {(() => {
+                  const t = newText.trim();
+                  const dupe = t !== "" && knownTags.includes(t);
+                  const msg = notice || (dupe ? "该标签已存在，回车即复用" : "");
+                  return msg ? <span className="app-select-newtag-notice">{msg}</span> : null;
+                })()}
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="app-select-option app-select-newtag-trigger"
+                onClick={() => {
+                  resetCreate();
+                  setCreating(true);
                 }}
-              />
-              {(() => {
-                const t = newText.trim();
-                const dupe = t !== "" && knownTags.includes(t);
-                const msg = notice || (dupe ? "该标签已存在，回车即复用" : "");
-                return msg ? <span className="app-select-newtag-notice">{msg}</span> : null;
-              })()}
-            </div>
-          ) : (
-            <button
-              type="button"
-              className="app-select-option app-select-newtag-trigger"
-              onClick={() => {
-                resetCreate();
-                setCreating(true);
-              }}
-            >
-              <IconPlus />
-              <span className="app-select-option-title">新增标签</span>
-            </button>
-          )}
-        </div>
-      )}
+              >
+                <IconPlus />
+                <span className="app-select-option-title">新增标签</span>
+              </button>
+            )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
