@@ -7,13 +7,13 @@ import type {
   SkillUpdateCheckResult,
   SkillActionResult,
   SkillApplyResult,
-  CcSwitchPreviewResult,
-  CcSwitchMigrateResult,
   BatchSkillResult,
   BatchApplyMode,
   SkillInstallMode,
   SkillDuplicateCheckResult,
   ExportDuplicateCheckResult,
+  SkillRepoChangesResult,
+  RepoCandidateInput,
 } from "./types";
 
 export async function invokeListSkills(): Promise<SkillsListResult> {
@@ -34,6 +34,21 @@ export async function invokeImportSniffed(keys: string[]): Promise<SniffImportRe
 export async function invokeCheckUpdates(): Promise<SkillUpdateCheckResult> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke("check_skill_updates") as Promise<SkillUpdateCheckResult>;
+}
+
+/** 扫描已跟踪远程仓库的新增候选与远端已移除技能（只读，不写盘）。 */
+export async function invokeScanRepoChanges(): Promise<SkillRepoChangesResult> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke("scan_skill_repo_changes") as Promise<SkillRepoChangesResult>;
+}
+
+/** 导入勾选的远端新增候选；tag 为空表示不打标签。 */
+export async function invokeImportRepoCandidates(
+  selections: RepoCandidateInput[],
+  tag: string,
+): Promise<BatchSkillResult> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke("import_repo_candidates", { selections, tag }) as Promise<BatchSkillResult>;
 }
 
 export async function invokePickLocal(tag: string): Promise<SkillActionResult> {
@@ -122,16 +137,6 @@ export async function invokeAddLocalPath(
 export async function invokeCheckLocalDuplicate(path: string): Promise<SkillDuplicateCheckResult> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke("check_skill_local_duplicate", { path }) as Promise<SkillDuplicateCheckResult>;
-}
-
-export async function invokePreviewCcSwitch(): Promise<CcSwitchPreviewResult> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke("preview_cc_switch_skills") as Promise<CcSwitchPreviewResult>;
-}
-
-export async function invokeMigrateCcSwitch(ccIds: string[]): Promise<CcSwitchMigrateResult> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke("migrate_cc_switch_skills", { ccIds }) as Promise<CcSwitchMigrateResult>;
 }
 
 export async function invokeBatchDelete(

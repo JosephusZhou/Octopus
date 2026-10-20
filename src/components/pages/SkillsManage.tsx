@@ -2,18 +2,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStatusMessage } from "@/lib/useStatusMessage";
 import { Toast } from "@/components/Toast";
 import { AgentBadge, getAgentIcon } from "../agent-icons";
+import { Tooltip } from "../Tooltip";
 import { CheckGlyph, useOverlayDismiss } from "../ui";
 import { SKILL_UNSUPPORTED_AGENTS } from "./skills/types";
 import type {
   SkillRecord,
   AgentResult,
   SniffPreviewResult,
-  CcSwitchPreviewItem,
-  CcSwitchPreviewResult,
   BatchApplyMode,
   SkillInstallMode,
   SkillDuplicateConflict,
   ExportDuplicateConflict,
+  SkillRepoChangesResult,
+  RepoChangeGroup,
+  RepoChangeAdded,
+  RepoCandidateInput,
 } from "./skills/types";
 
 import {
@@ -21,6 +24,8 @@ import {
   invokePreviewSniff,
   invokeImportSniffed,
   invokeCheckUpdates,
+  invokeScanRepoChanges,
+  invokeImportRepoCandidates,
   invokeAddGithub,
   invokeAddGitcode,
   invokeCheckExportDuplicates,
@@ -31,8 +36,6 @@ import {
   invokeApplySkill,
   invokeAddLocalPath,
   invokeCheckLocalDuplicate,
-  invokePreviewCcSwitch,
-  invokeMigrateCcSwitch,
   invokeBatchDelete,
   invokeBatchApply,
   invokeBatchSetTag,
@@ -48,12 +51,11 @@ import {
   IconGithub,
   IconGitcode,
   IconSkill,
-  IconMigrate,
   IconTrash,
   IconCheckSquare,
   IconScan,
   IconPull,
-  IconTags,
+  IconAgents,
   IconApplyDir,
 } from "./skills/icons";
 import {
@@ -102,12 +104,17 @@ export default function SkillsManage() {
   const [deleteAgentCopies, setDeleteAgentCopies] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // 编辑弹窗：修改标签 + 应用到 Agent
+  // 应用到 Agent 弹窗：选择目标 Agent 与安装方式（tag 原样回传，不在此编辑）
   const [editTarget, setEditTarget] = useState<SkillRecord | null>(null);
   const [editTag, setEditTag] = useState("");
   const [editAgents, setEditAgents] = useState<Set<string>>(new Set());
   const [editInstallMode, setEditInstallMode] = useState<SkillInstallMode>("link");
   const [isSavingEdit, setIsSavingEdit] = useState(false);
+
+  // 单条「设置标签」弹窗
+  const [tagTarget, setTagTarget] = useState<SkillRecord | null>(null);
+  const [tagDraft, setTagDraft] = useState("");
+  const [isSavingTag, setIsSavingTag] = useState(false);
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [addTab, setAddTab] = useState<"local" | "github" | "gitcode">("local");
@@ -132,16 +139,18 @@ export default function SkillsManage() {
   const gitcodeInputRef = useRef<HTMLInputElement>(null);
   const hasLoaded = useRef(false);
 
-  const [showMigrateModal, setShowMigrateModal] = useState(false);
-  const [migratePreview, setMigratePreview] = useState<CcSwitchPreviewResult | null>(null);
-  const [selectedMigrateIds, setSelectedMigrateIds] = useState<Set<string>>(new Set());
-  const [isPreviewingMigrate, setIsPreviewingMigrate] = useState(false);
-  const [isMigrating, setIsMigrating] = useState(false);
-
   const [showSniffModal, setShowSniffModal] = useState(false);
   const [sniffPreview, setSniffPreview] = useState<SniffPreviewResult | null>(null);
   const [selectedSniffKeys, setSelectedSniffKeys] = useState<Set<string>>(new Set());
   const [isImportingSniff, setIsImportingSniff] = useState(false);
+
+  // 仓库差异弹窗：检查更新后扫描远端新增 / 远端已移除，勾选后分别导入 / 删除
+  const [showRepoChanges, setShowRepoChanges] = useState(false);
+  const [repoChanges, setRepoChanges] = useState<SkillRepoChangesResult | null>(null);
+  const [selectedAddedKeys, setSelectedAddedKeys] = useState<Set<string>>(new Set());
+  const [selectedRemovedIds, setSelectedRemovedIds] = useState<Set<string>>(new Set());
+  const [repoChangeBusy, setRepoChangeBusy] = useState(false);
+  const [repoChangeDeleteCopies, setRepoChangeDeleteCopies] = useState(false);
 
   // 来源筛选：单选，"all" 表示全部
   const [activeSource, setActiveSource] = useState<string>("all");
@@ -186,9 +195,9 @@ export default function SkillsManage() {
   const [batchTag, setBatchTag] = useState("");
 
   const addDismiss = useOverlayDismiss(() => setShowAddModal(false));
-  const migrateDismiss = useOverlayDismiss(() => closeMigrate());
   const sniffDismiss = useOverlayDismiss(() => closeSniff());
   const editDismiss = useOverlayDismiss(() => setEditTarget(null), !isSavingEdit);
+  const tagEditDismiss = useOverlayDismiss(() => setTagTarget(null), !isSavingTag);
   const directoryApplyDismiss = useOverlayDismiss(
     () => setDirectoryApplyTarget(null),
     !exportingId,
@@ -201,6 +210,7 @@ export default function SkillsManage() {
   const batchDeleteDismiss = useOverlayDismiss(() => setBatchDeleteOpen(false), !isBatchRunning);
   const batchApplyDismiss = useOverlayDismiss(() => setBatchApplyOpen(false), !isBatchRunning);
   const batchTagDismiss = useOverlayDismiss(() => setBatchTagOpen(false), !isBatchRunning);
+  const repoChangeDismiss = useOverlayDismiss(() => setShowRepoChanges(false), !repoChangeBusy);
 
   const loadAgents = useCallback(async () => {
     try {
@@ -248,19 +258,20 @@ export default function SkillsManage() {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setShowAddModal(false);
-        if (!isMigrating) setShowMigrateModal(false);
         if (!isImportingSniff) setShowSniffModal(false);
         if (!isSavingEdit) setEditTarget(null);
+        if (!isSavingTag) setTagTarget(null);
         if (!isBatchRunning) {
           setBatchDeleteOpen(false);
           setBatchApplyOpen(false);
           setBatchTagOpen(false);
         }
+        if (!repoChangeBusy) setShowRepoChanges(false);
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [isMigrating, isImportingSniff, isSavingEdit, isBatchRunning]);
+  }, [isImportingSniff, isSavingEdit, isSavingTag, isBatchRunning, repoChangeBusy]);
 
   const openAdd = useCallback(() => {
     setFormError("");
@@ -356,6 +367,186 @@ export default function SkillsManage() {
     }
   }, [isImportingSniff, selectedSniffKeys]);
 
+  // 仓库差异弹窗：复合选择键 = 仓库定位 + 技能身份，避免跨仓库身份撞键
+  const addedCompositeKey = (g: RepoChangeGroup, a: RepoChangeAdded) =>
+    `${g.source}::${g.owner}/${g.repo}::${a.key}`;
+
+  const openRepoChanges = useCallback((diff: SkillRepoChangesResult) => {
+    setRepoChanges(diff);
+    const added = new Set<string>();
+    const removed = new Set<string>();
+    for (const g of diff.groups) {
+      for (const a of g.added) added.add(addedCompositeKey(g, a));
+      for (const r of g.removed) removed.add(r.skillId);
+    }
+    setSelectedAddedKeys(added);
+    setSelectedRemovedIds(removed);
+    setRepoChangeDeleteCopies(false);
+    setShowRepoChanges(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 处理（检查更新 / 批量拉取更新）完成后扫描仓库差异，有新增或已移除则弹窗勾选
+  const scanRepoChangesAfter = useCallback(
+    async (baseMessage?: string) => {
+      try {
+        const diff = await invokeScanRepoChanges();
+        // 有新增/已移除，或有仓库扫描失败时都弹窗，避免限流等场景静默无反馈
+        if (diff.groups.length > 0 || diff.failedRepos.length > 0) {
+          openRepoChanges(diff);
+        }
+        if (diff.failedRepos.length > 0) {
+          const suffix = `${diff.failedRepos.length} 个仓库扫描失败：${diff.failedRepos[0]}`;
+          setStatusMsg(baseMessage ? `${baseMessage}；${suffix}` : suffix);
+        }
+      } catch (diffErr) {
+        // 差异扫描失败不影响主流程结果
+        console.warn("scan_skill_repo_changes failed", diffErr);
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [openRepoChanges],
+  );
+
+  const closeRepoChanges = useCallback(() => {
+    if (repoChangeBusy) return;
+    setShowRepoChanges(false);
+    setRepoChanges(null);
+    setSelectedAddedKeys(new Set());
+    setSelectedRemovedIds(new Set());
+  }, [repoChangeBusy]);
+
+  const toggleAddedKey = useCallback((key: string) => {
+    setSelectedAddedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toggleRemovedId = useCallback((id: string) => {
+    setSelectedRemovedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // 导入勾选的远端新增技能；成功后从弹窗本地列表移除，全部处理完则关闭
+  const confirmRepoImport = useCallback(async () => {
+    if (repoChangeBusy || !repoChanges) return;
+    const selections: RepoCandidateInput[] = [];
+    for (const g of repoChanges.groups) {
+      for (const a of g.added) {
+        if (selectedAddedKeys.has(addedCompositeKey(g, a))) {
+          selections.push({
+            source: a.source,
+            owner: a.owner,
+            repo: a.repo,
+            repoUrl: a.repoUrl,
+            path: a.repoPath,
+          });
+        }
+      }
+    }
+    if (selections.length === 0) {
+      setStatusMsg("请先勾选要导入的新增技能");
+      return;
+    }
+    setRepoChangeBusy(true);
+    setStatusMsg(`正在导入 ${selections.length} 个远端新增技能…`);
+    try {
+      const res = await invokeImportRepoCandidates(selections, "");
+      await reload({ quiet: true });
+      setStatusMsg(res.message);
+      const importedPaths = new Set(
+        selections.map((s) => `${s.source}::${s.owner}/${s.repo}::${s.path}`),
+      );
+      const filteredGroups = repoChanges.groups
+        .map((g) => ({
+          ...g,
+          added: g.added.filter(
+            (a) => !importedPaths.has(`${g.source}::${g.owner}/${g.repo}::${a.repoPath}`),
+          ),
+        }))
+        .filter((g) => g.added.length > 0 || g.removed.length > 0);
+      const addedCount = filteredGroups.reduce((n, g) => n + g.added.length, 0);
+      const removedCount = filteredGroups.reduce((n, g) => n + g.removed.length, 0);
+      setRepoChanges({ ...repoChanges, groups: filteredGroups, addedCount, removedCount });
+      // 从过滤后的分组重算勾选集，避免路径键与身份键不一致导致计数残留
+      setSelectedAddedKeys((prev) => {
+        const kept = new Set<string>();
+        for (const g of filteredGroups) {
+          for (const a of g.added) {
+            const ck = addedCompositeKey(g, a);
+            if (prev.has(ck)) kept.add(ck);
+          }
+        }
+        return kept;
+      });
+      if (addedCount === 0 && removedCount === 0) {
+        setShowRepoChanges(false);
+        setRepoChanges(null);
+        setSelectedAddedKeys(new Set());
+        setSelectedRemovedIds(new Set());
+      }
+    } catch (e) {
+      setStatusMsg(`导入失败: ${String(e)}`);
+    } finally {
+      setRepoChangeBusy(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoChangeBusy, repoChanges, selectedAddedKeys, reload]);
+
+  // 删除勾选的远端已移除技能（复用批量删除，可选一并清理 Agent 副本）
+  const confirmRepoDelete = useCallback(async () => {
+    if (repoChangeBusy || !repoChanges) return;
+    const ids = Array.from(selectedRemovedIds);
+    if (ids.length === 0) {
+      setStatusMsg("请先勾选要删除的已移除技能");
+      return;
+    }
+    setRepoChangeBusy(true);
+    setStatusMsg(`正在删除 ${ids.length} 个远端已移除技能…`);
+    try {
+      const res = await invokeBatchDelete(ids, repoChangeDeleteCopies);
+      await reload({ quiet: true });
+      setStatusMsg(res.message);
+      const filteredGroups = repoChanges.groups
+        .map((g) => ({
+          ...g,
+          removed: g.removed.filter((r) => !selectedRemovedIds.has(r.skillId)),
+        }))
+        .filter((g) => g.added.length > 0 || g.removed.length > 0);
+      const addedCount = filteredGroups.reduce((n, g) => n + g.added.length, 0);
+      const removedCount = filteredGroups.reduce((n, g) => n + g.removed.length, 0);
+      setRepoChanges({ ...repoChanges, groups: filteredGroups, addedCount, removedCount });
+      // 失败项保留勾选；仅移除已成功删除的
+      setSelectedRemovedIds((prev) => {
+        const kept = new Set<string>();
+        for (const g of filteredGroups) {
+          for (const r of g.removed) {
+            if (prev.has(r.skillId)) kept.add(r.skillId);
+          }
+        }
+        return kept;
+      });
+      if (addedCount === 0 && removedCount === 0) {
+        setShowRepoChanges(false);
+        setRepoChanges(null);
+        setSelectedAddedKeys(new Set());
+        setSelectedRemovedIds(new Set());
+      }
+    } catch (e) {
+      setStatusMsg(`删除失败: ${String(e)}`);
+    } finally {
+      setRepoChangeBusy(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoChangeBusy, repoChanges, selectedRemovedIds, repoChangeDeleteCopies, reload]);
+
   const doCheckUpdates = useCallback(async () => {
     if (isChecking) return;
     setIsChecking(true);
@@ -364,12 +555,14 @@ export default function SkillsManage() {
       const res = await invokeCheckUpdates();
       setSkills(res.skills);
       setStatusMsg(res.message);
+      // 检查更新后顺带扫描仓库差异（新增候选 / 远端已移除），有差异则弹窗勾选
+      await scanRepoChangesAfter(res.message);
     } catch (e) {
       setStatusMsg(`检查更新失败: ${e}`);
     } finally {
       setIsChecking(false);
     }
-  }, [isChecking]);
+  }, [isChecking, scanRepoChangesAfter]);
 
   const doPickLocal = useCallback(async () => {
     if (isAdding || isPickingLocalFolder.current) return;
@@ -514,154 +707,6 @@ export default function SkillsManage() {
     }
   }, [gitcodeUrl, isAdding, reload, addTag]);
 
-  const openMigrate = useCallback(async () => {
-    if (isPreviewingMigrate || isMigrating) return;
-    setIsPreviewingMigrate(true);
-    setStatusMsg("正在读取 ~/.cc-switch 中的 Skills…");
-    setMigratePreview(null);
-    setSelectedMigrateIds(new Set());
-    setShowMigrateModal(true);
-    try {
-      const res = await invokePreviewCcSwitch();
-      setMigratePreview(res);
-      // 默认勾选可导入项
-      const next = new Set<string>();
-      for (const item of res.items) {
-        if (item.status === "import") next.add(item.ccId);
-      }
-      setSelectedMigrateIds(next);
-      setStatusMsg(res.message);
-    } catch (e) {
-      setMigratePreview({
-        ok: false,
-        items: [],
-        total: 0,
-        importable: 0,
-        skipExists: 0,
-        missing: 0,
-        message: `预览失败: ${e}`,
-        ccSwitchRoot: "",
-      });
-      setStatusMsg(`CC Switch 预览失败: ${e}`);
-    } finally {
-      setIsPreviewingMigrate(false);
-    }
-  }, [isMigrating, isPreviewingMigrate]);
-
-  const closeMigrate = useCallback(() => {
-    if (isMigrating) return;
-    setShowMigrateModal(false);
-  }, [isMigrating]);
-
-  const toggleMigrateId = useCallback((ccId: string, selectable: boolean) => {
-    if (!selectable) return;
-    setSelectedMigrateIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(ccId)) next.delete(ccId);
-      else next.add(ccId);
-      return next;
-    });
-  }, []);
-
-  const selectAllImportable = useCallback(() => {
-    if (!migratePreview) return;
-    setSelectedMigrateIds(
-      new Set(migratePreview.items.filter((i) => i.status === "import").map((i) => i.ccId)),
-    );
-  }, [migratePreview]);
-
-  const clearMigrateSelection = useCallback(() => {
-    setSelectedMigrateIds(new Set());
-  }, []);
-
-  const confirmMigrate = useCallback(async () => {
-    if (isMigrating) return;
-    const ids = Array.from(selectedMigrateIds);
-    if (ids.length === 0) {
-      setStatusMsg("请先勾选要迁移的技能");
-      return;
-    }
-    setIsMigrating(true);
-    setStatusMsg(`正在迁移 ${ids.length} 个技能…`);
-    try {
-      const res = await invokeMigrateCcSwitch(ids);
-      setSkills(res.skills);
-      setStatusMsg(res.message);
-      if (res.ok || res.imported > 0) {
-        setShowMigrateModal(false);
-        setMigratePreview(null);
-        setSelectedMigrateIds(new Set());
-      }
-    } catch (e) {
-      setStatusMsg(`迁移失败: ${e}`);
-    } finally {
-      setIsMigrating(false);
-    }
-  }, [isMigrating, selectedMigrateIds]);
-
-  // 迁移弹窗内的可导入项（仅这些可被勾选，来源整组勾选也只作用于它们）
-  const migrateImportableItems = useMemo(
-    () => migratePreview?.items.filter((i) => i.status === "import") ?? [],
-    [migratePreview],
-  );
-
-  // 迁移弹窗的来源选项：与主列表同一套归组规则，只统计可导入项
-  const migrateSourceOptions = useMemo(
-    () => buildSourceOptions(migrateImportableItems),
-    [migrateImportableItems],
-  );
-
-  // 已整组勾选的来源集合（该来源全部可导入项均被选中时视为激活）
-  const migrateActiveSources = useMemo(() => {
-    const active = new Set<string>();
-    for (const opt of migrateSourceOptions) {
-      const group =
-        opt.key === "all"
-          ? migrateImportableItems
-          : migrateImportableItems.filter((i) => sourceKeyOf(i) === opt.key);
-      if (group.length > 0 && group.every((i) => selectedMigrateIds.has(i.ccId))) {
-        active.add(opt.key);
-      }
-    }
-    return active;
-  }, [migrateSourceOptions, migrateImportableItems, selectedMigrateIds]);
-
-  // 点击来源：整组勾选该来源的可导入项；若已全选则整组取消
-  const toggleMigrateSource = useCallback(
-    (key: string) => {
-      if (isMigrating) return;
-      const group =
-        key === "all"
-          ? migrateImportableItems
-          : migrateImportableItems.filter((i) => sourceKeyOf(i) === key);
-      if (group.length === 0) return;
-      setSelectedMigrateIds((prev) => {
-        const next = new Set(prev);
-        const allChecked = group.every((i) => next.has(i.ccId));
-        for (const item of group) {
-          if (allChecked) next.delete(item.ccId);
-          else next.add(item.ccId);
-        }
-        return next;
-      });
-    },
-    [isMigrating, migrateImportableItems],
-  );
-
-  // 列表展示顺序：已激活来源的项优先置顶（组内及其余项均保持原有相对顺序）
-  const sortedMigrateItems = useMemo(() => {
-    const items = migratePreview?.items ?? [];
-    // "all" 不是具体来源键，剔除后为空则无需重排
-    const prioritized = new Set(Array.from(migrateActiveSources).filter((k) => k !== "all"));
-    if (prioritized.size === 0) return items;
-    const top: CcSwitchPreviewItem[] = [];
-    const rest: CcSwitchPreviewItem[] = [];
-    for (const item of items) {
-      (prioritized.has(sourceKeyOf(item)) ? top : rest).push(item);
-    }
-    return [...top, ...rest];
-  }, [migratePreview, migrateActiveSources]);
-
   const agentLabel = useCallback(
     (name: string) => agents.find((a) => a.name === name)?.display_name ?? name,
     [agents],
@@ -801,6 +846,29 @@ export default function SkillsManage() {
       setIsSavingEdit(false);
     }
   }, [editTarget, editAgents, editTag, editInstallMode, isSavingEdit, reload]);
+
+  const openTagEdit = useCallback((skill: SkillRecord) => {
+    setTagTarget(skill);
+    setTagDraft(skill.tag?.trim() ?? "");
+    setIsSavingTag(false);
+  }, []);
+
+  const confirmTagEdit = useCallback(async () => {
+    if (!tagTarget || isSavingTag) return;
+    const tag = tagDraft.trim();
+    setIsSavingTag(true);
+    setStatusMsg(tag ? "正在设置标签…" : "正在清除标签…");
+    try {
+      const res = await invokeBatchSetTag([tagTarget.id], tag);
+      setStatusMsg(res.message);
+      if (res.ok) setTagTarget(null);
+      await reload({ quiet: true });
+    } catch (e) {
+      setStatusMsg(`设置标签失败: ${e}`);
+    } finally {
+      setIsSavingTag(false);
+    }
+  }, [tagTarget, tagDraft, isSavingTag, reload]);
 
   const openRepo = useCallback(
     async (skill: SkillRecord) => {
@@ -950,10 +1018,6 @@ export default function SkillsManage() {
     for (const id of validSelectedIds) if (!filteredIdSet.has(id)) n += 1;
     return n;
   }, [validSelectedIds, filteredIdSet]);
-  // 当前筛选内是否已全部选中（用于全选/取消全选切换）
-  const allFilteredSelected =
-    filteredSkills.length > 0 && filteredSkills.every((s) => selectedIds.has(s.id));
-
   const exitBatchMode = useCallback(() => {
     setBatchMode(false);
     setSelectedIds(new Set());
@@ -1013,13 +1077,52 @@ export default function SkillsManage() {
         // 后端按仓库分组并发克隆替换，同仓库多技能共享一次克隆
         const res = await invokeUpdateSkillsBatch(remoteTargets.map((s) => s.id));
         await reload({ quiet: true });
+        const missing = res.missingUpstream ?? [];
+        let finalMsg: string;
         if (res.failed === 0) {
-          setStatusMsg(res.message || `已更新 ${res.succeeded} 个技能到远端最新`);
+          finalMsg = res.message || `已更新 ${res.succeeded} 个技能到远端最新`;
           if (opts?.exitWhenDone) exitBatchMode();
+        } else if (res.errors.length === 0 && missing.length > 0) {
+          // 失败项全部是「远端已不存在」，已在弹窗列出，不按报错措辞
+          finalMsg = `成功更新 ${res.succeeded} 个；${missing.length} 个技能在远端仓库已不存在，请在弹窗中勾选处理`;
         } else {
-          setStatusMsg(
-            `批量更新结束：成功 ${res.succeeded}，失败 ${res.failed}。${res.errors.slice(0, 3).join("；")}`,
-          );
+          finalMsg = `批量更新结束：成功 ${res.succeeded}，失败 ${res.failed}。${res.errors
+            .slice(0, 3)
+            .join("；")}`;
+        }
+        setStatusMsg(finalMsg);
+        if (missing.length > 0) {
+          // 后端克隆后已定位不到的技能：直接按仓库归组打开删除勾选弹窗（权威清单，不依赖二次扫描）
+          const groupMap = new Map<string, RepoChangeGroup>();
+          for (const m of missing) {
+            const key = `${m.source}:${m.owner}/${m.repo}`;
+            let g = groupMap.get(key);
+            if (!g) {
+              g = {
+                source: m.source,
+                owner: m.owner,
+                repo: m.repo,
+                repoUrl: m.repoUrl,
+                hostLabel: m.hostLabel,
+                added: [],
+                removed: [],
+              };
+              groupMap.set(key, g);
+            }
+            g.removed.push(m);
+          }
+          openRepoChanges({
+            ok: true,
+            groups: [...groupMap.values()],
+            addedCount: 0,
+            removedCount: missing.length,
+            checkedRepos: groupMap.size,
+            failedRepos: [],
+            message: `${missing.length} 个技能在远端仓库中已不存在，可勾选删除`,
+          });
+        } else {
+          // 无远端缺失时，独立扫描发现新增候选并弹窗
+          await scanRepoChangesAfter(finalMsg);
         }
       } catch (e) {
         await reload({ quiet: true });
@@ -1029,7 +1132,15 @@ export default function SkillsManage() {
         setIsBatchRunningP(false);
       }
     },
-    [isBatchRunning, reload, exitBatchMode, setIsBatchRunningP, setBatchUpdatingScopeP],
+    [
+      isBatchRunning,
+      reload,
+      exitBatchMode,
+      setIsBatchRunningP,
+      setBatchUpdatingScopeP,
+      scanRepoChangesAfter,
+      openRepoChanges,
+    ],
   );
 
   const doPullAvailableUpdates = useCallback(async () => {
@@ -1224,7 +1335,7 @@ export default function SkillsManage() {
             Skills
           </h1>
           <div className="header-actions">
-            {/* 从右到左：添加、扫描、检查更新、从 CC Switch 迁移、批量管理 */}
+            {/* 从右到左：添加、扫描、检查更新、批量管理 */}
             {(updateAvailableCount > 0 || batchUpdatingScope === "available") && (
               <button
                 className={`action-btn ${batchUpdatingScope === "available" ? "sniffing" : ""}`}
@@ -1234,7 +1345,7 @@ export default function SkillsManage() {
                     : `拉取更新（${updateAvailableCount}）`
                 }
                 onClick={() => void doPullAvailableUpdates()}
-                disabled={isBatchRunning || isChecking || isSniffing || isMigrating || isAdding}
+                disabled={isBatchRunning || isChecking || isSniffing || isAdding}
               >
                 <IconPull />
               </button>
@@ -1243,26 +1354,16 @@ export default function SkillsManage() {
               className={`action-btn ${batchMode ? "active" : ""}`}
               data-tooltip={batchMode ? "退出批量管理" : "批量管理"}
               onClick={() => (batchMode ? exitBatchMode() : setBatchMode(true))}
-              disabled={loading || skills.length === 0 || isMigrating}
+              disabled={loading || skills.length === 0}
               aria-pressed={batchMode}
             >
               <IconCheckSquare />
             </button>
             <button
-              className={`action-btn ${isPreviewingMigrate || isMigrating ? "sniffing" : ""}`}
-              data-tooltip={
-                isMigrating ? "迁移中..." : isPreviewingMigrate ? "读取中..." : "从 CC Switch 迁移"
-              }
-              onClick={() => void openMigrate()}
-              disabled={isPreviewingMigrate || isMigrating || isSniffing || isChecking || isAdding}
-            >
-              <IconMigrate />
-            </button>
-            <button
               className={`action-btn ${isChecking ? "sniffing" : ""}`}
               data-tooltip={isChecking ? "检查中..." : "检查更新"}
               onClick={() => void doCheckUpdates()}
-              disabled={isChecking || isSniffing || isMigrating}
+              disabled={isChecking || isSniffing}
             >
               <IconRefresh />
             </button>
@@ -1270,7 +1371,7 @@ export default function SkillsManage() {
               className={`action-btn ${isSniffing ? "sniffing" : ""}`}
               data-tooltip={isSniffing ? "扫描中..." : "扫描"}
               onClick={() => void openSniff()}
-              disabled={isSniffing || isChecking || isMigrating || isImportingSniff}
+              disabled={isSniffing || isChecking || isImportingSniff}
             >
               <IconScan />
             </button>
@@ -1278,7 +1379,7 @@ export default function SkillsManage() {
               className="action-btn"
               data-tooltip="添加"
               onClick={openAdd}
-              disabled={isAdding || isMigrating}
+              disabled={isAdding}
             >
               <IconPlus />
             </button>
@@ -1488,20 +1589,21 @@ export default function SkillsManage() {
                                 const repoUrl = skillRepoUrl(skill);
                                 // 有可跳转地址时整个来源徽标可点击打开仓库网页；否则退化为静态徽标
                                 return repoUrl ? (
-                                  <button
-                                    type="button"
-                                    className={`skill-source-link ${hostTag}`}
-                                    data-tooltip={`打开仓库：${repoUrl}`}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      void openRepo(skill);
-                                    }}
-                                  >
-                                    <IconExternal />
-                                    <span className="skill-source-link-label">
-                                      {repoLabel || hostLabel}
-                                    </span>
-                                  </button>
+                                  <Tooltip content={`打开仓库：${repoUrl}`} placement="bottom">
+                                    <button
+                                      type="button"
+                                      className={`skill-source-link ${hostTag}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void openRepo(skill);
+                                      }}
+                                    >
+                                      <IconExternal />
+                                      <span className="skill-source-link-label">
+                                        {repoLabel || hostLabel}
+                                      </span>
+                                    </button>
+                                  </Tooltip>
                                 ) : (
                                   <span className={`skill-tag ${hostTag}`}>{hostLabel}</span>
                                 );
@@ -1512,8 +1614,29 @@ export default function SkillsManage() {
                             {skill.updateAvailable && (
                               <span className="skill-tag skill-tag-update">有更新</span>
                             )}
-                            {skill.tag?.trim() && (
-                              <span className="skill-tag skill-tag-custom">{skill.tag.trim()}</span>
+                            {batchMode ? (
+                              <span
+                                className={`skill-tag ${
+                                  skill.tag?.trim() ? "skill-tag-custom" : "skill-tag-none"
+                                }`}
+                              >
+                                {skill.tag?.trim() || "无标签"}
+                              </span>
+                            ) : (
+                              <Tooltip content="设置标签" placement="bottom">
+                                <button
+                                  type="button"
+                                  className={`skill-tag ${
+                                    skill.tag?.trim() ? "skill-tag-custom" : "skill-tag-none"
+                                  }`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openTagEdit(skill);
+                                  }}
+                                >
+                                  {skill.tag?.trim() || "无标签"}
+                                </button>
+                              </Tooltip>
                             )}
                           </div>
                           {skill.description ? (
@@ -1533,7 +1656,7 @@ export default function SkillsManage() {
                                     ? "正在更新…"
                                     : skill.updateAvailable
                                       ? "有更新，点击拉取远端最新"
-                                      : "更新到远端最新"
+                                      : "更新"
                                 }
                                 onClick={() => void doUpdateSkill(skill)}
                                 disabled={updatingId === skill.id || isDeleting || isBatchRunning}
@@ -1544,16 +1667,16 @@ export default function SkillsManage() {
                             <button
                               type="button"
                               className="claude-env-action-btn"
-                              data-tooltip="编辑标签与应用 Agent"
+                              data-tooltip="应用到 Agent"
                               onClick={() => openEdit(skill)}
                               disabled={isDeleting || exportingId === skill.id || isBatchRunning}
                             >
-                              <IconTags />
+                              <IconAgents />
                             </button>
                             <button
                               type="button"
                               className="claude-env-action-btn"
-                              data-tooltip="应用到目录…"
+                              data-tooltip="应用到目录"
                               onClick={() => openDirectoryApply(skill)}
                               disabled={exportingId === skill.id || isBatchRunning}
                             >
@@ -1600,23 +1723,17 @@ export default function SkillsManage() {
 
       {/* ===== 批量操作条（批量模式下浮出） ===== */}
       {batchMode && !loading && skills.length > 0 && (
-        <div className="skill-batch-bar">
+        <div className="skill-batch-bar mcp-batch-bar">
           <div className="skill-batch-bar-left">
             <button
               type="button"
               className="mcp-agent-action"
-              onClick={toggleSelectAllFiltered}
-              disabled={isBatchRunning || filteredSkills.length === 0}
+              onClick={validSelectedIds.size > 0 ? clearSelection : toggleSelectAllFiltered}
+              disabled={
+                isBatchRunning || (validSelectedIds.size === 0 && filteredSkills.length === 0)
+              }
             >
-              {allFilteredSelected ? "取消全选" : "全选"}
-            </button>
-            <button
-              type="button"
-              className="mcp-agent-action"
-              onClick={clearSelection}
-              disabled={isBatchRunning || validSelectedIds.size === 0}
-            >
-              清除
+              {validSelectedIds.size > 0 ? "清除" : "全选"}
             </button>
             <span className="skill-batch-count">
               已选 <strong>{validSelectedIds.size}</strong> / {skills.length}
@@ -1639,18 +1756,18 @@ export default function SkillsManage() {
             <button
               type="button"
               className="btn btn-secondary"
-              onClick={openBatchApply}
+              onClick={openBatchTag}
               disabled={isBatchRunning || validSelectedIds.size === 0}
             >
-              应用到 Agent
+              设置标签
             </button>
             <button
               type="button"
               className="btn btn-secondary"
-              onClick={openBatchTag}
+              onClick={openBatchApply}
               disabled={isBatchRunning || validSelectedIds.size === 0}
             >
-              应用标签
+              应用到 Agent
             </button>
             <button
               type="button"
@@ -1775,7 +1892,7 @@ export default function SkillsManage() {
                     onClick={() => void doAddLocalPath()}
                     disabled={isAdding || dupChecking || !localPath.trim()}
                   >
-                    {dupChecking ? "检查中…" : isAdding ? "导入中…" : "导入路径"}
+                    {dupChecking ? "检查中…" : isAdding ? "导入中…" : "本地导入"}
                   </button>
                 </div>
               </>
@@ -2137,169 +2254,6 @@ export default function SkillsManage() {
         </div>
       )}
 
-      {/* ===== CC Switch migrate preview modal ===== */}
-      <div className={`modal-overlay ${showMigrateModal ? "visible" : ""}`} {...migrateDismiss}>
-        <div className="modal modal-lg skill-migrate-modal">
-          <div className="modal-header">
-            <h2 className="modal-title">从 CC Switch 迁移 Skills</h2>
-            <button className="modal-close" onClick={closeMigrate} disabled={isMigrating}>
-              <IconClose />
-            </button>
-          </div>
-
-          <div className="modal-body skill-migrate-body">
-            {isPreviewingMigrate && !migratePreview ? (
-              <div className="skill-migrate-loading">正在扫描 ~/.cc-switch …</div>
-            ) : migratePreview ? (
-              <>
-                <p className="skill-add-hint">
-                  数据源：<code>{migratePreview.ccSwitchRoot || "~/.cc-switch"}</code>
-                  。将复制到 <code>~/.octopus/skills</code>，不会修改 CC Switch 原文件。
-                </p>
-                <div className="skill-migrate-summary">
-                  共 <strong>{migratePreview.total}</strong> 项 · 可导入{" "}
-                  <strong>{migratePreview.importable}</strong> · 已存在{" "}
-                  <strong>{migratePreview.skipExists}</strong> · 源缺失{" "}
-                  <strong>{migratePreview.missing}</strong>
-                  {selectedMigrateIds.size > 0 && (
-                    <>
-                      {" "}
-                      · 已选 <strong>{selectedMigrateIds.size}</strong>
-                    </>
-                  )}
-                </div>
-
-                {migratePreview.items.length === 0 ? (
-                  <div className="skill-migrate-empty">{migratePreview.message}</div>
-                ) : (
-                  <>
-                    {migrateSourceOptions.length > 1 && (
-                      <div className="skill-filter-section">
-                        <div className="skill-filter-heading static" role="presentation">
-                          <span className="skill-filter-heading-title">来源</span>
-                          <span className="skill-filter-heading-active">
-                            点击来源可整组勾选 / 取消
-                          </span>
-                        </div>
-                        <SourceFilterChips
-                          options={migrateSourceOptions}
-                          active={migrateActiveSources}
-                          onSelect={toggleMigrateSource}
-                          disabled={isMigrating}
-                        />
-                      </div>
-                    )}
-                    <div className="skill-migrate-toolbar">
-                      <button
-                        type="button"
-                        className="mcp-agent-action"
-                        onClick={selectAllImportable}
-                        disabled={migratePreview.importable === 0 || isMigrating}
-                      >
-                        全选可导入
-                      </button>
-                      <button
-                        type="button"
-                        className="mcp-agent-action"
-                        onClick={clearMigrateSelection}
-                        disabled={selectedMigrateIds.size === 0 || isMigrating}
-                      >
-                        清除选择
-                      </button>
-                    </div>
-                    <div className="skill-migrate-list">
-                      {sortedMigrateItems.map((item) => {
-                        const selectable = item.status === "import";
-                        const checked = selectedMigrateIds.has(item.ccId);
-                        const repoLabel =
-                          item.githubOwner && item.githubRepo
-                            ? `${item.githubOwner}/${item.githubRepo}`
-                            : "";
-                        return (
-                          <label
-                            key={item.ccId}
-                            className={`skill-migrate-item skill-migrate-status-${item.status} ${
-                              checked ? "selected" : ""
-                            } ${selectable ? "" : "disabled"}`}
-                          >
-                            <input
-                              type="checkbox"
-                              className="ui-check-input"
-                              checked={checked}
-                              disabled={!selectable || isMigrating}
-                              onChange={() => toggleMigrateId(item.ccId, selectable)}
-                            />
-                            <CheckGlyph />
-                            <div className="skill-migrate-item-main">
-                              <div className="skill-migrate-item-title-row">
-                                <span className="skill-migrate-item-title">{item.title}</span>
-                                {item.source === "github" ? (
-                                  <span className="skill-tag skill-tag-github">
-                                    {repoLabel || "GitHub"}
-                                  </span>
-                                ) : (
-                                  <span className="skill-tag skill-tag-local">本地</span>
-                                )}
-                                <span
-                                  className={`skill-migrate-badge skill-migrate-badge-${item.status}`}
-                                >
-                                  {item.statusLabel}
-                                </span>
-                              </div>
-                              {item.description && (
-                                <p className="skill-migrate-item-desc">{item.description}</p>
-                              )}
-                              {item.enabledAgents.length > 0 && (
-                                <div className="skill-migrate-item-agents">
-                                  <span className="skill-migrate-item-agents-label">
-                                    CC Switch 已启用
-                                  </span>
-                                  <div className="agent-badge-list">
-                                    {item.enabledAgents.map((n) => (
-                                      <AgentBadge key={n} name={n} label={agentLabel(n)} />
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
-              </>
-            ) : null}
-          </div>
-
-          <div className="modal-footer skill-migrate-footer">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={closeMigrate}
-              disabled={isMigrating}
-            >
-              取消
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => void confirmMigrate()}
-              disabled={
-                isMigrating ||
-                isPreviewingMigrate ||
-                selectedMigrateIds.size === 0 ||
-                !migratePreview?.ok
-              }
-            >
-              {isMigrating
-                ? "迁移中…"
-                : `确认迁移${selectedMigrateIds.size > 0 ? `（${selectedMigrateIds.size}）` : ""}`}
-            </button>
-          </div>
-        </div>
-      </div>
-
       {/* ===== Sniff preview modal ===== */}
       <div className={`modal-overlay ${showSniffModal ? "visible" : ""}`} {...sniffDismiss}>
         <div className="modal modal-lg skill-migrate-modal">
@@ -2431,11 +2385,221 @@ export default function SkillsManage() {
         </div>
       </div>
 
+      {/* ===== 仓库差异弹窗：远端新增勾选导入 / 远端已移除勾选删除 ===== */}
+      <div className={`modal-overlay ${showRepoChanges ? "visible" : ""}`} {...repoChangeDismiss}>
+        <div className="modal modal-lg skill-migrate-modal">
+          <div className="modal-header">
+            <h2 className="modal-title">仓库差异</h2>
+            <button className="modal-close" onClick={closeRepoChanges} disabled={repoChangeBusy}>
+              <IconClose />
+            </button>
+          </div>
+
+          <div className="modal-body skill-migrate-body">
+            {repoChanges ? (
+              <>
+                <p className="skill-migrate-summary">
+                  已检查 <strong>{repoChanges.checkedRepos}</strong> 个仓库 · 远端新增{" "}
+                  <strong>{repoChanges.addedCount}</strong> · 远端已移除{" "}
+                  <strong>{repoChanges.removedCount}</strong>
+                </p>
+                {repoChanges.failedRepos.length > 0 && (
+                  <div className="skill-repo-change-failed">
+                    {repoChanges.failedRepos.map((f, i) => (
+                      <div key={i}>· {f}</div>
+                    ))}
+                  </div>
+                )}
+
+                {repoChanges.groups.length === 0 ? (
+                  <div className="skill-migrate-empty">没有待处理的差异</div>
+                ) : (
+                  repoChanges.groups.map((g) => (
+                    <div className="skill-repo-group" key={`${g.source}::${g.owner}/${g.repo}`}>
+                      <div className="skill-repo-group-head">
+                        <span className="skill-repo-group-repo">
+                          {g.hostLabel} · {g.owner}/{g.repo}
+                        </span>
+                        {g.repoUrl && (
+                          <button
+                            type="button"
+                            className="mcp-agent-action"
+                            onClick={async () => {
+                              try {
+                                const { invoke } = await import("@tauri-apps/api/core");
+                                await invoke("open_external_url", { url: g.repoUrl });
+                              } catch {
+                                /* 忽略打开失败 */
+                              }
+                            }}
+                          >
+                            打开仓库
+                          </button>
+                        )}
+                      </div>
+
+                      {g.added.length > 0 && (
+                        <>
+                          <div className="skill-repo-section-title">
+                            远端新增（{g.added.length}）
+                          </div>
+                          <div className="skill-migrate-list">
+                            {g.added.map((a) => {
+                              const ck = addedCompositeKey(g, a);
+                              const checked = selectedAddedKeys.has(ck);
+                              return (
+                                <label
+                                  key={ck}
+                                  className={`skill-migrate-item ${checked ? "selected" : ""} ${
+                                    a.existsInLibrary ? "disabled" : ""
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    className="ui-check-input"
+                                    checked={checked}
+                                    disabled={repoChangeBusy || a.existsInLibrary}
+                                    onChange={() => toggleAddedKey(ck)}
+                                  />
+                                  <CheckGlyph />
+                                  <div className="skill-migrate-item-main">
+                                    <div className="skill-migrate-item-title-row">
+                                      <span className="skill-migrate-item-title">{a.title}</span>
+                                      <span className="skill-migrate-badge skill-migrate-badge-import">
+                                        新增
+                                      </span>
+                                      {a.version && (
+                                        <span className="skill-repo-version">v{a.version}</span>
+                                      )}
+                                    </div>
+                                    {a.description && (
+                                      <p className="skill-migrate-item-desc">{a.description}</p>
+                                    )}
+                                    <div className="skill-repo-path">{a.repoPath}</div>
+                                  </div>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </>
+                      )}
+
+                      {g.removed.length > 0 && (
+                        <>
+                          <div className="skill-repo-section-title">
+                            远端已移除（{g.removed.length}）
+                          </div>
+                          <div className="skill-migrate-list">
+                            {g.removed.map((r) => {
+                              const checked = selectedRemovedIds.has(r.skillId);
+                              return (
+                                <label
+                                  key={r.skillId}
+                                  className={`skill-migrate-item ${checked ? "selected" : ""}`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    className="ui-check-input"
+                                    checked={checked}
+                                    disabled={repoChangeBusy}
+                                    onChange={() => toggleRemovedId(r.skillId)}
+                                  />
+                                  <CheckGlyph />
+                                  <div className="skill-migrate-item-main">
+                                    <div className="skill-migrate-item-title-row">
+                                      <span className="skill-migrate-item-title">{r.title}</span>
+                                      <span className="skill-migrate-badge skill-migrate-badge-missing">
+                                        远端已删除
+                                      </span>
+                                    </div>
+                                    {r.description && (
+                                      <p className="skill-migrate-item-desc">{r.description}</p>
+                                    )}
+                                    {r.appliedAgents.length > 0 && (
+                                      <div className="skill-migrate-item-agents">
+                                        <span className="skill-migrate-item-agents-label">
+                                          已应用到
+                                        </span>
+                                        <div className="agent-badge-list">
+                                          {r.appliedAgents.map((n) => (
+                                            <AgentBadge key={n} name={n} label={agentLabel(n)} />
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {r.installations.map((inst, idx) => (
+                                      <div className="skill-repo-install" key={idx}>
+                                        <span className="skill-repo-install-mode">
+                                          {inst.link ? "软链接" : "复制"}
+                                        </span>
+                                        <span className="skill-repo-install-path">{inst.path}</span>
+                                      </div>
+                                    ))}
+                                    {r.appliedAgents.length === 0 &&
+                                      r.installations.length === 0 && (
+                                        <div className="skill-repo-install skill-repo-install-muted">
+                                          未应用到任何 Agent / 目录
+                                        </div>
+                                      )}
+                                  </div>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))
+                )}
+              </>
+            ) : null}
+          </div>
+
+          <div className="modal-footer skill-migrate-footer">
+            <label className="ui-check skill-repo-footer-check">
+              <input
+                type="checkbox"
+                className="ui-check-input"
+                checked={repoChangeDeleteCopies}
+                disabled={repoChangeBusy || selectedRemovedIds.size === 0}
+                onChange={(e) => setRepoChangeDeleteCopies(e.target.checked)}
+              />
+              <CheckGlyph />
+              <span className="ui-check-label">删除时同时清理 Agent 副本</span>
+            </label>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={closeRepoChanges}
+              disabled={repoChangeBusy}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="btn btn-danger"
+              onClick={() => void confirmRepoDelete()}
+              disabled={repoChangeBusy || selectedRemovedIds.size === 0}
+            >
+              {repoChangeBusy ? "处理中…" : `删除已移除（${selectedRemovedIds.size}）`}
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => void confirmRepoImport()}
+              disabled={repoChangeBusy || selectedAddedKeys.size === 0}
+            >
+              {repoChangeBusy ? "处理中…" : `导入新增（${selectedAddedKeys.size}）`}
+            </button>
+          </div>
+        </div>
+      </div>
+
       {/* ===== Edit Skill Modal ===== */}
       <div className={`modal-overlay ${editTarget ? "visible" : ""}`} {...editDismiss}>
         <div className="modal skill-edit-modal">
           <div className="modal-header">
-            <h2 className="modal-title">编辑技能{editTarget ? `：${editTarget.title}` : ""}</h2>
+            <h2 className="modal-title">应用到 Agent{editTarget ? `：${editTarget.title}` : ""}</h2>
             <button
               className="modal-close"
               onClick={() => !isSavingEdit && setEditTarget(null)}
@@ -2447,19 +2611,6 @@ export default function SkillsManage() {
 
           {editTarget && (
             <div className="modal-body">
-              {/* 标签 */}
-              <div className="form-group">
-                <label className="form-label">
-                  标签 <span className="form-label-optional">可选，用于分组筛选</span>
-                </label>
-                <TagSelect
-                  value={editTag}
-                  onChange={setEditTag}
-                  knownTags={knownTags}
-                  disabled={isSavingEdit}
-                />
-              </div>
-
               <div className="form-group">
                 <label className="form-label">安装方式</label>
                 <div className="skill-install-mode" role="radiogroup" aria-label="安装方式">
@@ -2528,9 +2679,6 @@ export default function SkillsManage() {
                             {getAgentIcon(agent.name) ?? agent.icon}
                           </span>
                           <span className="agent-pick-name">{agent.display_name}</span>
-                          <span className={`agent-pick-check ${selected ? "checked" : ""}`}>
-                            {selected ? "✓" : ""}
-                          </span>
                         </button>
                       );
                     })}
@@ -2950,9 +3098,6 @@ export default function SkillsManage() {
                           {getAgentIcon(agent.name) ?? agent.icon}
                         </span>
                         <span className="agent-pick-name">{agent.display_name}</span>
-                        <span className={`agent-pick-check ${selected ? "checked" : ""}`}>
-                          {selected ? "✓" : ""}
-                        </span>
                       </button>
                     );
                   })}
@@ -3041,6 +3186,61 @@ export default function SkillsManage() {
               disabled={isBatchRunning || validSelectedIds.size === 0}
             >
               {isBatchRunning ? "处理中…" : batchTag.trim() === "" ? "清除标签" : "应用标签"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ===== 单条设置标签弹窗 ===== */}
+      <div className={`modal-overlay ${tagTarget ? "visible" : ""}`} {...tagEditDismiss}>
+        <div className="modal skill-edit-modal">
+          <div className="modal-header">
+            <h2 className="modal-title">设置标签{tagTarget ? `：${tagTarget.title}` : ""}</h2>
+            <button
+              className="modal-close"
+              onClick={() => !isSavingTag && setTagTarget(null)}
+              disabled={isSavingTag}
+            >
+              <IconClose />
+            </button>
+          </div>
+
+          <div className="modal-body">
+            <div className="form-group">
+              <label className="form-label">
+                标签 <span className="form-label-optional">留空表示清除标签</span>
+              </label>
+              <p className="skill-add-hint">
+                仅修改该技能的分组标签，不影响其应用到 Agent 的状态。
+              </p>
+              <TagSelect
+                value={tagDraft}
+                onChange={setTagDraft}
+                knownTags={knownTags}
+                disabled={isSavingTag}
+              />
+              {tagDraft.trim() === "" && (
+                <div className="skill-edit-warning">未填写标签：将清除该技能的现有标签。</div>
+              )}
+            </div>
+          </div>
+
+          <div className="modal-footer">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setTagTarget(null)}
+              disabled={isSavingTag}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => void confirmTagEdit()}
+              disabled={isSavingTag}
+            >
+              {isSavingTag ? "处理中…" : tagDraft.trim() === "" ? "清除标签" : "应用标签"}
             </button>
           </div>
         </div>

@@ -519,6 +519,24 @@ async fn check_skill_updates() -> Result<skills::SkillUpdateCheckResult, String>
 }
 
 #[tauri::command]
+async fn scan_skill_repo_changes() -> Result<skills::SkillRepoChangesResult, String> {
+    tauri::async_runtime::spawn_blocking(skills::scan_skill_repo_changes)
+        .await
+        .map_err(|e| format!("扫描仓库差异任务失败: {}", e))?
+}
+
+#[tauri::command]
+async fn import_repo_candidates(
+    selections: Vec<skills::RepoCandidateInput>,
+    tag: Option<String>,
+) -> Result<skills::BatchSkillResult, String> {
+    let tag = tag.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || skills::import_repo_candidates(selections, tag))
+        .await
+        .map_err(|e| format!("导入远端候选任务失败: {}", e))?
+}
+
+#[tauri::command]
 async fn add_skill_local(
     path: String,
     tag: Option<String>,
@@ -697,22 +715,6 @@ async fn batch_set_skill_tag(
     tauri::async_runtime::spawn_blocking(move || skills::batch_set_skill_tag(skill_ids, tag))
         .await
         .map_err(|e| format!("批量设置 skill 标签任务失败: {}", e))?
-}
-
-#[tauri::command]
-async fn preview_cc_switch_skills() -> Result<skills::CcSwitchPreviewResult, String> {
-    tauri::async_runtime::spawn_blocking(skills::preview_cc_switch_skills)
-        .await
-        .map_err(|e| format!("预览 CC Switch 迁移任务失败: {}", e))?
-}
-
-#[tauri::command]
-async fn migrate_cc_switch_skills(
-    cc_ids: Vec<String>,
-) -> Result<skills::CcSwitchMigrateResult, String> {
-    tauri::async_runtime::spawn_blocking(move || skills::migrate_cc_switch_skills(cc_ids))
-        .await
-        .map_err(|e| format!("CC Switch 迁移任务失败: {}", e))?
 }
 
 #[tauri::command]
@@ -1772,6 +1774,8 @@ pub fn run() {
             preview_sniff_skills,
             import_sniffed_skills,
             check_skill_updates,
+            scan_skill_repo_changes,
+            import_repo_candidates,
             add_skill_local,
             pick_and_add_skill_local,
             pick_skill_folder_path,
@@ -1788,8 +1792,6 @@ pub fn run() {
             batch_delete_skills,
             batch_apply_skills_to_agents,
             batch_set_skill_tag,
-            preview_cc_switch_skills,
-            migrate_cc_switch_skills,
             list_claude_environments,
             sniff_claude_environments,
             import_claude_environment,

@@ -47,6 +47,8 @@
     0 0 0 0.5px rgba(20, 22, 30, 0.1);
   --seed-shadow-card: 0 1px 1px rgba(0, 0, 0, 0.06), 0 0 0 1px rgba(0, 0, 0, 0.05);
   --seed-shadow-pop: 0 16px 44px rgba(20, 22, 30, 0.16), 0 2px 8px rgba(20, 22, 30, 0.06);
+  /* tooltip 专用紧凑阴影：只做层级分离，不产生大范围灰晕盖住下方内容 */
+  --seed-shadow-tip: 0 2px 10px rgba(20, 22, 30, 0.12), 0 1px 3px rgba(20, 22, 30, 0.07);
   --seed-radius: 6px;
   --seed-radius-sm: 4px;
   --seed-radius-md: 8px;
@@ -123,6 +125,7 @@
       0 0 0 0.5px rgba(255, 255, 255, 0.1);
     --seed-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
     --seed-shadow-pop: 0 16px 44px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.3);
+    --seed-shadow-tip: 0 2px 12px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.2);
     --seed-radius: 6px;
     --seed-radius-sm: 4px;
     --seed-radius-md: 8px;
@@ -167,6 +170,7 @@
     0 0 0 0.5px rgba(255, 255, 255, 0.1);
   --seed-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
   --seed-shadow-pop: 0 16px 44px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --seed-shadow-tip: 0 2px 12px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.2);
   --seed-radius: 6px;
   --seed-radius-sm: 4px;
   --seed-radius-md: 8px;
@@ -1388,6 +1392,12 @@ label,
   border-radius: var(--seed-radius-md);
   box-shadow: var(--seed-shadow-modal);
 }
+/* portal 浮层版：fixed 定位，位置由 JS 计算，脱离弹窗滚动容器不被裁剪 */
+.app-select-menu--portal {
+  position: fixed;
+  right: auto;
+  z-index: 1000;
+}
 .app-select-empty {
   padding: 12px 10px;
   font-size: var(--text-sm);
@@ -1870,13 +1880,21 @@ a[href]:focus-visible {
   font-weight: 450;
   color: var(--seed-fg);
   background: var(--seed-surface);
-  border: 1px solid var(--seed-border);
+  /* 边框加深：白色浮层与白色卡片同色，rgba(0.06) 边框几乎不可见，
+     观感像半透明；加深到 ~15% 让浮层边界清晰、更实 */
+  border: 1px solid color-mix(in srgb, var(--seed-border), var(--seed-fg) 20%);
   border-radius: var(--seed-radius);
-  white-space: nowrap;
+  /* 长内容兜底：tooltip 不横向溢出内容区，超宽时折行而不是被裁剪。
+     width:max-content 避免绝对定位 shrink-to-fit 把宽度塌缩成单字符列 */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 280px));
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.15s ease;
-  box-shadow: var(--seed-shadow-pop);
+  /* 紧凑阴影只做层级分离，避免 44px 大晕影盖住下方描述文字/图标 */
+  box-shadow: var(--seed-shadow-tip);
   z-index: 50;
 }
 [data-tooltip]:hover::after,
@@ -1889,6 +1907,41 @@ a[href]:focus-visible {
 [data-tooltip-align="start"]::after {
   left: 0;
   right: auto;
+}
+
+/* 仓库来源徽标（技能卡片标题行内）：浮层已由 JS 组件 Tooltip 接管（fixed 定位 +
+   getBoundingClientRect 避让视口，规避 WKWebView 下 viewport 单位/transform 渲染异常）。
+   下方规则仅保留给仍使用 data-tooltip 的旧挂载点作兜底 */
+.skill-source-link[data-tooltip]::after {
+  top: 50%;
+  left: calc(100% + 8px);
+  right: auto;
+  transform: translateY(-50%);
+  width: max-content;
+  max-width: min(520px, calc(100vw - 340px));
+}
+
+/* ===== Tooltip 组件（JS 智能浮层） ===== */
+.tooltip-anchor {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.tooltip-pop {
+  position: fixed;
+  z-index: 1000;
+  padding: 4px 10px;
+  font-size: var(--text-sm);
+  font-weight: 450;
+  line-height: 1.4;
+  color: var(--seed-fg);
+  background: var(--seed-surface);
+  border: 1px solid color-mix(in srgb, var(--seed-border), var(--seed-fg) 20%);
+  border-radius: var(--seed-radius);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  /* 无大灰晕：仅 1px 细阴影做层级分离，避免盖住下方内容造成“重叠”观感 */
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  pointer-events: none;
 }
 
 /* ===== AGENT LIST ===== */
@@ -2435,11 +2488,19 @@ a[href]:focus-visible {
   border-color: var(--seed-primary);
   background: var(--seed-active-bg);
 }
-/* 不支持 Skills 目录的 Agent：禁用态 */
+/* 不支持 Skills 目录的 Agent：禁用态。
+   不用整体 opacity——它会把按钮的 ::after tooltip 一起压淡导致看不清；
+   改为只对文字、边框、图标降饱和，浮层保持完整不透明。 */
 .agent-pick.disabled,
 .agent-pick:disabled {
-  opacity: 0.45;
+  color: var(--seed-muted);
+  border-color: color-mix(in srgb, var(--seed-border), var(--seed-fg) 8%);
+  background: var(--seed-surface);
   cursor: not-allowed;
+}
+.agent-pick.disabled .agent-pick-icon,
+.agent-pick:disabled .agent-pick-icon {
+  opacity: 0.55;
 }
 .mcp-agent-pick-icon,
 .agent-pick-icon {
@@ -2765,13 +2826,13 @@ a[href]:focus-visible {
   line-height: 1.2;
   color: var(--seed-fg);
   background: var(--seed-surface);
-  border: 1px solid var(--seed-border);
+  border: 1px solid color-mix(in srgb, var(--seed-border), var(--seed-fg) 20%);
   border-radius: var(--seed-radius);
   white-space: nowrap;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.15s ease;
-  box-shadow: var(--seed-shadow-pop);
+  box-shadow: var(--seed-shadow-tip);
   z-index: 10;
 }
 .agent-badge[data-tooltip]:hover::after {
@@ -3126,11 +3187,20 @@ a[href]:focus-visible {
 .skill-tag {
   font-size: var(--text-xs);
   font-weight: 500;
+  font-family: inherit;
   padding: 2px 7px;
   border-radius: 999px;
   border: 1px solid var(--seed-border);
   line-height: 1.4;
   flex-shrink: 0;
+}
+button.skill-tag {
+  cursor: pointer;
+  text-align: center;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 .skill-tag-local {
   background: var(--seed-surface-alt);
@@ -3161,6 +3231,16 @@ a[href]:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 无标签占位（技能卡片标题行，可点击打开标签设置） */
+.skill-tag-none {
+  background: var(--seed-surface-alt);
+  color: var(--seed-muted);
+  border-color: color-mix(in srgb, var(--seed-border), var(--seed-fg) 12%);
+}
+button.skill-tag-none:hover {
+  background: var(--seed-hover);
+  color: var(--seed-fg);
 }
 /* 版本号标签（技能卡片标题行） */
 .skill-tag-version {
@@ -3416,7 +3496,7 @@ a[href]:focus-visible {
 .skill-add-modal {
   width: min(480px, 100%);
 }
-/* 编辑技能弹窗：与添加弹窗同宽，容纳标签下拉 + Agent 选择网格 */
+/* 技能弹窗（应用到 Agent / 设置标签 / 批量）：与添加弹窗同宽，容纳 Agent 选择网格或标签下拉 */
 .skill-edit-modal {
   width: min(480px, 100%);
 }
@@ -3727,6 +3807,74 @@ a[href]:focus-visible {
   gap: 8px;
   padding: 14px 24px 18px;
   border-top: 1px solid var(--seed-border-subtle);
+}
+
+/* ===== 仓库差异弹窗（远端新增 / 远端已移除） ===== */
+.skill-repo-group {
+  margin-bottom: 18px;
+}
+.skill-repo-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 6px 0 10px;
+}
+.skill-repo-group-repo {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--seed-fg);
+}
+.skill-repo-section-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--seed-fg);
+  margin: 12px 0 8px;
+}
+.skill-repo-path {
+  margin-top: 6px;
+  font-size: var(--text-xs);
+  color: var(--seed-muted);
+  font-family: monospace;
+  word-break: break-all;
+}
+.skill-repo-version {
+  font-size: var(--text-xs);
+  color: var(--seed-muted);
+}
+.skill-repo-install {
+  margin-top: 6px;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: var(--text-xs);
+  color: var(--seed-muted);
+}
+.skill-repo-install-mode {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--seed-border);
+  color: var(--seed-fg);
+}
+.skill-repo-install-path {
+  font-family: monospace;
+  word-break: break-all;
+}
+.skill-repo-install-muted {
+  color: var(--seed-muted);
+  font-style: italic;
+}
+.skill-repo-change-failed {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: var(--seed-radius-md);
+  background: var(--seed-danger-bg);
+  color: var(--seed-danger);
+  font-size: var(--text-sm);
+}
+.skill-repo-footer-check {
+  margin-right: auto;
 }
 
 /* ===== Claude Env ===== */

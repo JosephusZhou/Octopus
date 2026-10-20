@@ -216,60 +216,6 @@ pub struct SkillApplyResult {
     pub errors: Vec<String>,
 }
 
-/// One skill discovered from ~/.cc-switch for migration preview.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CcSwitchPreviewItem {
-    /// Stable id from cc-switch.db `skills.id`
-    pub cc_id: String,
-    /// Target directory / library id (cc-switch `directory`)
-    pub directory: String,
-    pub title: String,
-    pub description: String,
-    pub source: SkillSource,
-    #[serde(default)]
-    pub repo_url: String,
-    #[serde(default)]
-    pub github_owner: String,
-    #[serde(default)]
-    pub github_repo: String,
-    #[serde(default)]
-    pub github_path: String,
-    /// Absolute path under ~/.cc-switch/skills
-    pub source_path: String,
-    /// Agents enabled in cc-switch (mapped to Octopus sniff names)
-    #[serde(default)]
-    pub enabled_agents: Vec<String>,
-    /// "import" | "skip_exists" | "missing"
-    pub status: String,
-    pub status_label: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CcSwitchPreviewResult {
-    pub ok: bool,
-    pub items: Vec<CcSwitchPreviewItem>,
-    pub total: usize,
-    pub importable: usize,
-    pub skip_exists: usize,
-    pub missing: usize,
-    pub message: String,
-    pub cc_switch_root: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CcSwitchMigrateResult {
-    pub ok: bool,
-    pub imported: usize,
-    pub skipped: usize,
-    pub failed: usize,
-    pub skills: Vec<SkillRecord>,
-    pub message: String,
-    pub errors: Vec<String>,
-}
-
 /// 批量操作（删除 / 软链接到目录 / 应用到 Agent）的统一聚合返回。
 /// `skills` 为操作后重新加载的整表，前端可直接 setSkills 刷新，保持与
 /// sniff / migrate 一致的数据流。
@@ -289,6 +235,91 @@ pub struct BatchSkillResult {
     pub message: String,
     /// 逐项失败原因（含技能标题前缀）。
     pub errors: Vec<String>,
+    /// 批量更新时远端仓库已找不到（被移动 / 删除）的技能，供前端弹窗勾选删除。
+    #[serde(default)]
+    pub missing_upstream: Vec<RepoChangeRemoved>,
+}
+
+/* ===== Repo drift: added upstream / removed upstream preview ===== */
+
+/// 远端仓库里发现、但技能库尚未导入的候选技能。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoChangeAdded {
+    /// 稳定选择键：技能身份（frontmatter name，否则目录名）小写。
+    pub key: String,
+    pub title: String,
+    pub description: String,
+    pub version: String,
+    /// 技能目录在仓库内的相对路径（克隆根起算，含分隔符 `/`）。
+    pub repo_path: String,
+    pub source: SkillSource,
+    pub owner: String,
+    pub repo: String,
+    pub repo_url: String,
+    pub host_label: String,
+    /// 该身份是否已存在于技能库（来自其它仓库）；为真时不可重复导入。
+    pub exists_in_library: bool,
+}
+
+/// 技能在某个 Agent skills 目录下的落盘副本（软链接 / 真实目录）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoChangeInstall {
+    pub agent: String,
+    pub path: String,
+    /// true = 软链接；false = 完整复制的真实目录。
+    pub link: bool,
+}
+
+/// 库内已有、但远端仓库已不再提供的技能（候选删除）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoChangeRemoved {
+    /// 技能库目录 id（稳定）。
+    pub skill_id: String,
+    pub title: String,
+    pub description: String,
+    pub version: String,
+    pub source: SkillSource,
+    pub owner: String,
+    pub repo: String,
+    pub repo_url: String,
+    pub host_label: String,
+    /// 技能库内绝对路径。
+    pub local_path: String,
+    /// 当前已应用到的 Agent 名（库 id 或 frontmatter 名安装均计入）。
+    pub applied_agents: Vec<String>,
+    /// 各 Agent 目录下的实际落盘副本。
+    pub installations: Vec<RepoChangeInstall>,
+}
+
+/// 单个仓库（source/owner/repo）的新增与已移除差异。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoChangeGroup {
+    pub source: SkillSource,
+    pub owner: String,
+    pub repo: String,
+    pub repo_url: String,
+    pub host_label: String,
+    pub added: Vec<RepoChangeAdded>,
+    pub removed: Vec<RepoChangeRemoved>,
+}
+
+/// `scan_skill_repo_changes` 的返回：按仓库归组的新增候选与已移除项。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRepoChangesResult {
+    pub ok: bool,
+    pub groups: Vec<RepoChangeGroup>,
+    pub added_count: usize,
+    pub removed_count: usize,
+    /// 成功克隆并比对的仓库数。
+    pub checked_repos: usize,
+    /// 克隆 / 取 HEAD 失败的仓库描述（owner/repo: 原因）。
+    pub failed_repos: Vec<String>,
+    pub message: String,
 }
 
 /* ===== Meta registry (source info, persisted in SQLite) ===== */
@@ -1740,6 +1771,7 @@ pub fn batch_delete_skills(
     if ids.is_empty() {
         let list = list_skills()?;
         return Ok(BatchSkillResult {
+            missing_upstream: Vec::new(),
             ok: false,
             succeeded: 0,
             failed: 0,
@@ -1777,6 +1809,7 @@ pub fn batch_delete_skills(
         format!("已删除 {} 个，{} 个失败", succeeded, failed)
     };
     Ok(BatchSkillResult {
+        missing_upstream: Vec::new(),
         ok: failed == 0,
         succeeded,
         failed,
@@ -1808,6 +1841,7 @@ pub fn batch_apply_skills_to_agents(
     if ids.is_empty() {
         let list = list_skills()?;
         return Ok(BatchSkillResult {
+            missing_upstream: Vec::new(),
             ok: false,
             succeeded: 0,
             failed: 0,
@@ -1827,6 +1861,7 @@ pub fn batch_apply_skills_to_agents(
     if selected_agents.is_empty() && mode == BatchApplyMode::Add {
         let list = list_skills()?;
         return Ok(BatchSkillResult {
+            missing_upstream: Vec::new(),
             ok: false,
             succeeded: 0,
             failed: 0,
@@ -1903,6 +1938,7 @@ pub fn batch_apply_skills_to_agents(
         )
     };
     Ok(BatchSkillResult {
+        missing_upstream: Vec::new(),
         ok: failed == 0,
         succeeded,
         failed,
@@ -1926,6 +1962,7 @@ pub fn batch_set_skill_tag(
     if ids.is_empty() {
         let list = list_skills()?;
         return Ok(BatchSkillResult {
+            missing_upstream: Vec::new(),
             ok: false,
             succeeded: 0,
             failed: 0,
@@ -1976,6 +2013,7 @@ pub fn batch_set_skill_tag(
         format!("{} {} 个成功，{} 个失败", action, succeeded, failed)
     };
     Ok(BatchSkillResult {
+        missing_upstream: Vec::new(),
         ok: failed == 0,
         succeeded,
         failed,
@@ -2134,6 +2172,7 @@ pub fn export_skills_to_dir(
     if ids.is_empty() {
         let list = list_skills()?;
         return Ok(BatchSkillResult {
+            missing_upstream: Vec::new(),
             ok: false,
             succeeded: 0,
             failed: 0,
@@ -2175,6 +2214,7 @@ pub fn export_skills_to_dir(
         parts.push(format!("失败 {} 个", failed));
     }
     Ok(BatchSkillResult {
+        missing_upstream: Vec::new(),
         ok: failed == 0 && skipped == 0,
         succeeded,
         failed,
@@ -3029,6 +3069,34 @@ fn cached_clone(repo_url: &str, owner: &str, repo: &str, sha: &str) -> Result<Pa
     Ok(dest)
 }
 
+/// HEAD 拉取失败（如 GitHub API 限流 403）时，回退到本地克隆缓存里该
+/// owner/repo 最近一次有效克隆，做尽力而为的差异比对；无缓存则返回 None。
+fn cached_clone_fallback(owner: &str, repo: &str) -> Option<PathBuf> {
+    let root = clone_cache_root();
+    let prefix = format!("{owner}-{repo}-");
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    let rd = fs::read_dir(&root).ok()?;
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if !name.starts_with(&prefix) {
+            continue;
+        }
+        let p = e.path();
+        if !p.join(".git").exists() {
+            continue;
+        }
+        let Ok(mt) = e.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        match &best {
+            Some((bt, _)) if mt > *bt => best = Some((mt, p)),
+            None => best = Some((mt, p)),
+            _ => {}
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
 fn github_default_branch_sha(owner: &str, repo: &str) -> Result<String, String> {
     // Use GitHub API: GET /repos/{owner}/{repo}/commits/HEAD
     // Fallback: /repos/{owner}/{repo}
@@ -3283,11 +3351,21 @@ pub fn check_skill_updates() -> Result<SkillUpdateCheckResult, String> {
         } else {
             clone_dir.join(&t.skill.github_path)
         };
+        let local_dir = lib.join(&t.skill.id);
+        let local_doc = read_skill_doc(&local_dir);
+        let local_identity = skill_identity(&t.skill.id, &local_doc);
         let remote_dir = if is_skill_dir(&search_root) {
             Some(search_root)
         } else {
             find_skill_dirs(&search_root).into_iter().next()
-        };
+        }
+        // 旧路径失效（仓库重排/搬家）时按身份整仓重定位，回写新路径
+        .or_else(|| {
+            relocate_skill_in_clone(clone_dir, &local_identity, &t.skill.id).map(|(d, rel)| {
+                entry.github_path = rel;
+                d
+            })
+        });
         let Some(remote_dir) = remote_dir else {
             missing += 1;
             db::upsert_skill_meta(&t.skill.id, &entry)?;
@@ -3339,431 +3417,402 @@ pub fn check_skill_updates() -> Result<SkillUpdateCheckResult, String> {
     })
 }
 
-/* ===== Tests ===== */
+/* ===== Repo drift scan: upstream added / upstream removed ===== */
 
-/* ===== Migrate from CC Switch (~/.cc-switch) ===== */
-
-fn cc_switch_root() -> PathBuf {
-    expand_tilde("~/.cc-switch")
+fn host_label_of(source: &SkillSource) -> &'static str {
+    match source {
+        SkillSource::Github => "GitHub",
+        SkillSource::Gitcode => "GitCode",
+        SkillSource::Local => "本地",
+    }
 }
 
-fn cc_switch_db_path() -> PathBuf {
-    cc_switch_root().join("cc-switch.db")
-}
-
-fn cc_switch_skills_dir() -> PathBuf {
-    cc_switch_root().join("skills")
-}
-
-/// Map cc-switch enabled_* flags to Octopus sniff agent names.
-fn map_cc_enabled_agents(
-    enabled_claude: bool,
-    enabled_codex: bool,
-    enabled_gemini: bool,
-    enabled_opencode: bool,
-    enabled_hermes: bool,
-) -> Vec<String> {
-    let mut agents = Vec::new();
-    if enabled_claude {
-        agents.push("claude-code".into());
-    }
-    if enabled_codex {
-        agents.push("codex".into());
-    }
-    if enabled_gemini {
-        // Gemini-family config root used by Antigravity
-        agents.push("antigravity".into());
-    }
-    if enabled_opencode {
-        agents.push("opencode".into());
-    }
-    // hermes has no Octopus mapping yet
-    let _ = enabled_hermes;
-    agents
-}
-
-fn github_path_from_readme_url(readme_url: &str, owner: &str, repo: &str) -> String {
-    // e.g. https://github.com/flutter/skills/blob/main/skills/flutter-building-forms/SKILL.md
-    let marker = format!("github.com/{}/{}/", owner, repo);
-    let Some(idx) = readme_url.find(&marker) else {
-        return String::new();
-    };
-    let rest = &readme_url[idx + marker.len()..];
-    // rest: blob/main/skills/foo/SKILL.md  or tree/main/skills/foo
-    let parts: Vec<&str> = rest.split('/').collect();
-    if parts.len() < 3 {
-        return String::new();
-    }
-    // skip blob|tree + branch
-    let path_parts = &parts[2..];
-    let mut path = path_parts.join("/");
-    if path.ends_with("/SKILL.md") {
-        path = path.trim_end_matches("/SKILL.md").to_string();
-    } else if path.ends_with("SKILL.md") {
-        path = path
-            .trim_end_matches("SKILL.md")
-            .trim_end_matches('/')
-            .to_string();
-    }
-    path
-}
-
-struct CcDbRow {
-    id: String,
-    name: String,
-    description: String,
-    directory: String,
-    repo_owner: String,
-    repo_name: String,
-    #[allow(dead_code)]
-    repo_branch: String,
-    readme_url: String,
-    enabled_claude: bool,
-    enabled_codex: bool,
-    enabled_gemini: bool,
-    enabled_opencode: bool,
-    enabled_hermes: bool,
-}
-
-fn read_cc_switch_skill_rows() -> Result<Vec<CcDbRow>, String> {
-    let db_path = cc_switch_db_path();
-    if !db_path.exists() {
-        return Err(format!("未找到 CC Switch 数据库: {}", db_path.display()));
-    }
-
-    let flags =
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let conn = rusqlite::Connection::open_with_flags(&db_path, flags)
-        .map_err(|e| format!("打开 cc-switch.db 失败: {}", e))?;
-
-    // Column set evolved across cc-switch versions; select with COALESCE for safety.
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, name,
-                    COALESCE(description, '') AS description,
-                    directory,
-                    COALESCE(repo_owner, '') AS repo_owner,
-                    COALESCE(repo_name, '') AS repo_name,
-                    COALESCE(repo_branch, 'main') AS repo_branch,
-                    COALESCE(readme_url, '') AS readme_url,
-                    COALESCE(enabled_claude, 0) AS enabled_claude,
-                    COALESCE(enabled_codex, 0) AS enabled_codex,
-                    COALESCE(enabled_gemini, 0) AS enabled_gemini,
-                    COALESCE(enabled_opencode, 0) AS enabled_opencode,
-                    COALESCE(enabled_hermes, 0) AS enabled_hermes
-             FROM skills
-             ORDER BY name COLLATE NOCASE",
-        )
-        .map_err(|e| format!("查询 cc-switch skills 失败（表结构可能不兼容）: {}", e))?;
-
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(CcDbRow {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                description: row.get(2)?,
-                directory: row.get(3)?,
-                repo_owner: row.get(4)?,
-                repo_name: row.get(5)?,
-                repo_branch: row.get(6)?,
-                readme_url: row.get(7)?,
-                enabled_claude: row.get::<_, i32>(8)? != 0,
-                enabled_codex: row.get::<_, i32>(9)? != 0,
-                enabled_gemini: row.get::<_, i32>(10)? != 0,
-                enabled_opencode: row.get::<_, i32>(11)? != 0,
-                enabled_hermes: row.get::<_, i32>(12)? != 0,
-            })
-        })
-        .map_err(|e| format!("读取 cc-switch skills 失败: {}", e))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("解析 cc-switch skills 行失败: {}", e))?;
-
-    Ok(rows)
-}
-
-fn build_cc_preview_item(row: &CcDbRow, lib: &Path) -> CcSwitchPreviewItem {
-    let dir_name = if row.directory.trim().is_empty() {
-        // fallback: strip local: prefix from id
-        row.id
-            .strip_prefix("local:")
-            .unwrap_or(&row.id)
-            .rsplit(['/', ':'])
-            .next()
-            .unwrap_or(&row.id)
-            .to_string()
-    } else {
-        row.directory.trim().to_string()
-    };
-
-    let source_path = cc_switch_skills_dir().join(&dir_name);
-    let has_github = !row.repo_owner.trim().is_empty() && !row.repo_name.trim().is_empty();
-    let source = if has_github {
-        SkillSource::Github
-    } else {
-        SkillSource::Local
-    };
-    let github_owner = row.repo_owner.trim().to_string();
-    let github_repo = row.repo_name.trim().to_string();
-    let repo_url = if has_github {
-        format!("https://github.com/{}/{}", github_owner, github_repo)
-    } else {
-        String::new()
-    };
-    let github_path = if has_github {
-        github_path_from_readme_url(&row.readme_url, &github_owner, &github_repo)
-    } else {
-        String::new()
-    };
-
-    let mut title = row.name.trim().to_string();
-    let mut description = row.description.trim().to_string();
-    if source_path.exists() && is_skill_dir(&source_path) {
-        let doc = read_skill_doc(&source_path);
-        if title.is_empty() && !doc.name.is_empty() {
-            title = doc.name;
+/// 枚举某技能在各 Agent skills 目录下的落盘副本（软链接 / 真实目录）。
+/// `managed_names` 为库 id 与 frontmatter 名（可能不同），两者都查。
+fn installations_for_names(managed_names: &[String]) -> Vec<RepoChangeInstall> {
+    let mut out = Vec::new();
+    for target in agent_skills_targets() {
+        if !target.supported {
+            continue;
         }
-        if description.is_empty() && !doc.description.is_empty() {
-            description = doc.description;
-        }
-    }
-    if title.is_empty() {
-        title = dir_name.clone();
-    }
-
-    let enabled_agents = map_cc_enabled_agents(
-        row.enabled_claude,
-        row.enabled_codex,
-        row.enabled_gemini,
-        row.enabled_opencode,
-        row.enabled_hermes,
-    );
-
-    let (status, status_label) = if !source_path.exists() || !is_skill_dir(&source_path) {
-        ("missing".to_string(), "源目录缺失或无 SKILL.md".to_string())
-    } else if lib.join(&dir_name).exists() && is_skill_dir(&lib.join(&dir_name)) {
-        (
-            "skip_exists".to_string(),
-            "技能库已存在，将跳过".to_string(),
-        )
-    } else {
-        ("import".to_string(), "将导入".to_string())
-    };
-
-    CcSwitchPreviewItem {
-        cc_id: row.id.clone(),
-        directory: dir_name,
-        title,
-        description,
-        source,
-        repo_url,
-        github_owner,
-        github_repo,
-        github_path,
-        source_path: source_path.to_string_lossy().to_string(),
-        enabled_agents,
-        status,
-        status_label,
-    }
-}
-
-/// Scan ~/.cc-switch skills dir + cc-switch.db and build a migration preview.
-pub fn preview_cc_switch_skills() -> Result<CcSwitchPreviewResult, String> {
-    let root = cc_switch_root();
-    if !root.exists() {
-        return Ok(CcSwitchPreviewResult {
-            ok: false,
-            items: vec![],
-            total: 0,
-            importable: 0,
-            skip_exists: 0,
-            missing: 0,
-            message: "未找到 ~/.cc-switch 目录，请确认已安装并使用过 CC Switch".into(),
-            cc_switch_root: root.to_string_lossy().to_string(),
-        });
-    }
-
-    let lib = skills_library_dir()?;
-    let mut items: Vec<CcSwitchPreviewItem> = Vec::new();
-    let mut seen_dirs: BTreeSet<String> = BTreeSet::new();
-
-    // Prefer DB rows (richer metadata); fall back to disk-only if DB unreadable.
-    match read_cc_switch_skill_rows() {
-        Ok(rows) => {
-            for row in &rows {
-                let item = build_cc_preview_item(row, &lib);
-                seen_dirs.insert(item.directory.clone());
-                items.push(item);
+        for root in &target.roots {
+            if !root.is_dir() {
+                continue;
+            }
+            for name in managed_names {
+                if !is_plain_entry_name(name) {
+                    continue;
+                }
+                let p = root.join(name);
+                match fs::symlink_metadata(&p) {
+                    Ok(md) => out.push(RepoChangeInstall {
+                        agent: target.agent.to_string(),
+                        path: p.to_string_lossy().to_string(),
+                        link: md.file_type().is_symlink(),
+                    }),
+                    Err(_) => {}
+                }
             }
         }
-        Err(e) => {
-            eprintln!(
-                "[skills] cc-switch.db read failed, disk-only fallback: {}",
-                e
-            );
-        }
+    }
+    out
+}
+
+/// 扫描所有已跟踪远程仓库：克隆最新内容，比对技能库，返回
+/// 「远端新增候选」与「远端已移除」两组差异（不写盘，供前端勾选）。
+pub fn scan_skill_repo_changes() -> Result<SkillRepoChangesResult, String> {
+    let listed = list_skills()?;
+    let lib = skills_library_dir()?;
+    let existing = existing_library_identities(&lib);
+    let applied_map = scan_applied_agents();
+
+    #[derive(Clone)]
+    struct TrackedGroup {
+        source: SkillSource,
+        owner: String,
+        repo: String,
+        repo_url: String,
+        members: Vec<SkillRecord>,
     }
 
-    // Disk skills not present in DB (or DB missing entirely)
-    let skills_dir = cc_switch_skills_dir();
-    if skills_dir.is_dir() {
-        if let Ok(entries) = fs::read_dir(&skills_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !is_skill_dir(&path) {
-                    continue;
-                }
-                let dir_name = entry.file_name().to_string_lossy().to_string();
-                if dir_name.starts_with('.') || seen_dirs.contains(&dir_name) {
-                    continue;
-                }
-                let doc = read_skill_doc(&path);
-                let title = if !doc.name.is_empty() {
-                    doc.name
-                } else {
-                    dir_name.clone()
-                };
-                let status = if lib.join(&dir_name).exists() && is_skill_dir(&lib.join(&dir_name)) {
-                    ("skip_exists", "技能库已存在，将跳过")
-                } else {
-                    ("import", "将导入")
-                };
-                items.push(CcSwitchPreviewItem {
-                    cc_id: format!("disk:{}", dir_name),
-                    directory: dir_name.clone(),
-                    title,
-                    description: doc.description,
-                    source: SkillSource::Local,
-                    repo_url: String::new(),
-                    github_owner: String::new(),
-                    github_repo: String::new(),
-                    github_path: String::new(),
-                    source_path: path.to_string_lossy().to_string(),
-                    enabled_agents: vec![],
-                    status: status.0.into(),
-                    status_label: status.1.into(),
+    // 按 (source, owner, repo) 归组库内远程技能；只有已导入过技能的仓库才跟踪。
+    let mut groups: Vec<TrackedGroup> = Vec::new();
+    let mut group_index: HashMap<String, usize> = HashMap::new();
+    for skill in listed.skills {
+        if !skill.source.is_remote()
+            || skill.github_owner.is_empty()
+            || skill.github_repo.is_empty()
+        {
+            continue;
+        }
+        let key = format!(
+            "{:?}:{}/{}",
+            skill.source, skill.github_owner, skill.github_repo
+        );
+        match group_index.get(&key) {
+            Some(gi) => groups[*gi].members.push(skill),
+            None => {
+                group_index.insert(key.clone(), groups.len());
+                groups.push(TrackedGroup {
+                    source: skill.source.clone(),
+                    owner: skill.github_owner.clone(),
+                    repo: skill.github_repo.clone(),
+                    repo_url: skill.repo_url.clone(),
+                    members: vec![skill],
                 });
             }
         }
     }
 
-    items.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    // 并发克隆（上限 2，与检查更新一致；命中内容寻址缓存则直接复用）。
+    // HEAD 拉取失败（如 API 限流）时回退本地缓存克隆，避免整仓被跳过。
+    let cloned: Vec<(TrackedGroup, Result<PathBuf, String>)> = map_bounded(&groups, 2, |g| {
+        let r = (|| -> Result<PathBuf, String> {
+            let base_url = repo_base_url(&g.source, &g.repo_url, &g.owner, &g.repo);
+            match remote_head_for_source(&g.source, &g.owner, &g.repo, &g.repo_url) {
+                Ok(head) if !head.is_empty() => cached_clone(&base_url, &g.owner, &g.repo, &head),
+                _ => cached_clone_fallback(&g.owner, &g.repo)
+                    .ok_or_else(|| "无法获取远端 HEAD，且无本地缓存可比对".to_string()),
+            }
+        })();
+        (g.clone(), r)
+    });
 
-    let importable = items.iter().filter(|i| i.status == "import").count();
-    let skip_exists = items.iter().filter(|i| i.status == "skip_exists").count();
-    let missing = items.iter().filter(|i| i.status == "missing").count();
-    let total = items.len();
+    let mut result_groups: Vec<RepoChangeGroup> = Vec::new();
+    let mut failed_repos: Vec<String> = Vec::new();
+    let mut checked_repos = 0usize;
+    let mut added_count = 0usize;
+    let mut removed_count = 0usize;
 
-    let message = if total == 0 {
-        "CC Switch 中未发现可迁移的 Skills".into()
+    for (g, clone) in cloned {
+        let clone_dir = match clone {
+            Ok(d) => d,
+            Err(e) => {
+                failed_repos.push(format!("{}/{}：{}", g.owner, g.repo, e));
+                continue;
+            }
+        };
+        checked_repos += 1;
+
+        // 远端技能目录集合：身份键 + 目录名都纳入匹配。
+        let remote_dirs = find_skill_dirs(&clone_dir);
+        let mut remote_identities: BTreeSet<String> = BTreeSet::new();
+        let mut remote_added: Vec<RepoChangeAdded> = Vec::new();
+        for dir in &remote_dirs {
+            let doc = read_skill_doc(dir);
+            let dir_name = dir
+                .file_name()
+                .map(|s| s.to_string_lossy().trim().to_lowercase())
+                .unwrap_or_default();
+            let identity = skill_identity(&dir_name, &doc);
+            remote_identities.insert(identity.clone());
+            remote_identities.insert(dir_name.clone());
+
+            let globally_known = existing.contains(&identity) || existing.contains(&dir_name);
+            if globally_known {
+                continue;
+            }
+            let repo_path = dir
+                .strip_prefix(&clone_dir)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let title = if !doc.name.is_empty() {
+                doc.name.clone()
+            } else {
+                dir_name.clone()
+            };
+            remote_added.push(RepoChangeAdded {
+                key: if !identity.is_empty() {
+                    identity
+                } else {
+                    dir_name.clone()
+                },
+                title,
+                description: doc.description,
+                version: doc.version,
+                repo_path,
+                source: g.source.clone(),
+                owner: g.owner.clone(),
+                repo: g.repo.clone(),
+                repo_url: repo_base_url(&g.source, &g.repo_url, &g.owner, &g.repo),
+                host_label: host_label_of(&g.source).to_string(),
+                exists_in_library: false,
+            });
+        }
+
+        // 已移除：库内成员的身份 / 目录名都不在远端集合中。
+        let mut removed: Vec<RepoChangeRemoved> = Vec::new();
+        for member in &g.members {
+            let local_dir = lib.join(&member.id);
+            let local_doc = read_skill_doc(&local_dir);
+            let local_identity = skill_identity(&member.id, &local_doc);
+            let local_id = member.id.trim().to_lowercase();
+            let still_present = remote_identities.contains(&local_identity)
+                || remote_identities.contains(&local_id);
+            if still_present {
+                continue;
+            }
+
+            let mut applied: Vec<String> = applied_map
+                .get(&member.id)
+                .map(|s| s.iter().cloned().collect())
+                .unwrap_or_default();
+            if !local_doc.name.is_empty() && local_doc.name != member.id {
+                if let Some(extra) = applied_map.get(&local_doc.name) {
+                    for a in extra {
+                        if !applied.contains(a) {
+                            applied.push(a.clone());
+                        }
+                    }
+                }
+            }
+            applied.sort();
+
+            let managed = managed_entry_names(&member.id, &local_dir);
+            let installations = installations_for_names(&managed);
+
+            removed.push(RepoChangeRemoved {
+                skill_id: member.id.clone(),
+                title: member.title.clone(),
+                description: member.description.clone(),
+                version: member.version.clone(),
+                source: member.source.clone(),
+                owner: member.github_owner.clone(),
+                repo: member.github_repo.clone(),
+                repo_url: member.repo_url.clone(),
+                host_label: host_label_of(&member.source).to_string(),
+                local_path: member.local_path.clone(),
+                applied_agents: applied,
+                installations,
+            });
+        }
+
+        if !remote_added.is_empty() || !removed.is_empty() {
+            added_count += remote_added.len();
+            removed_count += removed.len();
+            result_groups.push(RepoChangeGroup {
+                source: g.source.clone(),
+                owner: g.owner.clone(),
+                repo: g.repo.clone(),
+                repo_url: repo_base_url(&g.source, &g.repo_url, &g.owner, &g.repo),
+                host_label: host_label_of(&g.source).to_string(),
+                added: remote_added,
+                removed,
+            });
+        }
+    }
+
+    let message = if checked_repos == 0 {
+        "没有可扫描的远程仓库".into()
+    } else if added_count == 0 && removed_count == 0 {
+        format!("已检查 {} 个远程仓库，无新增或已移除技能", checked_repos)
     } else {
         format!(
-            "发现 {} 个技能：可导入 {}，已存在跳过 {}，源缺失 {}",
-            total, importable, skip_exists, missing
+            "发现 {} 个远端新增、{} 个远端已移除技能",
+            added_count, removed_count
         )
     };
 
-    Ok(CcSwitchPreviewResult {
-        ok: true,
-        items,
-        total,
-        importable,
-        skip_exists,
-        missing,
+    Ok(SkillRepoChangesResult {
+        ok: failed_repos.is_empty(),
+        groups: result_groups,
+        added_count,
+        removed_count,
+        checked_repos,
+        failed_repos,
         message,
-        cc_switch_root: root.to_string_lossy().to_string(),
     })
 }
 
-/// Import selected cc-switch skills (by `cc_id` from preview). Empty list → no-op.
-pub fn migrate_cc_switch_skills(cc_ids: Vec<String>) -> Result<CcSwitchMigrateResult, String> {
-    if cc_ids.is_empty() {
-        return Ok(CcSwitchMigrateResult {
-            ok: true,
-            imported: 0,
-            skipped: 0,
-            failed: 0,
-            skills: list_skills()?.skills,
-            message: "未选择任何技能".into(),
-            errors: vec![],
-        });
-    }
+/// 前端勾选的一个远端新增候选（重新克隆定位后导入）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoCandidateInput {
+    pub source: SkillSource,
+    pub owner: String,
+    pub repo: String,
+    #[serde(default)]
+    pub repo_url: String,
+    /// 技能目录在仓库内的相对路径。
+    pub path: String,
+}
 
-    let preview = preview_cc_switch_skills()?;
-    if !preview.ok && preview.items.is_empty() {
-        return Ok(CcSwitchMigrateResult {
+/// 把勾选的远端新增候选导入技能库：按仓库分组共享一次克隆，逐项导入并对齐 refs。
+pub fn import_repo_candidates(
+    selections: Vec<RepoCandidateInput>,
+    tag: String,
+) -> Result<BatchSkillResult, String> {
+    if selections.is_empty() {
+        let list = list_skills()?;
+        return Ok(BatchSkillResult {
+            missing_upstream: Vec::new(),
             ok: false,
-            imported: 0,
-            skipped: 0,
+            succeeded: 0,
             failed: 0,
-            skills: list_skills()?.skills,
-            message: preview.message,
+            skipped: 0,
+            skills: list.skills,
+            message: "未选择要导入的技能".into(),
             errors: vec![],
         });
     }
 
-    let wanted: BTreeSet<&str> = cc_ids.iter().map(|s| s.as_str()).collect();
-    let mut imported = 0usize;
-    let mut skipped = 0usize;
-    let mut failed = 0usize;
-    let mut errors = Vec::new();
-
-    for item in &preview.items {
-        if !wanted.contains(item.cc_id.as_str()) {
+    // 按 (source, owner, repo) 归组，同仓库共享一次克隆。
+    #[derive(Clone)]
+    struct Pick {
+        source: SkillSource,
+        owner: String,
+        repo: String,
+        repo_url: String,
+        path: String,
+    }
+    let mut groups: Vec<Vec<Pick>> = Vec::new();
+    let mut group_index: HashMap<String, usize> = HashMap::new();
+    for sel in selections {
+        if !sel.source.is_remote() || sel.owner.is_empty() || sel.repo.is_empty() {
             continue;
         }
-        if item.status == "skip_exists" {
-            skipped += 1;
-            continue;
-        }
-        if item.status == "missing" {
-            failed += 1;
-            errors.push(format!("{}: {}", item.title, item.status_label));
-            continue;
-        }
-
-        let src = PathBuf::from(&item.source_path);
-        let preferred = item.directory.as_str();
-        let source = item.source.clone();
-        let git = if source == SkillSource::Github {
-            Some(GitRepoRef {
-                host: GitHost::Github,
-                owner: item.github_owner.clone(),
-                repo: item.github_repo.clone(),
-                path: item.github_path.clone(),
-                repo_url: item.repo_url.clone(),
-                branch: String::new(),
-            })
-        } else {
-            None
+        let key = format!("{:?}:{}/{}", sel.source, sel.owner, sel.repo);
+        let pick = Pick {
+            source: sel.source,
+            owner: sel.owner,
+            repo: sel.repo,
+            repo_url: sel.repo_url,
+            path: sel.path,
         };
-
-        match import_skill_dir(&src, Some(preferred), source, git, "", None) {
-            Ok(_rec) => {
-                imported += 1;
-            }
-            Err(e) => {
-                failed += 1;
-                errors.push(format!("{}: {}", item.title, e));
+        match group_index.get(&key) {
+            Some(gi) => groups[*gi].push(pick),
+            None => {
+                group_index.insert(key.clone(), groups.len());
+                groups.push(vec![pick]);
             }
         }
     }
 
-    let listed = list_skills()?;
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+
+    for picks in &groups {
+        let first = &picks[0];
+        let clone = (|| -> Result<PathBuf, String> {
+            let base_url = repo_base_url(&first.source, &first.repo_url, &first.owner, &first.repo);
+            match remote_head_for_source(&first.source, &first.owner, &first.repo, &first.repo_url)
+            {
+                Ok(head) if !head.is_empty() => {
+                    cached_clone(&base_url, &first.owner, &first.repo, &head)
+                }
+                _ => cached_clone_fallback(&first.owner, &first.repo)
+                    .ok_or_else(|| "无法获取远端 HEAD，且无本地缓存可比对".to_string()),
+            }
+        })();
+        let clone_dir = match clone {
+            Ok(d) => d,
+            Err(e) => {
+                for p in picks {
+                    failed += 1;
+                    errors.push(format!("{}/{}{}: {}", p.owner, p.repo, p.path, e));
+                }
+                continue;
+            }
+        };
+        let head = git_rev_parse(&clone_dir).ok();
+
+        for pick in picks {
+            let src = clone_dir.join(&pick.path);
+            if !is_skill_dir(&src) {
+                failed += 1;
+                errors.push(format!(
+                    "{}/{}：仓库路径 {} 不是有效技能目录",
+                    pick.owner, pick.repo, pick.path
+                ));
+                continue;
+            }
+            let host = match pick.source {
+                SkillSource::Github => GitHost::Github,
+                SkillSource::Gitcode => GitHost::Gitcode,
+                SkillSource::Local => {
+                    failed += 1;
+                    errors.push("仅支持 GitHub / GitCode 候选".into());
+                    continue;
+                }
+            };
+            let gh = GitRepoRef {
+                host,
+                owner: pick.owner.clone(),
+                repo: pick.repo.clone(),
+                path: pick.path.clone(),
+                repo_url: repo_base_url(&pick.source, &pick.repo_url, &pick.owner, &pick.repo),
+                branch: String::new(),
+            };
+            match import_skill_dir(&src, None, pick.source.clone(), Some(gh), &tag, None) {
+                Ok(rec) => {
+                    if let Some(h) = head.as_deref().filter(|h| !h.is_empty()) {
+                        let _ = db::update_skill_refs(&rec.id, Some(h), Some(h), now_secs());
+                    }
+                    succeeded += 1;
+                }
+                Err(e) => {
+                    failed += 1;
+                    errors.push(format!("{}：{}", pick.path, e));
+                }
+            }
+        }
+    }
+
+    let list = list_skills()?;
     let message = if failed == 0 {
-        format!("迁移完成：成功导入 {} 个，跳过 {} 个", imported, skipped)
+        format!("已导入 {} 个远端新增技能", succeeded)
     } else {
-        format!(
-            "迁移结束：成功 {}，跳过 {}，失败 {}",
-            imported, skipped, failed
-        )
+        format!("导入结束：成功 {}，失败 {}", succeeded, failed)
     };
 
-    Ok(CcSwitchMigrateResult {
+    Ok(BatchSkillResult {
+        missing_upstream: Vec::new(),
         ok: failed == 0,
-        imported,
-        skipped,
+        succeeded,
         failed,
-        skills: listed.skills,
+        skipped: 0,
+        skills: list.skills,
         message,
         errors,
     })
@@ -3789,6 +3838,44 @@ fn locate_skill_in_clone(clone_root: &Path, github_path: &str) -> Option<PathBuf
     } else {
         find_skill_dirs(&search_root).into_iter().next()
     }
+}
+
+/// 已记录路径失效（仓库重排 / 技能搬家）时，按本地身份（frontmatter name，
+/// 否则目录名）在整仓全局找回，返回 (克隆内目录, 相对克隆根的路径)。
+fn relocate_skill_in_clone(
+    clone_root: &Path,
+    local_identity: &str,
+    local_dir_name: &str,
+) -> Option<(PathBuf, String)> {
+    let candidates = find_skill_dirs(clone_root);
+    let by_identity = |d: &Path| -> bool {
+        if local_identity.is_empty() {
+            return false;
+        }
+        let doc = read_skill_doc(d);
+        let remote_ident = skill_identity(
+            d.file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default()
+                .as_ref(),
+            &doc,
+        );
+        remote_ident == local_identity
+    };
+    let found = candidates.iter().find(|d| by_identity(d)).or_else(|| {
+        let want = local_dir_name.trim().to_lowercase();
+        candidates.iter().find(|d| {
+            d.file_name()
+                .map(|n| n.to_string_lossy().trim().to_lowercase() == want)
+                .unwrap_or(false)
+        })
+    })?;
+    let rel = found
+        .strip_prefix(clone_root)
+        .unwrap_or(found.as_path())
+        .to_string_lossy()
+        .replace('\\', "/");
+    Some((found.clone(), rel))
 }
 
 /// 在暂存目录构建新内容后原子替换库内技能目录，返回新内容的 hash。
@@ -3918,13 +4005,27 @@ pub fn update_skill(skill_id: String) -> Result<SkillActionResult, String> {
         }
     };
 
-    let Some(src_dir) = locate_skill_in_clone(&tmp, &meta.github_path) else {
-        cleanup_tmp(&tmp);
-        return Ok(SkillActionResult {
-            ok: false,
-            skill: None,
-            message: "远端仓库中未找到该技能目录（可能已被移动或删除）".into(),
-        });
+    let local_doc = read_skill_doc(&dest);
+    let local_identity = skill_identity(&id, &local_doc);
+    let src_dir = match locate_skill_in_clone(&tmp, &meta.github_path) {
+        Some(d) => d,
+        None => match relocate_skill_in_clone(&tmp, &local_identity, &id) {
+            Some((d, rel)) => {
+                // 仓库重排导致搬家：回写新的 github_path，下次直接命中
+                let mut updated = meta.clone();
+                updated.github_path = rel;
+                let _ = db::upsert_skill_meta(&id, &updated);
+                d
+            }
+            None => {
+                cleanup_tmp(&tmp);
+                return Ok(SkillActionResult {
+                    ok: false,
+                    skill: None,
+                    message: "远端仓库中未找到该技能目录（可能已被移动或删除）".into(),
+                });
+            }
+        },
     };
 
     let new_hash = match replace_skill_from_clone(&lib, &id, &src_dir) {
@@ -4029,46 +4130,119 @@ pub fn update_skills_batch(ids: Vec<String>) -> Result<BatchSkillResult, String>
     }
 
     // 每组：解析 HEAD → 取/建克隆缓存 → 组内逐个替换。
-    let group_results: Vec<Vec<(String, String, Result<(), String>)>> =
-        map_bounded(&groups, 2, |items| {
-            let first = &items[0];
-            let owner = &first.meta.github_owner;
-            let repo = &first.meta.github_repo;
-            let clone = remote_head_for_source(&first.meta.source, owner, repo, &first.repo_url)
-                .and_then(|head| {
-                    if head.is_empty() {
-                        return Err("无法获取远端 HEAD".into());
+    // 克隆成功但仓库内定位不到的技能判定为「远端已移除」，单独结构化回传供弹窗勾选删除。
+    let applied_map = scan_applied_agents();
+    let group_results: Vec<
+        Vec<(
+            String,
+            String,
+            Result<(), String>,
+            Option<RepoChangeRemoved>,
+        )>,
+    > = map_bounded(&groups, 2, |items| {
+        let first = &items[0];
+        let owner = &first.meta.github_owner;
+        let repo = &first.meta.github_repo;
+        let clone = remote_head_for_source(&first.meta.source, owner, repo, &first.repo_url)
+            .and_then(|head| {
+                if head.is_empty() {
+                    return Err("无法获取远端 HEAD".into());
+                }
+                cached_clone(&first.repo_url, owner, repo, &head)
+            });
+        items
+            .iter()
+            .map(|item| {
+                let (outcome, missing) = match &clone {
+                    Err(e) => (Err(e.clone()), None),
+                    Ok(clone_dir) => {
+                        let local_dir = lib.join(&item.id);
+                        let local_doc = read_skill_doc(&local_dir);
+                        let local_identity = skill_identity(&item.id, &local_doc);
+                        // 已记录路径优先；失效则按身份整仓重定位（仓库重排/搬家），并回写新路径
+                        let src = locate_skill_in_clone(clone_dir, &item.meta.github_path).or_else(
+                            || {
+                                relocate_skill_in_clone(clone_dir, &local_identity, &item.id).map(
+                                    |(d, rel)| {
+                                        let mut updated = item.meta.clone();
+                                        updated.github_path = rel;
+                                        let _ = db::upsert_skill_meta(&item.id, &updated);
+                                        d
+                                    },
+                                )
+                            },
+                        );
+                        match src {
+                            Some(src) => {
+                                let r = (|| -> Result<(), String> {
+                                    let new_hash = replace_skill_from_clone(&lib, &item.id, &src)?;
+                                    finalize_skill_update(&item.id, clone_dir, new_hash);
+                                    Ok(())
+                                })();
+                                (r, None)
+                            }
+                            None => {
+                                let mut applied: Vec<String> = applied_map
+                                    .get(&item.id)
+                                    .map(|s| s.iter().cloned().collect())
+                                    .unwrap_or_default();
+                                if !local_doc.name.is_empty() && local_doc.name != item.id {
+                                    if let Some(extra) = applied_map.get(&local_doc.name) {
+                                        for a in extra {
+                                            if !applied.contains(a) {
+                                                applied.push(a.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                                applied.sort();
+                                let managed = managed_entry_names(&item.id, &local_dir);
+                                let installations = installations_for_names(&managed);
+                                let rec = RepoChangeRemoved {
+                                    skill_id: item.id.clone(),
+                                    title: item.title.clone(),
+                                    description: local_doc.description,
+                                    version: local_doc.version,
+                                    source: item.meta.source.clone(),
+                                    owner: item.meta.github_owner.clone(),
+                                    repo: item.meta.github_repo.clone(),
+                                    repo_url: repo_base_url(
+                                        &item.meta.source,
+                                        &item.meta.repo_url,
+                                        &item.meta.github_owner,
+                                        &item.meta.github_repo,
+                                    ),
+                                    host_label: host_label_of(&item.meta.source).to_string(),
+                                    local_path: local_dir.to_string_lossy().replace('\\', "/"),
+                                    applied_agents: applied,
+                                    installations,
+                                };
+                                (
+                                    Err("远端仓库中未找到该技能目录（可能已被移动或删除）"
+                                        .to_string()),
+                                    Some(rec),
+                                )
+                            }
+                        }
                     }
-                    cached_clone(&first.repo_url, owner, repo, &head)
-                });
-            items
-                .iter()
-                .map(|item| {
-                    let r = match &clone {
-                        Err(e) => Err(e.clone()),
-                        Ok(clone_dir) => (|| -> Result<(), String> {
-                            let src = locate_skill_in_clone(clone_dir, &item.meta.github_path)
-                                .ok_or_else(|| {
-                                    "远端仓库中未找到该技能目录（可能已被移动或删除）".to_string()
-                                })?;
-                            let new_hash = replace_skill_from_clone(&lib, &item.id, &src)?;
-                            finalize_skill_update(&item.id, clone_dir, new_hash);
-                            Ok(())
-                        })(),
-                    };
-                    (item.id.clone(), item.title.clone(), r)
-                })
-                .collect()
-        });
+                };
+                (item.id.clone(), item.title.clone(), outcome, missing)
+            })
+            .collect()
+    });
 
     let mut succeeded = 0usize;
+    let mut missing_upstream: Vec<RepoChangeRemoved> = Vec::new();
     for results in group_results {
-        for (_id, title, r) in results {
+        for (_id, title, r, missing) in results {
             match r {
                 Ok(()) => succeeded += 1,
                 Err(e) => {
                     failed += 1;
-                    errors.push(format!("{}: {}", title, e));
+                    match missing {
+                        Some(rec) => missing_upstream.push(rec),
+                        None => errors.push(format!("{}: {}", title, e)),
+                    }
                 }
             }
         }
@@ -4091,6 +4265,7 @@ pub fn update_skills_batch(ids: Vec<String>) -> Result<BatchSkillResult, String>
         skills: list.skills,
         message,
         errors,
+        missing_upstream,
     })
 }
 
@@ -4230,99 +4405,6 @@ body
         let doc = parse_skill_md(md);
         assert_eq!(doc.name, "hmos-arkui");
         assert_eq!(doc.description, "第一段说明文本。");
-    }
-
-    #[test]
-    fn github_path_from_readme() {
-        let p = github_path_from_readme_url(
-            "https://github.com/flutter/skills/blob/main/skills/flutter-building-forms/SKILL.md",
-            "flutter",
-            "skills",
-        );
-        assert_eq!(p, "skills/flutter-building-forms");
-    }
-
-    #[test]
-    fn map_enabled_agents() {
-        let a = map_cc_enabled_agents(true, true, false, true, true);
-        assert_eq!(a, vec!["claude-code", "codex", "opencode"]);
-    }
-
-    #[test]
-    fn preview_cc_switch_if_present() {
-        // 持 HOME 测试锁：cc_switch_root 与 preview 内部都按 HOME 派生路径，
-        // 中间不能被其它换 HOME 的测试穿插（约定见 config.rs TEST_HOME_LOCK）。
-        let _home_guard = crate::config::lock_home_for_test();
-        let root = cc_switch_root();
-        if !root.exists() {
-            return;
-        }
-        let res = preview_cc_switch_skills().expect("preview");
-        assert!(res.ok, "preview message: {}", res.message);
-        // cc-switch 已安装但未收录任何 skill（skills 表 0 行且 skills/ 目录为空）
-        // 是合法环境状态：跳过冒烟断言，不代表导入功能故障。
-        if res.total == 0 {
-            return;
-        }
-        // statuses only use known tokens
-        for item in &res.items {
-            assert!(
-                matches!(item.status.as_str(), "import" | "skip_exists" | "missing"),
-                "unexpected status {} for {}",
-                item.status,
-                item.cc_id
-            );
-        }
-    }
-
-    #[test]
-    fn migrate_one_cc_switch_skill_if_present() {
-        // 同 preview_cc_switch_if_present：HOME 派生路径的多次读取需持锁防穿插。
-        let _home_guard = crate::config::lock_home_for_test();
-        let root = cc_switch_root();
-        if !root.exists() {
-            return;
-        }
-        let preview = preview_cc_switch_skills().expect("preview");
-        let candidate = preview.items.iter().find(|i| i.status == "import").cloned();
-        let Some(item) = candidate else {
-            eprintln!("no importable cc-switch skill; skip migrate smoke");
-            return;
-        };
-
-        // Prefer a small-looking skill (name starts with a common short one) if present
-        let pick = preview
-            .items
-            .iter()
-            .find(|i| i.status == "import" && i.directory == "find-skills")
-            .cloned()
-            .unwrap_or(item);
-
-        let res = migrate_cc_switch_skills(vec![pick.cc_id.clone()]).expect("migrate");
-        assert!(
-            res.imported >= 1,
-            "expected import of {}, got {:?}",
-            pick.directory,
-            res
-        );
-        let lib = skills_library_dir().expect("lib");
-        assert!(
-            is_skill_dir(&lib.join(&pick.directory)),
-            "skill dir missing after migrate: {}",
-            pick.directory
-        );
-        let meta = crate::db::get_skill_meta(&pick.directory)
-            .expect("meta q")
-            .expect("meta row");
-        if pick.source == SkillSource::Github {
-            assert_eq!(meta.github_owner, pick.github_owner);
-            assert_eq!(meta.github_repo, pick.github_repo);
-        } else {
-            assert!(matches!(meta.source, SkillSource::Local));
-        }
-        // cleanup so re-runs stay importable
-        let _ = fs::remove_dir_all(lib.join(&pick.directory));
-        let _ = crate::db::delete_skill_meta(&pick.directory);
     }
 
     /// Offline structural check against a local clone of the HarmonyOS GitCode
@@ -4553,6 +4635,33 @@ body
         fs::write(real.join("f.txt"), "y").unwrap();
         assert!(remove_agent_skill_entry(&root, "lib-skill").unwrap());
         assert!(!real.exists());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn relocate_finds_moved_skill_including_dot_dir() {
+        let base = scratch_dir("relocate");
+        // 仓库重排：旧路径 .hmos-skill-reviewer 已不存在，技能搬进 .aw-skills/
+        let moved = base.join(".aw-skills/hmos-skill-reviewer");
+        fs::create_dir_all(&moved).unwrap();
+        fs::write(
+            moved.join("SKILL.md"),
+            "---\nname: hmos-skill-reviewer\n---\n# reviewer\n",
+        )
+        .unwrap();
+
+        // 旧记录路径直接定位失败
+        assert!(locate_skill_in_clone(&base, ".hmos-skill-reviewer").is_none());
+
+        // 按身份整仓重定位成功，并能进入点目录
+        let (dir, rel) =
+            relocate_skill_in_clone(&base, "hmos-skill-reviewer", "hmos-skill-reviewer").unwrap();
+        assert!(dir.join("SKILL.md").exists());
+        assert!(rel.contains(".aw-skills/hmos-skill-reviewer"), "rel={rel}");
+
+        // 找不到的身份返回 None（真删除）
+        assert!(relocate_skill_in_clone(&base, "does-not-exist", "does-not-exist").is_none());
 
         let _ = fs::remove_dir_all(&base);
     }

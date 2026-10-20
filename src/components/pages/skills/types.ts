@@ -117,43 +117,6 @@ export interface SkillApplyResult {
 // 与后端 agent_skills_targets 中 supported=false 对齐：这些 Agent 无标准全局 Skills 目录
 export const SKILL_UNSUPPORTED_AGENTS = new Set<string>(["claude-desktop"]);
 
-export interface CcSwitchPreviewItem {
-  ccId: string;
-  directory: string;
-  title: string;
-  description: string;
-  source: SkillSource;
-  repoUrl: string;
-  githubOwner: string;
-  githubRepo: string;
-  githubPath: string;
-  sourcePath: string;
-  enabledAgents: string[];
-  status: "import" | "skip_exists" | "missing" | string;
-  statusLabel: string;
-}
-
-export interface CcSwitchPreviewResult {
-  ok: boolean;
-  items: CcSwitchPreviewItem[];
-  total: number;
-  importable: number;
-  skipExists: number;
-  missing: number;
-  message: string;
-  ccSwitchRoot: string;
-}
-
-export interface CcSwitchMigrateResult {
-  ok: boolean;
-  imported: number;
-  skipped: number;
-  failed: number;
-  skills: SkillRecord[];
-  message: string;
-  errors: string[];
-}
-
 // 批量操作（删除 / 复制 / 应用）的统一聚合返回，skills 为刷新后的整表
 export interface BatchSkillResult {
   ok: boolean;
@@ -163,7 +126,79 @@ export interface BatchSkillResult {
   skills: SkillRecord[];
   message: string;
   errors: string[];
+  /** 批量更新时远端仓库已找不到（被移动/删除）的技能，供弹窗勾选删除 */
+  missingUpstream?: RepoChangeRemoved[];
 }
 
 export type BatchApplyMode = "add" | "replace";
 export type SkillInstallMode = "link" | "copy";
+
+/* ===== 仓库差异：远端新增 / 远端已移除 ===== */
+
+export interface RepoChangeInstall {
+  agent: string;
+  path: string;
+  /** true = 软链接；false = 完整复制的真实目录 */
+  link: boolean;
+}
+
+export interface RepoChangeAdded {
+  /** 技能身份（frontmatter name，否则目录名）小写 */
+  key: string;
+  title: string;
+  description: string;
+  version: string;
+  /** 技能目录在仓库内的相对路径 */
+  repoPath: string;
+  source: SkillSource;
+  owner: string;
+  repo: string;
+  repoUrl: string;
+  hostLabel: string;
+  existsInLibrary: boolean;
+}
+
+export interface RepoChangeRemoved {
+  /** 技能库目录 id */
+  skillId: string;
+  title: string;
+  description: string;
+  version: string;
+  source: SkillSource;
+  owner: string;
+  repo: string;
+  repoUrl: string;
+  hostLabel: string;
+  localPath: string;
+  appliedAgents: string[];
+  installations: RepoChangeInstall[];
+}
+
+export interface RepoChangeGroup {
+  source: SkillSource;
+  owner: string;
+  repo: string;
+  repoUrl: string;
+  hostLabel: string;
+  added: RepoChangeAdded[];
+  removed: RepoChangeRemoved[];
+}
+
+export interface SkillRepoChangesResult {
+  ok: boolean;
+  groups: RepoChangeGroup[];
+  addedCount: number;
+  removedCount: number;
+  checkedRepos: number;
+  failedRepos: string[];
+  message: string;
+}
+
+/** 勾选导入的一个远端新增候选 */
+export interface RepoCandidateInput {
+  source: SkillSource;
+  owner: string;
+  repo: string;
+  repoUrl: string;
+  path: string;
+}
