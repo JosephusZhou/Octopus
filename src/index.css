@@ -1013,6 +1013,7 @@ label,
   margin-bottom: 4px;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .ai-provider-detail {
@@ -1025,15 +1026,28 @@ label,
 }
 .ai-provider-badge {
   font-size: var(--text-xs);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
-  background: var(--seed-surface-alt);
-  color: var(--seed-muted);
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 999px;
   border: 1px solid var(--seed-border);
+  line-height: 1.4;
   flex-shrink: 0;
+}
+/* 供应商 API 类型胶囊：沿用 MCP skill-tag 几何，按协议配色 */
+.provider-tag-anthropic {
+  background: rgba(217, 119, 87, 0.12);
+  color: #c2603d;
+  border-color: rgba(217, 119, 87, 0.3);
+}
+.provider-tag-chat {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+  border-color: rgba(59, 130, 246, 0.25);
+}
+.provider-tag-responses {
+  background: rgba(168, 85, 247, 0.1);
+  color: #a855f7;
+  border-color: rgba(168, 85, 247, 0.25);
 }
 /* 档位模型字段的子标题（Haiku/Sonnet/Opus/Fable） */
 .ai-provider-tier-label {
@@ -1041,6 +1055,28 @@ label,
   font-weight: 500;
   color: var(--seed-muted);
   margin-bottom: 4px;
+}
+/* 供应商列表：已配置模型横向胶囊，一行放不下自动换行 */
+.ai-provider-models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+  margin-bottom: 6px;
+}
+.ai-provider-model-chip {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: 1.4;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--seed-surface-alt);
+  color: var(--seed-muted);
+  border: 1px solid var(--seed-border);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* 共用弹窗骨架：限制最高 90vh，body 内部滚动（与 claude-env-modal 模式一致） */
 .ai-provider-modal {

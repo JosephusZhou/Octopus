@@ -2181,8 +2181,7 @@ pub fn sync_provider_to_envs(
     provider_id: &str,
     base_url: &str,
     api_key: &str,
-    model: &str,
-    tier_models: &std::collections::HashMap<String, String>,
+    model: Option<&str>,
 ) -> Result<(usize, Vec<String>), String> {
     let envs = db::load_claude_envs_by_provider(provider_id)?;
     let mut synced = 0usize;
@@ -2193,19 +2192,8 @@ pub fn sync_provider_to_envs(
             // 目录不存在 = 该环境尚未初始化，跳过（不写、不计失败、不计入同步数量）。
             continue;
         }
-        let tiers = ModelTierOverrides {
-            haiku: tier_models.get("haiku").cloned().unwrap_or_default(),
-            sonnet: tier_models.get("sonnet").cloned().unwrap_or_default(),
-            opus: tier_models.get("opus").cloned().unwrap_or_default(),
-            fable: tier_models.get("fable").cloned().unwrap_or_default(),
-        };
-        match apply_settings_env_edit(
-            &dir,
-            Some(base_url),
-            Some(api_key),
-            Some(model),
-            Some(&tiers),
-        ) {
+        // 供应商库不再保存模型/档位：只回写 baseUrl/apiKey，模型与现有档位保持不动。
+        match apply_settings_env_edit(&dir, Some(base_url), Some(api_key), model, None) {
             Ok(_) => {
                 let _ = ensure_model_env_companions(&dir);
                 synced += 1;
@@ -2943,7 +2931,7 @@ mod tests {
             fs::create_dir_all(dir).unwrap();
             fs::write(
                 dir.join("settings.json"),
-                r#"{"env":{"ANTHROPIC_BASE_URL":"https://old.example","ANTHROPIC_AUTH_TOKEN":"old-token","ANTHROPIC_MODEL":"claude-old","KEEP_ME":"yes"}}"#,
+                r#"{"env":{"ANTHROPIC_BASE_URL":"https://old.example","ANTHROPIC_AUTH_TOKEN":"old-token","ANTHROPIC_MODEL":"claude-old","ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-old-opus","KEEP_ME":"yes"}}"#,
             )
             .unwrap();
         }
@@ -2961,14 +2949,12 @@ mod tests {
             rows.0.push(id.clone());
         }
 
-        let mut tiers = std::collections::HashMap::new();
-        tiers.insert("opus".to_string(), "claude-opus-4-8".to_string());
+        // 供应商库不再保存模型/档位：同步只回写 URL/Key，主模型与现有档位保持不动。
         let (synced, errors) = sync_provider_to_envs(
             &provider_id,
             "https://new.example/v1",
             "new-secret-token",
-            "claude-sonnet-4-8",
-            &tiers,
+            None,
         )
         .unwrap();
 
@@ -2992,11 +2978,12 @@ mod tests {
                 dir.display()
             );
             assert_eq!(key, "new-secret-token", "{} 未同步 API Key", dir.display());
-            assert_eq!(model, "claude-sonnet-4-8", "{} 未同步主模型", dir.display());
+            // 模型与档位不由供应商同步，保留环境里已有的值。
+            assert_eq!(model, "claude-old", "{} 不应覆盖主模型", dir.display());
             assert_eq!(
                 tier_values.opus,
-                "claude-opus-4-8",
-                "{} 未同步档位模型",
+                "claude-old-opus",
+                "{} 不应覆盖档位模型",
                 dir.display()
             );
             // 无关键保留。
@@ -3007,14 +2994,9 @@ mod tests {
 
         // 未关联任何环境时保持无副作用：清空关联后再同步，不写不报错。
         db::clear_provider_id_on_envs(&provider_id).unwrap();
-        let (synced, errors) = sync_provider_to_envs(
-            &provider_id,
-            "https://other.example",
-            "other-token",
-            "claude-other",
-            &std::collections::HashMap::new(),
-        )
-        .unwrap();
+        let (synced, errors) =
+            sync_provider_to_envs(&provider_id, "https://other.example", "other-token", None)
+                .unwrap();
         assert_eq!(synced, 0, "无关联环境时不应同步");
         assert!(errors.is_empty(), "无关联环境时不应报错: {:?}", errors);
 

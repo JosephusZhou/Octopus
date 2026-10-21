@@ -9,7 +9,7 @@ use crate::config;
 use crate::crypto;
 use crate::db;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// API 类型：Anthropic Messages 协议。
@@ -69,10 +69,6 @@ pub fn provider_types_have_openai(raw: &str) -> bool {
         .any(|t| t == API_TYPE_OPENAI_CHAT || t == API_TYPE_OPENAI_RESPONSES)
 }
 
-/// Anthropic 档位模型覆盖允许使用的键（与 Claude 环境的
-/// ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS,FABLE}_MODEL 概念对齐）。
-pub const MODEL_TIERS: [&str; 4] = ["haiku", "sonnet", "opus", "fable"];
-
 /// 一条已加密的 API Key（salt + nonce + cipher 三元组）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncryptedKey {
@@ -122,12 +118,6 @@ pub struct AiProvider {
     pub base_url: String,
     /// OpenAI 侧 Base URL（勾选任一 OpenAI 类型时有值），用户独立填写、落库。
     pub openai_base_url: String,
-    /// Anthropic 侧默认模型。
-    pub default_model: String,
-    /// OpenAI 侧默认模型。
-    pub openai_default_model: String,
-    /// Anthropic 档位模型覆盖；未勾选 anthropic 时恒为空 map。
-    pub models: HashMap<String, String>,
     pub has_api_key: bool,
     /// 已存储的 API Key 数量（支持多 Key）。
     pub api_key_count: usize,
@@ -170,8 +160,6 @@ pub struct AiProviderRow {
 
 impl From<AiProviderRow> for AiProvider {
     fn from(row: AiProviderRow) -> Self {
-        let models: HashMap<String, String> =
-            serde_json::from_str(&row.models_json).unwrap_or_default();
         let provider_types = parse_api_types(&row.provider_type);
         // 解析多 Key JSON；为空时回退到旧的单 Key 列。
         let enc_keys: Vec<EncryptedKey> =
@@ -191,9 +179,6 @@ impl From<AiProviderRow> for AiProvider {
             provider_types,
             base_url: row.base_url,
             openai_base_url: row.openai_base_url,
-            default_model: row.default_model,
-            openai_default_model: row.openai_default_model,
-            models,
             has_api_key: api_key_count > 0,
             api_key_count,
             custom_models,
@@ -221,12 +206,6 @@ pub struct AiProviderUpsertPayload {
     pub api_key: Option<String>,
     /// 多 API Key（明文数组）；Some 时替换全部密钥，None 时保持旧密钥。
     pub api_keys: Option<Vec<String>>,
-    /// Anthropic 侧默认模型。
-    pub default_model: Option<String>,
-    /// OpenAI 侧默认模型。
-    pub openai_default_model: Option<String>,
-    /// Anthropic 档位模型覆盖（haiku/sonnet/opus/fable）；勾选 anthropic 时有效。
-    pub models: Option<HashMap<String, String>>,
     /// 自定义模型列表（含别名 ID）；None 时保持旧列表，Some 时替换。
     pub custom_models: Option<Vec<CustomModel>>,
     pub notes: Option<String>,
@@ -272,30 +251,6 @@ fn normalize_api_types(raw: &[String]) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// 过滤档位模型映射：仅保留允许的档位键、去除空值；仅勾选了 anthropic 时保留。
-/// OpenAI 协议没有 `haiku`/`sonnet`/`opus`/`fable` 这类档位概念，
-/// 无论前端是否误传都强制清空，避免在 Claude/Codex 环境回写时混入无效档位。
-fn normalize_models(
-    has_anthropic: bool,
-    models: &HashMap<String, String>,
-) -> HashMap<String, String> {
-    if !has_anthropic {
-        return HashMap::new();
-    }
-    models
-        .iter()
-        .filter_map(|(k, v)| {
-            let key = k.trim().to_lowercase();
-            let value = v.trim().to_string();
-            if MODEL_TIERS.contains(&key.as_str()) && !value.is_empty() {
-                Some((key, value))
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 pub fn list_providers() -> Result<Vec<AiProvider>, String> {
     let rows = db::load_ai_provider_rows()?;
     Ok(rows
@@ -315,7 +270,7 @@ pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderAct
         .any(|t| t == API_TYPE_OPENAI_CHAT || t == API_TYPE_OPENAI_RESPONSES);
     let provider_type = serde_json::to_string(&types).unwrap_or_else(|_| "[]".into());
 
-    // 勾选了哪侧才接收哪侧的 URL / 默认模型；未勾选侧强制清空，保持库内一致。
+    // 勾选了哪侧才接收哪侧的 URL；未勾选侧强制清空，保持库内一致。
     let base_url = if has_anthropic {
         payload.base_url.trim().to_string()
     } else {
@@ -324,20 +279,6 @@ pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderAct
     let openai_base_url = if has_openai {
         payload
             .openai_base_url
-            .unwrap_or_default()
-            .trim()
-            .to_string()
-    } else {
-        String::new()
-    };
-    let default_model = if has_anthropic {
-        payload.default_model.unwrap_or_default().trim().to_string()
-    } else {
-        String::new()
-    };
-    let openai_default_model = if has_openai {
-        payload
-            .openai_default_model
             .unwrap_or_default()
             .trim()
             .to_string()
@@ -362,12 +303,8 @@ pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderAct
         validate_base_url(&openai_base_url)?;
     }
 
-    let empty_models = HashMap::new();
-    let models = normalize_models(
-        has_anthropic,
-        payload.models.as_ref().unwrap_or(&empty_models),
-    );
-    let models_json = serde_json::to_string(&models).unwrap_or_else(|_| "{}".into());
+    // 供应商库不再保存默认/档位模型；持久层旧列写空值（方案 A 保留列）。
+    let models_json = "{}".to_string();
 
     let existing = db::get_ai_provider_row(&id)?;
     let now = now_secs();
@@ -459,8 +396,8 @@ pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderAct
         api_key_salt,
         api_key_nonce,
         api_key_cipher,
-        default_model,
-        openai_default_model,
+        default_model: String::new(),
+        openai_default_model: String::new(),
         models_json,
         notes,
         created_at,
@@ -493,47 +430,26 @@ pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderAct
             String::new()
         };
 
-        // 解析档位模型映射
-        let tier_models: std::collections::HashMap<String, String> =
-            serde_json::from_str(&row.models_json).unwrap_or_default();
-
-        // 根据勾选的 API 类型决定写入 Claude 环境 / Codex 环境的值：
-        // 勾了 anthropic → Anthropic 侧 URL/默认模型；勾了任一 openai → OpenAI 侧。
+        // 根据勾选的 API 类型决定同步到 Claude 环境 / Codex 环境的 Base URL。
+        // 供应商库不再保存模型/档位，同步时不回写模型，避免覆盖环境已配值。
         let has_anthropic_row = provider_types_contain(&row.provider_type, API_TYPE_ANTHROPIC);
         let has_openai_row = provider_types_have_openai(&row.provider_type);
-        let (claude_base, claude_model, codex_base, codex_model): (String, String, String, String) = (
-            if has_anthropic_row {
-                row.base_url.clone()
-            } else {
-                String::new()
-            },
-            if has_anthropic_row {
-                row.default_model.clone()
-            } else {
-                String::new()
-            },
-            if has_openai_row {
-                row.openai_base_url.clone()
-            } else {
-                String::new()
-            },
-            if has_openai_row {
-                row.openai_default_model.clone()
-            } else {
-                String::new()
-            },
-        );
+        let claude_base = if has_anthropic_row {
+            row.base_url.clone()
+        } else {
+            String::new()
+        };
+        let codex_base = if has_openai_row {
+            row.openai_base_url.clone()
+        } else {
+            String::new()
+        };
 
         let mut sync_parts: Vec<String> = Vec::new();
 
         if !claude_base.is_empty() {
-            match crate::claude_env::sync_provider_to_envs(
-                &row.id,
-                &claude_base,
-                &plain_key,
-                &claude_model,
-                &tier_models,
-            ) {
+            match crate::claude_env::sync_provider_to_envs(&row.id, &claude_base, &plain_key, None)
+            {
                 Ok((synced, errs)) if synced > 0 || !errs.is_empty() => {
                     let part = if errs.is_empty() {
                         format!("已同步 {} 个 Claude 环境", synced)
@@ -554,12 +470,7 @@ pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderAct
         }
 
         if !codex_base.is_empty() {
-            match crate::codex_env::sync_provider_to_envs(
-                &row.id,
-                &codex_model,
-                &codex_base,
-                &plain_key,
-            ) {
+            match crate::codex_env::sync_provider_to_envs(&row.id, None, &codex_base, &plain_key) {
                 Ok((synced, errs)) if synced > 0 || !errs.is_empty() => {
                     let part = if errs.is_empty() {
                         format!("已同步 {} 个 Codex 环境", synced)
@@ -806,10 +717,6 @@ mod tests {
     }
 
     fn payload(id: &str, api_key: Option<&str>) -> AiProviderUpsertPayload {
-        let mut models = HashMap::new();
-        models.insert("haiku".to_string(), "claude-haiku-x".to_string());
-        models.insert("bogus".to_string(), "should-be-dropped".to_string());
-        models.insert("opus".to_string(), "   ".to_string());
         AiProviderUpsertPayload {
             id: id.to_string(),
             name: "测试供应商".to_string(),
@@ -818,9 +725,6 @@ mod tests {
             openai_base_url: None,
             api_key: api_key.map(|s| s.to_string()),
             api_keys: None,
-            default_model: Some("claude-sonnet-x".to_string()),
-            openai_default_model: None,
-            models: Some(models),
             custom_models: None,
             notes: Some("note".to_string()),
         }
@@ -862,13 +766,6 @@ mod tests {
         let p = created.provider.expect("provider");
         assert!(p.has_api_key);
         assert_eq!(p.provider_types, vec!["anthropic"]);
-        assert_eq!(p.default_model, "claude-sonnet-x");
-        // 只允许合法档位键、丢弃空值
-        assert_eq!(p.models.len(), 1);
-        assert_eq!(
-            p.models.get("haiku").map(|s| s.as_str()),
-            Some("claude-haiku-x")
-        );
 
         // Secret roundtrip
         let secret = get_provider_secret(id.clone()).expect("secret");
@@ -896,24 +793,19 @@ mod tests {
     }
 
     #[test]
-    fn openai_only_provider_clears_tier_models() {
+    fn openai_only_provider_clears_anthropic_side() {
         let _home_guard = crate::config::lock_home_for_test();
         let id = unique_id("openai");
         let mut pl = payload(&id, Some("sk-openai"));
         pl.provider_types = vec!["openai_chat".into(), "openai_responses".into()];
         pl.base_url = String::new();
         pl.openai_base_url = Some("https://api.openai.com/v1".into());
-        pl.default_model = None;
-        pl.openai_default_model = Some("gpt-5".into());
         let created = upsert_provider(pl).expect("create");
         let p = created.provider.expect("provider");
         assert_eq!(p.provider_types, vec!["openai_chat", "openai_responses"]);
-        assert!(p.models.is_empty());
-        // 未勾选 anthropic：anthropic 侧字段被清空
+        // 未勾选 anthropic：anthropic 侧 URL 被清空
         assert!(p.base_url.is_empty());
-        assert!(p.default_model.is_empty());
         assert_eq!(p.openai_base_url, "https://api.openai.com/v1");
-        assert_eq!(p.openai_default_model, "gpt-5");
         delete_provider(id).expect("cleanup");
     }
 
@@ -929,7 +821,6 @@ mod tests {
         ];
         pl.base_url = "https://gateway.example.com".to_string();
         pl.openai_base_url = Some("https://gateway.example.com/v1".to_string());
-        pl.openai_default_model = Some("gpt-5".to_string());
         let created = upsert_provider(pl).expect("create");
         let p = created.provider.expect("provider");
         assert_eq!(
@@ -938,23 +829,14 @@ mod tests {
         );
         assert_eq!(p.base_url, "https://gateway.example.com");
         assert_eq!(p.openai_base_url, "https://gateway.example.com/v1");
-        assert_eq!(p.default_model, "claude-sonnet-x");
-        assert_eq!(p.openai_default_model, "gpt-5");
-        // 勾选了 anthropic：保留档位模型
-        assert_eq!(
-            p.models.get("haiku").map(|s| s.as_str()),
-            Some("claude-haiku-x")
-        );
         delete_provider(id).expect("cleanup");
 
-        // 只勾选 anthropic 的供应商：openai 侧字段被清空
+        // 只勾选 anthropic 的供应商：openai 侧 URL 被清空
         let id2 = unique_id("multi-clear");
         let mut pl2 = payload(&id2, Some("sk-x"));
         pl2.openai_base_url = Some("https://should-be-cleared/v1".to_string());
-        pl2.openai_default_model = Some("should-be-cleared".to_string());
         let created2 = upsert_provider(pl2).expect("create2");
         let p2 = created2.provider.expect("provider2");
-        assert!(p2.openai_default_model.is_empty());
         assert!(p2.openai_base_url.is_empty());
         delete_provider(id2).expect("cleanup2");
     }

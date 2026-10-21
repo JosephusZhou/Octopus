@@ -2058,7 +2058,7 @@ pub fn upsert_environment(payload: CodexEnvUpsertPayload) -> Result<CodexEnvActi
 /// （如 `~/.codex` 尚未创建）给用户报一条无法消除的噪音。此时也不计入同步数量。
 pub fn sync_provider_to_envs(
     provider_id: &str,
-    model: &str,
+    model: Option<&str>,
     base_url: &str,
     api_key: &str,
 ) -> Result<(usize, Vec<String>), String> {
@@ -2072,8 +2072,8 @@ pub fn sync_provider_to_envs(
             continue;
         }
         // model_provider 设为空串：让 Codex 使用顶层 model + base_url 而非自定义 provider 表。
-        match apply_managed_config_edit(&dir, Some(model), Some(""), Some(base_url), Some(api_key))
-        {
+        // 供应商库不再保存模型：model 传 None，保留环境已配的顶层 model。
+        match apply_managed_config_edit(&dir, model, Some(""), Some(base_url), Some(api_key)) {
             Ok(_) => {
                 synced += 1;
             }
@@ -2686,9 +2686,10 @@ mod tests {
             rows.0.push(id.clone());
         }
 
+        // 供应商库不再保存模型：同步只回写 URL/Key，保留环境已配的顶层 model。
         let (synced, errors) = sync_provider_to_envs(
             &provider_id,
-            "gpt-5.6-sol",
+            None,
             "https://new.example/v1",
             "new-secret-token",
         )
@@ -2707,7 +2708,7 @@ mod tests {
 
         for dir in [&default_dir, &work_dir] {
             let cfg = read_managed_config(dir);
-            assert_eq!(cfg.model, "gpt-5.6-sol", "{} 未同步模型", dir.display());
+            assert_eq!(cfg.model, "gpt-old", "{} 不应覆盖模型", dir.display());
             assert_eq!(
                 cfg.base_url,
                 "https://new.example/v1",
@@ -2726,7 +2727,7 @@ mod tests {
         db::clear_provider_id_on_envs(&provider_id).unwrap();
         let (synced, errors) = sync_provider_to_envs(
             &provider_id,
-            "gpt-other",
+            None,
             "https://other.example/v1",
             "other-token",
         )

@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useStatusMessage } from "@/lib/useStatusMessage";
 import { Toast } from "@/components/Toast";
-import { ModelComboBox } from "../ModelComboBox";
 import { useOverlayDismiss, CheckGlyph } from "../ui";
 import {
   Copy,
@@ -25,7 +24,6 @@ import {
   invokeReorder,
 } from "./ai-providers/api";
 import {
-  MODEL_TIERS,
   API_TYPE_OPTIONS,
   hasApiType,
   hasAnyOpenaiType,
@@ -49,27 +47,28 @@ const IconEye = () => <Eye size={16} strokeWidth={1.8} />;
 const IconEyeOff = () => <EyeOff size={16} strokeWidth={1.8} />;
 const IconGrip = () => <GripVertical size={16} strokeWidth={1.8} />;
 
-/* ModelComboBox 是唯一的模型输入控件；下拉候选直接来自 `formCustomModels`。
-   自定义模型列表的录入方式有两种：
+/* 自定义模型列表的录入方式有两种：
    1. 下方"手动添加"输入框逐条录入
    2. "从端点拉取"按钮 → 一次性拉取 + 多选 → 应用后批量写入
    两种方式最终都落到 formCustomModels 并由 invokeUpsert 写入 DB。运行时
    （Claude / Codex / 路由聚合）永远只读 customModels，不再向供应商端点发请求。 */
 
-/** 类型徽标集合：按勾选的 API 类型输出小徽标。 */
+/** API 类型 → 胶囊配色修饰类（与 MCP 页 skill-tag/mcp-tag 配色体系一致）。 */
+const PROVIDER_TAG_CLASS: Record<ApiType, string> = {
+  anthropic: "provider-tag-anthropic",
+  openai_chat: "provider-tag-chat",
+  openai_responses: "provider-tag-responses",
+};
+
+/** 筛选条展示顺序：Anthropic 优先，其余 OpenAI 接口类型随后。 */
+const FILTER_TYPE_ORDER: ApiType[] = ["anthropic", "openai_chat", "openai_responses"];
+
+/** 类型徽标集合：按勾选的 API 类型输出 MCP 同款胶囊徽标。 */
 function TypeBadges({ types }: { types: ApiType[] }) {
   return (
     <>
       {types.map((t) => (
-        <span
-          key={t}
-          className="ai-provider-badge"
-          style={{
-            background: "color-mix(in srgb, var(--seed-primary) 12%, transparent)",
-            color: "var(--seed-active-fg)",
-            borderColor: "color-mix(in srgb, var(--seed-primary) 25%, transparent)",
-          }}
-        >
+        <span key={t} className={`ai-provider-badge ${PROVIDER_TAG_CLASS[t]}`}>
           {API_TYPE_OPTIONS.find((o) => o.value === t)?.label ?? t}
         </span>
       ))}
@@ -93,22 +92,24 @@ function TypeCheckboxes({
       aria-labelledby="ai-provider-type-label"
       style={{ display: "flex", flexDirection: "column", gap: 8 }}
     >
-      {API_TYPE_OPTIONS.map((o) => {
-        const checked = value.has(o.value);
+      {FILTER_TYPE_ORDER.map((type) => {
+        const o = API_TYPE_OPTIONS.find((opt) => opt.value === type);
+        if (!o) return null;
+        const checked = value.has(type);
         const toggle = () => {
           if (disabled) return;
           const next = new Set(value);
           if (checked) {
             // 至少保留一个勾选
             if (next.size <= 1) return;
-            next.delete(o.value);
+            next.delete(type);
           } else {
-            next.add(o.value);
+            next.add(type);
           }
           onChange(next);
         };
         return (
-          <label key={o.value} className="ui-check ai-provider-model-picker-item">
+          <label key={type} className="ui-check ai-provider-model-picker-item">
             <input
               type="checkbox"
               className="ui-check-input"
@@ -135,7 +136,7 @@ export default function AiProviders() {
   // 搜索（250ms 防抖）与类型筛选，交互与 Skills 页一致
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [typeFilter, setTypeFilter] = useState<"all" | "anthropic" | "openai">("all");
+  const [typeFilter, setTypeFilter] = useState<"all" | ApiType>("all");
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
@@ -154,9 +155,6 @@ export default function AiProviders() {
   /** 多 API Key 列表（编辑时自动载入）。 */
   const [formApiKeys, setFormApiKeys] = useState<string[]>([""]);
   const [formApiKeyVisibles, setFormApiKeyVisibles] = useState<Record<number, boolean>>({});
-  const [formDefaultModel, setFormDefaultModel] = useState("");
-  const [formOpenaiDefaultModel, setFormOpenaiDefaultModel] = useState("");
-  const [formTierModels, setFormTierModels] = useState<Record<string, string>>({});
   const [formNotes, setFormNotes] = useState("");
   const [editingHasKey, setEditingHasKey] = useState(false);
   /** 自定义模型列表（运行时的唯一来源，由编辑页通过"手动添加"或"从端点拉取多选"录入）。 */
@@ -225,31 +223,32 @@ export default function AiProviders() {
     return () => window.clearTimeout(timer);
   }, [searchInput]);
 
-  const anthropicCount = useMemo(
-    () => providers.filter((p) => hasApiType(p.providerTypes, "anthropic")).length,
-    [providers],
-  );
-  const openaiCount = useMemo(
-    () => providers.filter((p) => hasAnyOpenaiType(p.providerTypes)).length,
-    [providers],
-  );
+  // 按三种 API 接口类型分别计数：每桶统计命中该类型的供应商数；
+  // 一个供应商同时勾选多类型时会在各桶各计一次（与筛选口径一致，之和可大于总数）。
+  const typeCounts = useMemo(() => {
+    const counts: Record<ApiType, number> = {
+      anthropic: 0,
+      openai_chat: 0,
+      openai_responses: 0,
+    };
+    for (const p of providers) {
+      for (const t of p.providerTypes) {
+        if (t in counts) counts[t] += 1;
+      }
+    }
+    return counts;
+  }, [providers]);
 
-  // 类型与关键词为「与」筛选；关键词覆盖名称、两侧 Base URL、模型与备注
+  // 类型与关键词为「与」筛选；关键词覆盖名称、两侧 Base URL、自定义模型（别名/原始 ID）与备注
   const filteredProviders = useMemo(
     () =>
       providers.filter((p) => {
-        if (typeFilter === "anthropic" && !hasApiType(p.providerTypes, "anthropic")) return false;
-        if (typeFilter === "openai" && !hasAnyOpenaiType(p.providerTypes)) return false;
+        if (typeFilter !== "all" && !hasApiType(p.providerTypes, typeFilter)) return false;
         if (!searchQuery) return true;
-        return [
-          p.name,
-          p.baseUrl,
-          p.openaiBaseUrl,
-          p.defaultModel,
-          p.openaiDefaultModel,
-          p.notes,
-          ...Object.values(p.models),
-        ].some((value) => value.toLocaleLowerCase().includes(searchQuery));
+        const modelTerms = (p.customModels ?? []).flatMap((cm) => [cm.aliasId?.trim(), cm.model]);
+        return [p.name, p.baseUrl, p.openaiBaseUrl, p.notes, ...modelTerms]
+          .filter((value): value is string => Boolean(value))
+          .some((value) => value.toLocaleLowerCase().includes(searchQuery));
       }),
     [providers, typeFilter, searchQuery],
   );
@@ -282,9 +281,6 @@ export default function AiProviders() {
     setFormOpenaiBaseUrl("");
     setFormApiKeys([""]);
     setFormApiKeyVisibles({});
-    setFormDefaultModel("");
-    setFormOpenaiDefaultModel("");
-    setFormTierModels({});
     setFormNotes("");
     setEditingHasKey(false);
     setFormCustomModels([]);
@@ -309,9 +305,6 @@ export default function AiProviders() {
     setFormOpenaiBaseUrl(p.openaiBaseUrl);
     setFormApiKeys([""]);
     setFormApiKeyVisibles({});
-    setFormDefaultModel(p.defaultModel);
-    setFormOpenaiDefaultModel(p.openaiDefaultModel);
-    setFormTierModels({ ...p.models });
     setFormNotes(p.notes);
     setEditingHasKey(p.hasApiKey);
     setFormCustomModels(p.customModels ? [...p.customModels] : []);
@@ -342,9 +335,6 @@ export default function AiProviders() {
     setFormOpenaiBaseUrl(p.openaiBaseUrl);
     setFormApiKeys([""]);
     setFormApiKeyVisibles({});
-    setFormDefaultModel(p.defaultModel);
-    setFormOpenaiDefaultModel(p.openaiDefaultModel);
-    setFormTierModels({ ...p.models });
     setFormNotes(p.notes);
     setEditingHasKey(false);
     setFormCustomModels(p.customModels ? [...p.customModels] : []);
@@ -452,12 +442,6 @@ export default function AiProviders() {
     [setStatusMsg],
   );
 
-  // 自定义模型列表中的模型 ID 列表（用于档位模型下拉）
-  const customModelOptions = useMemo(
-    () => formCustomModels.flatMap((cm) => (cm.aliasId ? [cm.aliasId, cm.model] : [cm.model])),
-    [formCustomModels],
-  );
-
   const handleSave = useCallback(async () => {
     const name = formName.trim();
     const baseUrl = formBaseUrl.trim();
@@ -498,15 +482,6 @@ export default function AiProviders() {
     setFormError("");
     try {
       const id = editingId ?? nextId();
-      // 仅勾选 anthropic 时提交档位模型；OpenAI 协议不支持档位覆盖
-      const models: Record<string, string> = {};
-      if (formHasAnthropic) {
-        for (const tier of MODEL_TIERS) {
-          const v = (formTierModels[tier.key] ?? "").trim();
-          if (v) models[tier.key] = v;
-        }
-      }
-
       const result = await invokeUpsert({
         id,
         name,
@@ -514,9 +489,6 @@ export default function AiProviders() {
         baseUrl,
         ...(formHasOpenai ? { openaiBaseUrl } : {}),
         ...(apiKeys.length > 0 ? { apiKeys } : {}),
-        ...(formHasAnthropic ? { defaultModel: formDefaultModel.trim() } : {}),
-        ...(formHasOpenai ? { openaiDefaultModel: formOpenaiDefaultModel.trim() } : {}),
-        models,
         customModels: formCustomModels,
         notes: formNotes.trim(),
       });
@@ -545,9 +517,6 @@ export default function AiProviders() {
     formBaseUrl,
     formOpenaiBaseUrl,
     formApiKeys,
-    formDefaultModel,
-    formOpenaiDefaultModel,
-    formTierModels,
     formCustomModels,
     formNotes,
     editingId,
@@ -769,20 +738,24 @@ export default function AiProviders() {
               {(
                 [
                   { key: "all", label: "全部", count: providers.length, inheritFont: true },
-                  {
-                    key: "anthropic",
-                    label: "Anthropic",
-                    count: anthropicCount,
+                  ...FILTER_TYPE_ORDER.map((value) => ({
+                    key: value,
+                    label: API_TYPE_OPTIONS.find((o) => o.value === value)?.label ?? value,
+                    count: typeCounts[value],
                     inheritFont: false,
-                  },
-                  { key: "openai", label: "OpenAI", count: openaiCount, inheritFont: false },
-                ] as const
+                  })),
+                ] as Array<{
+                  key: "all" | ApiType;
+                  label: string;
+                  count: number;
+                  inheritFont: boolean;
+                }>
               ).map((opt) => {
                 return (
                   <button
                     key={opt.key}
                     type="button"
-                    className={`skill-source-chip ${opt.inheritFont ? "skill-source-chip-all" : ""} ${typeFilter === opt.key ? "active" : ""}`}
+                    className={`skill-source-chip ${opt.inheritFont ? "skill-source-chip-all" : "skill-source-chip-tag"} ${typeFilter === opt.key ? "active" : ""}`}
                     aria-pressed={typeFilter === opt.key}
                     onClick={() => {
                       setTypeFilter(opt.key);
@@ -810,7 +783,6 @@ export default function AiProviders() {
         ) : (
           <div className="ai-provider-list" ref={listRef}>
             {filteredProviders.map((p, index) => {
-              const tierCount = Object.keys(p.models).length;
               const canDrag = !isFiltering;
               return (
                 <div
@@ -837,8 +809,8 @@ export default function AiProviders() {
                   )}
                   <div className="ai-provider-info">
                     <div className="ai-provider-name">
-                      <TypeBadges types={p.providerTypes} />
                       {p.name}
+                      <TypeBadges types={p.providerTypes} />
                     </div>
                     {hasApiType(p.providerTypes, "anthropic") && p.baseUrl ? (
                       <div className="ai-provider-detail">Anthropic: {p.baseUrl}</div>
@@ -846,19 +818,21 @@ export default function AiProviders() {
                     {hasAnyOpenaiType(p.providerTypes) && p.openaiBaseUrl ? (
                       <div className="ai-provider-detail">OpenAI: {p.openaiBaseUrl}</div>
                     ) : null}
-                    <div className="ai-provider-detail">
-                      {hasApiType(p.providerTypes, "anthropic") &&
-                        `Anthropic 默认: ${p.defaultModel || "未设置"}`}
-                      {hasApiType(p.providerTypes, "anthropic") && hasAnyOpenaiType(p.providerTypes)
-                        ? " · "
-                        : ""}
-                      {hasAnyOpenaiType(p.providerTypes) &&
-                        `OpenAI 默认: ${p.openaiDefaultModel || "未设置"}`}
-                      {hasApiType(p.providerTypes, "anthropic") && tierCount > 0
-                        ? ` · 档位模型 ${tierCount} 个`
-                        : ""}
-                      {p.hasApiKey ? " · 已配置 Key" : " · 未配置 Key"}
-                    </div>
+                    {p.customModels && p.customModels.length > 0 ? (
+                      <div className="ai-provider-models">
+                        {p.customModels.map((cm, i) => (
+                          <span
+                            key={`${cm.model}-${i}`}
+                            className="ai-provider-model-chip"
+                            title={cm.model}
+                          >
+                            {cm.aliasId?.trim() || cm.model}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="ai-provider-detail">未配置模型</div>
+                    )}
                     {p.notes ? <div className="ai-provider-detail">{p.notes}</div> : null}
                   </div>
                   <button
@@ -1192,56 +1166,6 @@ export default function AiProviders() {
                 </button>
               </div>
             </div>
-            {/* 默认模型选择（从自定义模型列表筛选） */}
-            {formHasOpenai && (
-              <div className="form-group">
-                <label className="form-label" htmlFor="ai-provider-openai-default-model">
-                  OpenAI 默认模型 <span className="form-label-optional">可选</span>
-                </label>
-                <ModelComboBox
-                  id="ai-provider-openai-default-model"
-                  value={formOpenaiDefaultModel}
-                  onChange={setFormOpenaiDefaultModel}
-                  disabled={isSaving}
-                  options={customModelOptions}
-                  placeholder="gpt-5"
-                />
-              </div>
-            )}
-            {formHasAnthropic && (
-              <div className="form-group">
-                <label className="form-label" htmlFor="ai-provider-default-model">
-                  Anthropic 默认模型 <span className="form-label-optional">可选</span>
-                </label>
-                <ModelComboBox
-                  id="ai-provider-default-model"
-                  value={formDefaultModel}
-                  onChange={setFormDefaultModel}
-                  disabled={isSaving}
-                  options={customModelOptions}
-                  placeholder="claude-sonnet-4-5"
-                />
-              </div>
-            )}
-            {formHasAnthropic && (
-              <div className="form-group">
-                <label className="form-label">
-                  档位模型 <span className="form-label-optional">可选，从自定义模型列表选择</span>
-                </label>
-                {MODEL_TIERS.map((tier) => (
-                  <div key={tier.key} style={{ marginBottom: 8 }}>
-                    <div className="ai-provider-tier-label">{tier.label}</div>
-                    <ModelComboBox
-                      value={formTierModels[tier.key] ?? ""}
-                      onChange={(v) => setFormTierModels((prev) => ({ ...prev, [tier.key]: v }))}
-                      disabled={isSaving}
-                      options={customModelOptions}
-                      placeholder="留空跟随默认模型"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
             <div className="form-group">
               <label className="form-label" htmlFor="ai-provider-notes">
                 备注 <span className="form-label-optional">可选</span>

@@ -18,12 +18,6 @@ export interface AiProvider {
   baseUrl: string;
   /** OpenAI 侧 Base URL（勾选任一 OpenAI 类型时有值），用户独立填写、落库。 */
   openaiBaseUrl: string;
-  /** Anthropic 侧默认模型。 */
-  defaultModel: string;
-  /** OpenAI 侧默认模型。 */
-  openaiDefaultModel: string;
-  /** Anthropic 档位模型覆盖（haiku/sonnet/opus/fable）；未勾选 anthropic 时为空对象。 */
-  models: Record<string, string>;
   /** 列表接口不回传明文密钥，仅有此标志。 */
   hasApiKey: boolean;
   /** 已存储的 API Key 数量。 */
@@ -49,12 +43,6 @@ export interface AiProviderUpsertPayload {
   apiKey?: string;
   /** 多 API Key（明文数组）；Some 时替换全部密钥，None 时保持旧密钥。 */
   apiKeys?: string[];
-  /** Anthropic 侧默认模型。 */
-  defaultModel?: string;
-  /** OpenAI 侧默认模型。 */
-  openaiDefaultModel?: string;
-  /** Anthropic 档位模型覆盖；勾选 anthropic 时有效。 */
-  models?: Record<string, string>;
   /** 自定义模型列表；Some 时替换，None 时保持旧列表。 */
   customModels?: CustomModel[];
   notes?: string;
@@ -66,7 +54,7 @@ export interface AiProviderActionResult {
   provider: AiProvider | null;
 }
 
-/** Anthropic 档位模型覆盖的固定档位（与后端 MODEL_TIERS 对齐）。 */
+/** Claude 环境自身的四档模型（haiku/sonnet/opus/fable），由环境页配置，与供应商库无关。 */
 export const MODEL_TIERS: Array<{ key: string; label: string }> = [
   { key: "haiku", label: "Haiku" },
   { key: "sonnet", label: "Sonnet" },
@@ -85,7 +73,7 @@ export const API_TYPE_OPTIONS: Array<{
   {
     value: "anthropic",
     label: "Anthropic",
-    sub: "Claude Code 使用的 Messages 接口，支持按档位配置模型",
+    sub: "Claude Code 使用的 Messages 接口",
   },
 ];
 

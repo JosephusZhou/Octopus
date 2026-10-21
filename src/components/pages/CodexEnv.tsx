@@ -100,9 +100,6 @@ const OFFICIAL_OAUTH_PROVIDER: AiProvider = {
   providerTypes: ["openai_responses"],
   baseUrl: "",
   openaiBaseUrl: "",
-  defaultModel: "",
-  openaiDefaultModel: "",
-  models: {},
   hasApiKey: false,
   apiKeyCount: 0,
   customModels: [],
@@ -1408,9 +1405,8 @@ export default function CodexEnv() {
                         return;
                       }
                       const baseUrl = openaiProviderBaseUrl(p);
-                      const defaultModel = p.openaiDefaultModel || p.defaultModel;
                       setCloneBaseUrl(baseUrl);
-                      setCloneModel(defaultModel);
+                      // 模型由环境自身配置，不从供应商带入。
                       // 自定义模型列表：已配置时直接作为模型下拉选项；未配置时清空（无远端拉取回退）
                       setCloneRemoteModels(customModelOptionsOf(p));
                       if (p.hasApiKey) {
@@ -1773,9 +1769,8 @@ export default function CodexEnv() {
                         return;
                       }
                       const baseUrl = openaiProviderBaseUrl(p);
-                      const defaultModel = p.openaiDefaultModel || p.defaultModel;
                       setEditBaseUrl(baseUrl);
-                      setEditModel(defaultModel);
+                      // 模型由环境自身配置，不从供应商带入。
                       // 自定义模型列表：已配置时直接作为模型下拉选项；未配置时清空（无远端拉取回退）
                       setEditRemoteModels(customModelOptionsOf(p));
                       if (p.hasApiKey) {

@@ -1377,25 +1377,9 @@ export default function ClaudeEnv() {
                     setCloneSelectedProvider(p);
                     if (p) {
                       setCloneBaseUrl(p.baseUrl);
-                      setCloneModel(p.defaultModel);
                       // 自定义模型列表：已配置时直接作为模型下拉选项；未配置时清空（无远端拉取回退）
                       setCloneRemoteModels(customModelOptionsOf(p));
-                      // 四档模型：直接用供应商的档位值覆盖
-                      if (Object.keys(p.models).length > 0) {
-                        setCloneTierModels((prev) => {
-                          const next = { ...prev };
-                          for (const tier of MODEL_TIERS) {
-                            if (p.models[tier.key]) {
-                              next[tier.key] = p.models[tier.key];
-                            } else {
-                              delete next[tier.key];
-                            }
-                          }
-                          return next;
-                        });
-                      } else {
-                        setCloneTierModels({});
-                      }
+                      // 主模型与四档由环境自身配置，不从供应商带入。
                       // 填入 API Key
                       if (p.hasApiKey) {
                         try {
@@ -1750,25 +1734,9 @@ export default function ClaudeEnv() {
                     setEditSelectedProvider(p);
                     if (p) {
                       setEditBaseUrl(p.baseUrl);
-                      setEditModel(p.defaultModel);
                       // 自定义模型列表：已配置时直接作为模型下拉选项；未配置时清空（无远端拉取回退）
                       setEditRemoteModels(customModelOptionsOf(p));
-                      // 四档模型：直接用供应商的档位值覆盖
-                      if (Object.keys(p.models).length > 0) {
-                        setEditTierModels((prev) => {
-                          const next = { ...prev };
-                          for (const tier of MODEL_TIERS) {
-                            if (p.models[tier.key]) {
-                              next[tier.key] = p.models[tier.key];
-                            } else {
-                              delete next[tier.key];
-                            }
-                          }
-                          return next;
-                        });
-                      } else {
-                        setEditTierModels({});
-                      }
+                      // 主模型与四档由环境自身配置，不从供应商带入。
                       // 填入 API Key
                       if (p.hasApiKey) {
                         try {
