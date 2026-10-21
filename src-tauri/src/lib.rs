@@ -1548,6 +1548,28 @@ async fn pick_project_folder() -> Result<Option<String>, String> {
     .map_err(|e| format!("选择目录任务失败: {e}"))?
 }
 
+/// 手动添加 Agent 弹窗：选择 CLI 可执行文件或 App（.app 包）。
+#[tauri::command]
+async fn pick_agent_cli_path() -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        platform::pick_file("选择 CLI 可执行文件或 App")
+            .map(|opt| opt.map(|pb| pb.to_string_lossy().to_string()))
+    })
+    .await
+    .map_err(|e| format!("选择 CLI/App 路径任务失败: {e}"))?
+}
+
+/// 手动添加 Agent 弹窗：选择配置目录。
+#[tauri::command]
+async fn pick_agent_config_dir() -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        platform::pick_folder("选择配置目录")
+            .map(|opt| opt.map(|pb| pb.to_string_lossy().to_string()))
+    })
+    .await
+    .map_err(|e| format!("选择配置目录任务失败: {e}"))?
+}
+
 #[tauri::command]
 async fn check_project_config_exists(
     target_dir: String,
@@ -1839,6 +1861,8 @@ pub fn run() {
             probe_models_endpoint,
             reveal_agent_model_config,
             pick_project_folder,
+            pick_agent_cli_path,
+            pick_agent_config_dir,
             check_project_config_exists,
             init_project_config,
             list_ai_providers,

@@ -821,6 +821,16 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 
 /* ===== Folder picker (native dialogs) ===== */
 
+/// 去掉 macOS `POSIX path of` 在目录/包别名结尾追加的 `/`（如 `/Applications/`）。
+/// 根目录 `/` 单独保留，避免被裁成空串。
+fn strip_trailing_slash(path: &str) -> String {
+    if path.len() > 1 {
+        path.trim_end_matches('/').to_string()
+    } else {
+        path.to_string()
+    }
+}
+
 /// Open a native folder picker. Returns `Ok(None)` when the user cancels.
 pub fn pick_folder(prompt: &str) -> Result<Option<PathBuf>, String> {
     #[cfg(target_os = "macos")]
@@ -843,7 +853,7 @@ pub fn pick_folder(prompt: &str) -> Result<Option<PathBuf>, String> {
                 err
             });
         }
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let path = strip_trailing_slash(&String::from_utf8_lossy(&output.stdout).trim());
         if path.is_empty() {
             return Ok(None);
         }
@@ -930,6 +940,124 @@ pub fn pick_folder(prompt: &str) -> Result<Option<PathBuf>, String> {
     {
         let _ = prompt;
         Err("当前平台不支持文件夹选择器".into())
+    }
+}
+
+/* ===== File picker (native dialogs) ===== */
+
+/// Open a native file picker (single file). Returns `Ok(None)` when the user cancels.
+///
+/// macOS 的 `choose file` 默认 `showing package contents = false`，即 `.app` 等包
+/// 作为普通文件展示并可被选中，因此二进制与 App 均可选择。
+pub fn pick_file(prompt: &str) -> Result<Option<PathBuf>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Escape double quotes in AppleScript string literal.
+        let safe = prompt.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            "try\nPOSIX path of (choose file with prompt \"{safe}\")\non error number -128\nreturn \"\"\nend try"
+        );
+        let output = Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .output()
+            .map_err(|e| format!("无法打开文件选择器: {e}"))?;
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if err.is_empty() {
+                "文件选择失败".into()
+            } else {
+                err
+            });
+        }
+        let path = strip_trailing_slash(&String::from_utf8_lossy(&output.stdout).trim());
+        if path.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(PathBuf::from(path)));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // PowerShell OpenFileDialog — works without extra crates.
+        let safe = prompt.replace('\'', "''");
+        let ps = format!(
+            "Add-Type -AssemblyName System.Windows.Forms; \
+             $d = New-Object System.Windows.Forms.OpenFileDialog; \
+             $d.Title = '{safe}'; \
+             $d.Filter = 'All files (*.*)|*.*'; \
+             $d.CheckFileExists = $true; \
+             if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ \
+               [Console]::Out.Write($d.FileName) \
+             }}"
+        );
+        let output = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &ps,
+            ])
+            .output()
+            .map_err(|e| format!("无法打开文件选择器: {e}"))?;
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if err.is_empty() {
+                "文件选择失败".into()
+            } else {
+                err
+            });
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(PathBuf::from(path)));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // Prefer zenity, then kdialog.
+        let try_zenity = Command::new("zenity")
+            .args(["--file-selection", "--title", prompt])
+            .output();
+        if let Ok(output) = try_zenity {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if path.is_empty() {
+                    return Ok(None);
+                }
+                return Ok(Some(PathBuf::from(path)));
+            }
+            // Cancel often exits non-zero with empty stdout.
+            if output.stdout.is_empty() {
+                return Ok(None);
+            }
+        }
+        let try_kdialog = Command::new("kdialog")
+            .args(["--getopenfilename", ".", "--title", prompt])
+            .output();
+        if let Ok(output) = try_kdialog {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if path.is_empty() {
+                    return Ok(None);
+                }
+                return Ok(Some(PathBuf::from(path)));
+            }
+            if output.stdout.is_empty() {
+                return Ok(None);
+            }
+        }
+        return Err("未找到文件选择器（需要 zenity 或 kdialog）".into());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", unix)))]
+    {
+        let _ = prompt;
+        Err("当前平台不支持文件选择器".into())
     }
 }
 
@@ -1038,5 +1166,25 @@ mod tests {
             "hi"
         );
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn strip_trailing_slash_normalizes_picker_paths() {
+        // macOS `POSIX path of` 对目录/包别名会追加结尾 `/`
+        assert_eq!(
+            strip_trailing_slash("/Applications/Cisco/"),
+            "/Applications/Cisco"
+        );
+        assert_eq!(
+            strip_trailing_slash("/Applications/AndDrive.app/"),
+            "/Applications/AndDrive.app"
+        );
+        // 根目录与普通文件不受影响
+        assert_eq!(strip_trailing_slash("/"), "/");
+        assert_eq!(
+            strip_trailing_slash("/usr/local/bin/myagent"),
+            "/usr/local/bin/myagent"
+        );
+        assert_eq!(strip_trailing_slash(""), "");
     }
 }

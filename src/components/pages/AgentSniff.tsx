@@ -5,7 +5,7 @@ import { Toast } from "@/components/Toast";
 import { useStatusMessage } from "@/lib/useStatusMessage";
 import AgentDetail from "./AgentDetail";
 import type { MainView } from "../../App";
-import { ChevronRight, FileCog, FileJson, FolderOpen, Plus, Radar, X } from "lucide-react";
+import { ChevronRight, FileCog, FileJson, Folder, FolderOpen, Plus, Radar, X } from "lucide-react";
 
 /* ===== Types ===== */
 interface AgentResult {
@@ -42,6 +42,9 @@ const IconPlus = () => <Plus strokeWidth={2} />;
 const IconClose = () => <X size={16} strokeWidth={2} />;
 
 const IconFolder = () => <FolderOpen size={16} strokeWidth={1.8} />;
+
+/* 选择图标（复用项目现有样式：与 ProjectConfig「选择目录」按钮一致） */
+const IconFolderPick = () => <Folder size={16} strokeWidth={1.8} />;
 
 const IconFileSettings = () => <FileCog size={16} strokeWidth={1.8} />;
 
@@ -83,6 +86,8 @@ export default function AgentSniff({ onNavigate }: AgentSniffProps) {
   const [formName, setFormName] = useState("");
   const [formCliPath, setFormCliPath] = useState("");
   const [formConfigDir, setFormConfigDir] = useState("");
+  /** 弹窗内系统选择器运行中（cli | config），互斥避免重复弹窗 */
+  const [picking, setPicking] = useState<"cli" | "config" | null>(null);
   const [openTargets, setOpenTargets] = useState<Record<string, AgentOpenTargets>>({});
   const [configStats, setConfigStats] = useState<Record<string, AgentConfigStat>>({});
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -220,6 +225,34 @@ export default function AgentSniff({ onNavigate }: AgentSniffProps) {
       setIsSniffing(false);
     }
   }, [isSniffing, loadOpenTargets, loadConfigStats]);
+
+  const pickCliPath = useCallback(async () => {
+    if (picking) return;
+    setPicking("cli");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const path = await (invoke("pick_agent_cli_path") as Promise<string | null>);
+      if (path) setFormCliPath(path);
+    } catch (err) {
+      setStatusMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPicking(null);
+    }
+  }, [picking, setStatusMsg]);
+
+  const pickConfigDir = useCallback(async () => {
+    if (picking) return;
+    setPicking("config");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const path = await (invoke("pick_agent_config_dir") as Promise<string | null>);
+      if (path) setFormConfigDir(path);
+    } catch (err) {
+      setStatusMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPicking(null);
+    }
+  }, [picking, setStatusMsg]);
 
   const handleManualAdd = useCallback(async () => {
     const name = formName.trim();
@@ -506,27 +539,51 @@ export default function AgentSniff({ onNavigate }: AgentSniffProps) {
               <label className="form-label" htmlFor="agent-cli-path">
                 CLI/App路径
               </label>
-              <input
-                type="text"
-                className="form-input"
-                id="agent-cli-path"
-                placeholder="例如: /usr/local/bin/myagent 或 /Applications/MyAgent.app"
-                value={formCliPath}
-                onChange={(e) => setFormCliPath(e.target.value)}
-              />
+              <div className="form-input-with-action">
+                <input
+                  type="text"
+                  className="form-input"
+                  id="agent-cli-path"
+                  placeholder="例如: /usr/local/bin/myagent 或 /Applications/MyAgent.app"
+                  value={formCliPath}
+                  onChange={(e) => setFormCliPath(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="form-input-action"
+                  data-tooltip="选择 CLI 可执行文件或 App"
+                  aria-label="选择 CLI 可执行文件或 App"
+                  onClick={pickCliPath}
+                  disabled={picking !== null}
+                >
+                  <IconFolderPick />
+                </button>
+              </div>
             </div>
             <div className="form-group">
               <label className="form-label" htmlFor="agent-config-dir">
                 配置目录
               </label>
-              <input
-                type="text"
-                className="form-input"
-                id="agent-config-dir"
-                placeholder="例如: ~/.myagent"
-                value={formConfigDir}
-                onChange={(e) => setFormConfigDir(e.target.value)}
-              />
+              <div className="form-input-with-action">
+                <input
+                  type="text"
+                  className="form-input"
+                  id="agent-config-dir"
+                  placeholder="例如: ~/.myagent"
+                  value={formConfigDir}
+                  onChange={(e) => setFormConfigDir(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="form-input-action"
+                  data-tooltip="选择配置目录"
+                  aria-label="选择配置目录"
+                  onClick={pickConfigDir}
+                  disabled={picking !== null}
+                >
+                  <IconFolderPick />
+                </button>
+              </div>
             </div>
           </div>
           <div className="modal-footer">

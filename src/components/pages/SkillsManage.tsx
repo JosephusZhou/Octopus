@@ -564,29 +564,23 @@ export default function SkillsManage() {
     }
   }, [isChecking, scanRepoChangesAfter]);
 
-  const doPickLocal = useCallback(async () => {
+  const pickLocalDir = useCallback(async () => {
     if (isAdding || isPickingLocalFolder.current) return;
     isPickingLocalFolder.current = true;
     setFormError("");
-    setStatusMsg("请选择本地 Skill 目录…");
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const pickedPath = (await invoke("pick_skill_folder_path", {
         title: "选择 Skill 目录（需包含 SKILL.md）",
-      }).catch(() => null)) as string | null;
-      if (!pickedPath) {
-        setStatusMsg("已取消选择");
-        return;
-      }
-      setLocalPath(pickedPath);
-      await checkAndImportLocal(pickedPath, addTag.trim());
+      })) as string | null;
+      if (pickedPath) setLocalPath(pickedPath);
     } catch (e) {
       setFormError(String(e));
-      setStatusMsg(`导入失败: ${e}`);
+      setStatusMsg(`选择目录失败: ${e}`);
     } finally {
       isPickingLocalFolder.current = false;
     }
-  }, [isAdding, addTag]);
+  }, [isAdding]);
 
   const doImportLocal = useCallback(
     async (path: string, tag: string, overwriteIds?: string[]) => {
@@ -1862,30 +1856,34 @@ export default function SkillsManage() {
                 </p>
                 <div className="form-group">
                   <label className="form-label" htmlFor="skill-local-path">
-                    目录路径 <span className="form-label-optional">可选，也可点下方按钮选择</span>
+                    目录路径 <span className="form-label-optional">可选，也可点右侧图标选择</span>
                   </label>
-                  <input
-                    id="skill-local-path"
-                    type="text"
-                    className="form-input"
-                    placeholder="例如: ~/Downloads/my-skill"
-                    value={localPath}
-                    onChange={(e) => setLocalPath(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") void doAddLocalPath();
-                    }}
-                  />
+                  <div className="form-input-with-action">
+                    <input
+                      id="skill-local-path"
+                      type="text"
+                      className="form-input"
+                      placeholder="例如: ~/Downloads/my-skill"
+                      value={localPath}
+                      onChange={(e) => setLocalPath(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void doAddLocalPath();
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="form-input-action"
+                      data-tooltip="选择 Skill 目录"
+                      aria-label="选择 Skill 目录"
+                      onClick={() => void pickLocalDir()}
+                      disabled={isAdding || dupChecking}
+                    >
+                      <IconFolder />
+                    </button>
+                  </div>
                 </div>
                 {formError && <div className="form-error">{formError}</div>}
                 <div className="skill-add-actions">
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() => void doPickLocal()}
-                    disabled={isAdding || dupChecking}
-                  >
-                    浏览文件夹…
-                  </button>
                   <button
                     type="button"
                     className="btn btn-primary"
