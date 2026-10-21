@@ -62,6 +62,8 @@ struct ProjectMcpSpec {
 
 struct AgentProjectSpec {
     name: &'static str,
+    /// Root prompt file to write; `None` means the agent reads the shared `AGENTS.md`
+    /// directly and no pointer file (CLAUDE.md / GEMINI.md) is generated.
     root_file: Option<&'static str>,
     config_dir: &'static str,
     /// sub-dirs for Full mode (officially supported / common skeleton)
@@ -70,23 +72,22 @@ struct AgentProjectSpec {
     shared_sub_dirs: &'static [&'static str],
     /// extra files to create inside config_dir in Full mode
     config_files: &'static [(&'static str, &'static str)], // (name, content)
+    /// true: Full/Symlink 模式把 `<config_dir>/skills` 链到通用 `.agents/skills`；
+    /// false: 直接依赖通用 `.agents/skills`（或原生兼容位），不建不链自己的 skills 目录。
+    skills_own_dir: bool,
     /// project-level MCP config file (written as a merge, keyed by server title)
     mcp: Option<ProjectMcpSpec>,
 }
 
-/// Shared sub-dirs under `.agents/` and symlinked into each agent config dir (Symlink mode).
-/// Full mode uses per-agent `full_sub_dirs` instead — sets intentionally differ.
-const SHARED_SUB_DIRS: &[&str] = &["commands", "rules", "skills", "agents"];
-const PI_SHARED_SUB_DIRS: &[&str] = &["skills"];
-
 static AGENT_SPECS: &[AgentProjectSpec] = &[
     AgentProjectSpec {
         name: "claude-code",
-        root_file: Some("CLAUDE.md"),
+        root_file: None,
         config_dir: ".claude",
         full_sub_dirs: &["commands", "agents"],
-        shared_sub_dirs: SHARED_SUB_DIRS,
+        shared_sub_dirs: &["commands", "agents"],
         config_files: &[],
+        skills_own_dir: true,
         mcp: Some(ProjectMcpSpec {
             file: ".mcp.json",
             dialect: McpDialect::JsonMcpServers,
@@ -98,8 +99,9 @@ static AGENT_SPECS: &[AgentProjectSpec] = &[
         root_file: Some("AGENTS.md"),
         config_dir: ".codex",
         full_sub_dirs: &[],
-        shared_sub_dirs: SHARED_SUB_DIRS,
-        config_files: &[("instructions.md", "")],
+        shared_sub_dirs: &[],
+        config_files: &[],
+        skills_own_dir: false,
         mcp: Some(ProjectMcpSpec {
             file: ".codex/config.toml",
             dialect: McpDialect::TomlMcpServers,
@@ -110,9 +112,10 @@ static AGENT_SPECS: &[AgentProjectSpec] = &[
         name: "opencode",
         root_file: Some("AGENTS.md"),
         config_dir: ".opencode",
-        full_sub_dirs: &["agent", "command", "plugin", "tool"],
-        shared_sub_dirs: SHARED_SUB_DIRS,
+        full_sub_dirs: &["agents", "commands", "plugins", "tools"],
+        shared_sub_dirs: &["agents", "commands", "plugins", "tools"],
         config_files: &[],
+        skills_own_dir: false,
         mcp: Some(ProjectMcpSpec {
             file: "opencode.json",
             dialect: McpDialect::JsonMcp,
@@ -121,14 +124,15 @@ static AGENT_SPECS: &[AgentProjectSpec] = &[
     },
     AgentProjectSpec {
         name: "antigravity",
-        root_file: Some("GEMINI.md"),
-        config_dir: ".gemini",
-        full_sub_dirs: &["commands"],
-        shared_sub_dirs: SHARED_SUB_DIRS,
+        root_file: None,
+        config_dir: ".agents",
+        full_sub_dirs: &[],
+        shared_sub_dirs: &[],
         config_files: &[],
+        skills_own_dir: false,
         mcp: Some(ProjectMcpSpec {
-            file: ".gemini/settings.json",
-            dialect: McpDialect::JsonGeminiMixed,
+            file: ".agents/mcp_config.json",
+            dialect: McpDialect::JsonAntigravity,
             jsonc: false,
         }),
     },
@@ -137,10 +141,11 @@ static AGENT_SPECS: &[AgentProjectSpec] = &[
         root_file: Some("AGENTS.md"),
         config_dir: ".workbuddy",
         full_sub_dirs: &["rules", "skills"],
-        shared_sub_dirs: SHARED_SUB_DIRS,
+        shared_sub_dirs: &["rules"],
         config_files: &[],
+        skills_own_dir: true,
         mcp: Some(ProjectMcpSpec {
-            file: ".mcp.json",
+            file: ".workbuddy/mcp.json",
             dialect: McpDialect::JsonMcpServers,
             jsonc: false,
         }),
@@ -148,12 +153,13 @@ static AGENT_SPECS: &[AgentProjectSpec] = &[
     AgentProjectSpec {
         name: "pi",
         root_file: Some("AGENTS.md"),
-        config_dir: ".pi/agent",
-        full_sub_dirs: &["skills"],
-        shared_sub_dirs: PI_SHARED_SUB_DIRS,
+        config_dir: ".pi",
+        full_sub_dirs: &[],
+        shared_sub_dirs: &[],
         config_files: &[],
+        skills_own_dir: false,
         mcp: Some(ProjectMcpSpec {
-            file: ".pi/agent/mcp.json",
+            file: ".pi/mcp.json",
             dialect: McpDialect::JsonMcpServers,
             jsonc: false,
         }),
@@ -174,18 +180,6 @@ fn resolve_target_dir(target_dir: &str) -> Result<PathBuf, String> {
         return Err(format!("目标目录不存在或不是目录: {}", base.display()));
     }
     Ok(base)
-}
-
-fn root_file_template(root_file: &str) -> &'static str {
-    match root_file {
-        "CLAUDE.md" => {
-            "# CLAUDE.md\n\nRead `AGENTS.md` for full project guidance before any work.\n"
-        }
-        "GEMINI.md" => {
-            "# gemini.md\n\nRead `AGENTS.md` for full project guidance before any work.\n"
-        }
-        _ => "# Project AI Configuration\n",
-    }
 }
 
 fn agents_md_content() -> &'static str {
@@ -323,8 +317,8 @@ fn create_dir_symlink(
 }
 
 /// Build a relative link from an agent config directory to the project-level
-/// shared directory. Nested layouts such as `.pi/agent` need two `..` levels,
-/// while existing one-level layouts such as `.claude` need only one.
+/// shared directory. Depth matches the config_dir nesting (one `..` per level),
+/// e.g. `.claude` → `../.agents/<sub>`.
 fn shared_link_source(config_dir: &str, sub_dir: &str) -> PathBuf {
     let mut source = PathBuf::new();
     for _ in Path::new(config_dir).components() {
@@ -397,8 +391,9 @@ pub fn check_project_config_exists(
 
         push_existing(base.join(spec.config_dir), true);
 
-        // Full mode + selected skills: each agent's skills dir becomes a link.
-        if with_skills && *mode == InitMode::Full {
+        // Selected skills + agent owns its skills dir: `<config_dir>/skills` becomes
+        // a link to the shared `.agents/skills` (both Full and Symlink modes).
+        if with_skills && spec.skills_own_dir {
             push_existing(base.join(spec.config_dir).join("skills"), true);
         }
     }
@@ -484,8 +479,6 @@ fn run_init(
     match mode {
         InitMode::Full => {
             let mut seen_config_dirs: HashSet<String> = HashSet::new();
-            // AGENTS.md is the shared guide written above; dedupe other agent root files.
-            let mut written_root_files: HashSet<String> = HashSet::new();
 
             for req in selected_agents {
                 let spec = match find_spec(&req.name) {
@@ -495,20 +488,6 @@ fn run_init(
                         continue;
                     }
                 };
-
-                if let Some(rf) = spec.root_file.filter(|rf| *rf != "AGENTS.md") {
-                    if written_root_files.insert(rf.to_string()) {
-                        let p = base.join(rf);
-                        write_file(
-                            &p,
-                            root_file_template(rf),
-                            overwrite,
-                            &mut created,
-                            &mut skipped,
-                            &mut errors,
-                        );
-                    }
-                }
 
                 let config_dir_key = spec.config_dir.to_string();
                 if !seen_config_dirs.insert(config_dir_key) {
@@ -561,7 +540,6 @@ fn run_init(
             }
 
             let mut seen_config_dirs: HashSet<String> = HashSet::new();
-            let mut written_root_files: HashSet<String> = HashSet::new();
 
             for req in selected_agents {
                 let spec = match find_spec(&req.name) {
@@ -571,21 +549,6 @@ fn run_init(
                         continue;
                     }
                 };
-
-                // AGENTS.md is the shared guide written above; other root files point to it.
-                if let Some(rf) = spec.root_file.filter(|rf| *rf != "AGENTS.md") {
-                    if written_root_files.insert(rf.to_string()) {
-                        let p = base.join(rf);
-                        write_file(
-                            &p,
-                            root_file_template(rf),
-                            overwrite,
-                            &mut created,
-                            &mut skipped,
-                            &mut errors,
-                        );
-                    }
-                }
 
                 let config_dir_key = spec.config_dir.to_string();
                 if !seen_config_dirs.insert(config_dir_key) {
@@ -609,36 +572,58 @@ fn run_init(
                         &mut errors,
                     );
                 }
+
+                // Agent 自建 skills 目录时，把 `<config_dir>/skills` 链到通用 `.agents/skills`；
+                // 其余 agent 直接读 `.agents/skills`，不建不链。
+                if with_skills && spec.skills_own_dir {
+                    create_dir_symlink(
+                        &shared_link_source(spec.config_dir, "skills"),
+                        &config_dir.join("skills"),
+                        overwrite,
+                        &mut created,
+                        &mut skipped,
+                        &mut errors,
+                    );
+                }
             }
         }
     }
 
     // --- Project-level MCP files (merge by server title; never gated on overwrite) ---
     if !mcp_servers.is_empty() {
-        // Dedupe target files across selected agents (claude-code / workbuddy
-        // both share the repo-root `.mcp.json`).
-        let mut mcp_files: Vec<(PathBuf, McpDialect, bool)> = Vec::new();
+        // Per-agent target files; summary line dedupes identical paths.
+        // claude-code 写仓库根 `.mcp.json`，workbuddy 写 `.workbuddy/mcp.json`，
+        // 两者已是不同文件，不再去重为同一目标。
+        let mut targets: Vec<(&'static AgentProjectSpec, PathBuf, McpDialect, bool)> = Vec::new();
         for req in selected_agents {
             let spec = match find_spec(&req.name) {
                 Some(s) => s,
                 None => continue, // unknown agent already reported above
             };
             if let Some(mcp) = &spec.mcp {
-                let path = base.join(mcp.file);
-                if !mcp_files.iter().any(|(p, _, _)| p == &path) {
-                    mcp_files.push((path, mcp.dialect, mcp.jsonc));
-                }
+                targets.push((spec, base.join(mcp.file), mcp.dialect, mcp.jsonc));
             }
         }
-        for (path, dialect, jsonc) in mcp_files {
+
+        let mut written_files: HashSet<PathBuf> = HashSet::new();
+        for (spec, path, dialect, jsonc) in &targets {
             let mut ok_count = 0usize;
             for draft in mcp_servers {
-                match crate::mcp_config::apply_draft_to_file(&path, dialect, jsonc, draft) {
+                // Pi 内置 MCP 仅支持 stdio 与 streamable HTTP，拒绝 legacy SSE；
+                // JsonMcpServers 方言被 claude-desktop/workbuddy/pi 共用，按 agent 名拦截。
+                if spec.name == "pi" && draft.transport == "sse" {
+                    errors.push(format!(
+                        "写入 MCP「{}」失败: Pi 内置 MCP 仅支持 stdio 与 streamable HTTP，不支持 SSE",
+                        draft.title
+                    ));
+                    continue;
+                }
+                match crate::mcp_config::apply_draft_to_file(path, *dialect, *jsonc, draft) {
                     Ok(_) => ok_count += 1,
                     Err(e) => errors.push(format!("写入 MCP「{}」失败: {}", draft.title, e)),
                 }
             }
-            if ok_count > 0 {
+            if ok_count > 0 && written_files.insert(path.clone()) {
                 created.push(format!("{} (MCP {} 项)", path.display(), ok_count));
             }
         }
@@ -663,9 +648,9 @@ fn run_init(
             );
         }
 
-        // Full mode: link each agent's skills dir to the shared store so every
-        // selected agent sees the same skills. Symlink mode already links
-        // `<config_dir>/skills` above via the selected agent's shared sub-dirs.
+        // Full mode: agents that own their skills dir get `<config_dir>/skills`
+        // linked to the shared store; others read `.agents/skills` directly.
+        // Symlink mode links `<config_dir>/skills` above under the same gate.
         if *mode == InitMode::Full {
             let mut seen_config_dirs: HashSet<String> = HashSet::new();
             for req in selected_agents {
@@ -673,7 +658,7 @@ fn run_init(
                     Some(s) => s,
                     None => continue,
                 };
-                if !seen_config_dirs.insert(spec.config_dir.to_string()) {
+                if !spec.skills_own_dir || !seen_config_dirs.insert(spec.config_dir.to_string()) {
                     continue;
                 }
                 let config_dir = base.join(spec.config_dir);
@@ -826,8 +811,11 @@ mod tests {
         assert!(base.join(".workbuddy").is_dir());
         assert!(base.join(".workbuddy/rules").is_dir());
         assert!(base.join(".workbuddy/skills").is_dir());
-        assert!(base.join(".codex/instructions.md").is_file());
-        assert!(base.join(".opencode/agent").is_dir());
+        // Codex: 不再生成 instructions.md，也不建自建 skills 目录。
+        assert!(!base.join(".codex/instructions.md").exists());
+        // OpenCode Full 子目录用复数。
+        assert!(base.join(".opencode/agents").is_dir());
+        assert!(!base.join(".opencode/agent").exists());
 
         // Only one AGENTS.md create entry
         let agents_creates = result
@@ -841,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn full_mode_creates_shared_guide_without_agents_md_agent() {
+    fn full_mode_writes_shared_agents_md_without_pointer() {
         let base = scratch("full-shared-guide");
         let result = init_project_config(
             base.to_str().unwrap(),
@@ -854,32 +842,36 @@ mod tests {
         )
         .unwrap();
         assert!(result.errors.is_empty(), "{:?}", result.errors);
+        // claude-code 直读 AGENTS.md，不再生成 CLAUDE.md 指针。
         assert!(base.join("AGENTS.md").is_file());
-        assert_eq!(
-            fs::read_to_string(base.join("CLAUDE.md")).unwrap(),
-            "# CLAUDE.md\n\nRead `AGENTS.md` for full project guidance before any work.\n"
-        );
+        assert!(!base.join("CLAUDE.md").exists());
         cleanup(&base);
     }
 
     #[test]
-    fn full_mode_creates_gemini_pointer() {
-        let base = scratch("full-gemini-pointer");
+    fn full_mode_antigravity_uses_agents_dir_and_no_pointer() {
+        let base = scratch("full-antigravity");
+        let mcps = vec![mcp_draft("ag-server")];
         let result = init_project_config(
             base.to_str().unwrap(),
             &[req("antigravity")],
             &InitMode::Full,
             false,
-            &[],
+            &mcps,
             &[],
             SkillInstallMode::Link,
         )
         .unwrap();
         assert!(result.errors.is_empty(), "{:?}", result.errors);
-        assert_eq!(
-            fs::read_to_string(base.join("GEMINI.md")).unwrap(),
-            "# gemini.md\n\nRead `AGENTS.md` for full project guidance before any work.\n"
-        );
+        // 不生成 GEMINI.md 指针，也不建 .gemini 项目目录。
+        assert!(!base.join("GEMINI.md").exists());
+        assert!(!base.join(".gemini").exists());
+        // MCP 落到 .agents/mcp_config.json（JsonAntigravity）。
+        let doc: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(base.join(".agents/mcp_config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["mcpServers"]["ag-server"]["command"], "npx");
         cleanup(&base);
     }
 
@@ -900,9 +892,11 @@ mod tests {
         assert!(result.errors.is_empty(), "{:?}", result.errors);
 
         assert!(base.join("AGENTS.md").is_file());
-        assert!(base.join(".pi/agent/skills").is_dir());
+        // 项目侧无 agent 层，也不建自建 skills 目录。
+        assert!(!base.join(".pi/agent").exists());
+        assert!(!base.join(".pi/skills").exists());
 
-        let path = ".pi/agent/mcp.json";
+        let path = ".pi/mcp.json";
         let doc: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(base.join(path)).unwrap()).unwrap();
         assert_eq!(doc["mcpServers"]["shared-server"]["command"], "npx");
@@ -911,12 +905,44 @@ mod tests {
     }
 
     #[test]
-    fn skip_existing_without_overwrite() {
-        let base = scratch("skip");
-        fs::write(base.join("CLAUDE.md"), "user content\n").unwrap();
+    fn project_pi_rejects_sse_mcp() {
+        let base = scratch("pi-sse-reject");
+        let sse = McpDraft {
+            title: "sse-server".into(),
+            transport: "sse".into(),
+            command: String::new(),
+            args: vec![],
+            env: std::collections::HashMap::new(),
+            url: "https://example.com/sse".into(),
+            headers: std::collections::HashMap::new(),
+        };
         let result = init_project_config(
             base.to_str().unwrap(),
-            &[req("claude-code")],
+            &[req("pi")],
+            &InitMode::Full,
+            false,
+            &[sse],
+            &[],
+            SkillInstallMode::Link,
+        )
+        .unwrap();
+        assert!(
+            result.errors.iter().any(|e| e.contains("SSE")),
+            "{:?}",
+            result.errors
+        );
+        // 不写文件。
+        assert!(!base.join(".pi/mcp.json").exists());
+        cleanup(&base);
+    }
+
+    #[test]
+    fn skip_existing_without_overwrite() {
+        let base = scratch("skip");
+        fs::write(base.join("AGENTS.md"), "user content\n").unwrap();
+        let result = init_project_config(
+            base.to_str().unwrap(),
+            &[req("workbuddy")],
             &InitMode::Full,
             false,
             &[],
@@ -924,9 +950,9 @@ mod tests {
             SkillInstallMode::Link,
         )
         .unwrap();
-        assert!(result.skipped.iter().any(|p| p.ends_with("CLAUDE.md")));
+        assert!(result.skipped.iter().any(|p| p.ends_with("AGENTS.md")));
         assert_eq!(
-            fs::read_to_string(base.join("CLAUDE.md")).unwrap(),
+            fs::read_to_string(base.join("AGENTS.md")).unwrap(),
             "user content\n"
         );
         cleanup(&base);
@@ -935,51 +961,35 @@ mod tests {
     #[test]
     fn overwrite_file_but_not_nonempty_dir() {
         let base = scratch("overwrite-safe");
-        fs::write(base.join("CLAUDE.md"), "old\n").unwrap();
+        let lib_skill = scratch("overwrite-safe-src");
+        fs::write(lib_skill.join("SKILL.md"), "---\nname: demo\n---\n").unwrap();
+        // User-owned nonempty .claude/skills must survive overwrite.
         fs::create_dir_all(base.join(".claude/skills")).unwrap();
         fs::write(base.join(".claude/skills/keep.md"), "keep\n").unwrap();
+        let sources = vec![("demo".to_string(), lib_skill.clone())];
 
-        // Full mode does not touch .claude/skills (not in full_sub_dirs), but we
-        // exercise remove_entry_for_overwrite via Symlink mode on skills link dest.
-        let result = init_project_config(
-            base.to_str().unwrap(),
+        // Full mode + overwrite: the nonempty real directory is never wiped;
+        // the skills-link attempt records a nonempty-dir error instead.
+        let result = run_init(
+            &base,
             &[req("claude-code")],
             &InitMode::Full,
             true,
             &[],
-            &[],
+            &sources,
             SkillInstallMode::Link,
-        )
-        .unwrap();
-        assert!(result.errors.is_empty(), "{:?}", result.errors);
-        let claude = fs::read_to_string(base.join("CLAUDE.md")).unwrap();
-        assert_eq!(
-            claude,
-            "# CLAUDE.md\n\nRead `AGENTS.md` for full project guidance before any work.\n"
         );
-        assert!(base.join(".claude/skills/keep.md").is_file());
-
-        // Symlink mode with overwrite: nonempty .claude/skills must not be wiped
-        let result2 = init_project_config(
-            base.to_str().unwrap(),
-            &[req("claude-code")],
-            &InitMode::Symlink,
-            true,
-            &[],
-            &[],
-            SkillInstallMode::Link,
-        )
-        .unwrap();
         assert!(
             base.join(".claude/skills/keep.md").is_file(),
             "user skill must survive"
         );
         assert!(
-            result2.errors.iter().any(|e| e.contains("非空目录")),
+            result.errors.iter().any(|e| e.contains("非空目录")),
             "expected nonempty-dir error, got: {:?}",
-            result2.errors
+            result.errors
         );
         cleanup(&base);
+        cleanup(&lib_skill);
     }
 
     #[test]
@@ -996,7 +1006,8 @@ mod tests {
         .unwrap();
         let paths: Vec<_> = result.existing.iter().map(|e| e.path.clone()).collect();
         assert_eq!(paths.iter().filter(|p| p.ends_with("AGENTS.md")).count(), 1);
-        assert!(paths.iter().any(|p| p.ends_with("CLAUDE.md")), "{paths:?}");
+        // claude-code 无指针文件，既有 CLAUDE.md 不被纳入探测结果。
+        assert!(!paths.iter().any(|p| p.ends_with("CLAUDE.md")), "{paths:?}");
         assert!(paths.iter().any(|p| p.ends_with("AGENTS.md")), "{paths:?}");
         cleanup(&base);
     }
@@ -1033,19 +1044,16 @@ mod tests {
         // Relative link resolves from dest parent
         assert!(base.join(".claude").join(&target).is_dir());
 
-        // Shared AGENTS.md root once; CLAUDE.md points to it.
+        // 共享 AGENTS.md 只写一次；claude-code 不再生成 CLAUDE.md 指针。
         assert!(base.join("AGENTS.md").is_file());
-        assert!(base.join("CLAUDE.md").is_file());
-        let pointer = fs::read_to_string(base.join("CLAUDE.md")).unwrap();
-        assert!(pointer.contains("`AGENTS.md`"), "{pointer}");
-        assert!(!pointer.contains(".agents/AGENTS.md"), "{pointer}");
+        assert!(!base.join("CLAUDE.md").exists());
 
         cleanup(&base);
     }
 
     #[cfg(unix)]
     #[test]
-    fn symlink_mode_uses_nested_relative_links_for_pi() {
+    fn symlink_mode_pi_uses_single_layer_no_own_skills_link() {
         let base = scratch("pi-symlink");
         let result = init_project_config(
             base.to_str().unwrap(),
@@ -1059,20 +1067,11 @@ mod tests {
         .unwrap();
         assert!(result.errors.is_empty(), "{:?}", result.errors);
 
-        let config_dir = ".pi/agent";
-        let link = base.join(config_dir).join("skills");
-        assert!(fs::symlink_metadata(&link)
-            .unwrap()
-            .file_type()
-            .is_symlink());
-        assert_eq!(
-            fs::read_link(&link).unwrap(),
-            PathBuf::from("../../.agents/skills")
-        );
-        assert!(base.join(config_dir).join("../../.agents/skills").is_dir());
-        assert!(!base.join(config_dir).join("commands").exists());
-        assert!(base.join(".agents/skills").is_dir());
-
+        // Pi 项目位为单层 `.pi`，无 agent 层，也不链自己的 skills 目录。
+        assert!(base.join(".pi").is_dir());
+        assert!(!base.join(".pi/agent").exists());
+        assert!(!base.join(".pi/skills").exists());
+        assert!(!base.join(".pi").join("commands").exists());
         cleanup(&base);
     }
 
@@ -1137,7 +1136,8 @@ mod tests {
         .unwrap();
         assert!(result.errors.is_empty(), "{:?}", result.errors);
 
-        // claude-code + workbuddy share the repo-root .mcp.json, written once
+        // claude-code 写仓库根 `.mcp.json`，workbuddy 写 `.workbuddy/mcp.json`，
+        // 两个独立文件分别写入，不再去重为同一目标。
         let mcp_json = base.join(".mcp.json");
         assert!(mcp_json.is_file());
         let doc: serde_json::Value =
@@ -1145,12 +1145,19 @@ mod tests {
         let server = &doc["mcpServers"]["shared-server"];
         assert_eq!(server["command"], "npx");
         assert_eq!(server["args"][0], "-y");
+
+        let wb_json = base.join(".workbuddy/mcp.json");
+        assert!(wb_json.is_file());
+        let wb_doc: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&wb_json).unwrap()).unwrap();
+        assert_eq!(wb_doc["mcpServers"]["shared-server"]["command"], "npx");
+
         let mcp_lines = result
             .created
             .iter()
-            .filter(|p| p.contains(".mcp.json"))
+            .filter(|p| p.contains("mcp.json"))
             .count();
-        assert_eq!(mcp_lines, 1, "created: {:?}", result.created);
+        assert_eq!(mcp_lines, 2, "created: {:?}", result.created);
 
         // codex project MCP lands in TOML dialect
         let toml_text = fs::read_to_string(base.join(".codex/config.toml")).unwrap();
@@ -1163,9 +1170,9 @@ mod tests {
     #[test]
     fn mcp_merge_preserves_existing_file_content() {
         let base = scratch("mcp-merge");
-        fs::create_dir_all(base.join(".gemini")).unwrap();
+        fs::create_dir_all(base.join(".agents")).unwrap();
         fs::write(
-            base.join(".gemini/settings.json"),
+            base.join(".agents/mcp_config.json"),
             "{\n  \"theme\": \"dark\",\n  \"mcpServers\": {\n    \"keep\": { \"command\": \"x\" }\n  }\n}\n",
         )
         .unwrap();
@@ -1181,9 +1188,10 @@ mod tests {
         )
         .unwrap();
         assert!(result.errors.is_empty(), "{:?}", result.errors);
-        let doc: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(base.join(".gemini/settings.json")).unwrap())
-                .unwrap();
+        let doc: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(base.join(".agents/mcp_config.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(doc["theme"], "dark");
         assert_eq!(doc["mcpServers"]["keep"]["command"], "x");
         assert_eq!(doc["mcpServers"]["new-server"]["command"], "npx");

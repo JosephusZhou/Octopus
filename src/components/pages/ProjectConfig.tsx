@@ -306,7 +306,7 @@ export default function ProjectConfig() {
           </div>
         </div>
 
-        {/* Agent 勾选 */}
+        {/* Agent 选择 */}
         <div className="form-group">
           <div className="agent-pick-header">
             <label className="form-label">
@@ -350,9 +350,6 @@ export default function ProjectConfig() {
                     {icon ?? agent.displayName.slice(0, 2).toUpperCase()}
                   </span>
                   <span className="agent-pick-name">{agent.displayName}</span>
-                  <span className={`agent-pick-check ${sel ? "checked" : ""}`}>
-                    {sel ? "✓" : ""}
-                  </span>
                 </button>
               );
             })}
@@ -367,18 +364,13 @@ export default function ProjectConfig() {
               <button
                 key={m}
                 type="button"
-                className={`agent-pick proj-mode-option ${mode === m ? "selected" : ""}`}
+                className={`agent-pick proj-mode-option proj-mode-option--plain ${mode === m ? "selected" : ""}`}
                 onClick={() => setMode(m)}
                 disabled={busy}
               >
-                <div className="proj-mode-option-row">
-                  <span className={`agent-pick-check ${mode === m ? "checked" : ""}`}>
-                    {mode === m ? "✓" : ""}
-                  </span>
-                  <span className="agent-pick-name">
-                    {m === "symlink" ? "软链接模式（推荐）" : "全量模式"}
-                  </span>
-                </div>
+                <span className="agent-pick-name">
+                  {m === "symlink" ? "软链接模式（推荐）" : "全量模式"}
+                </span>
                 <span className="proj-mode-option-desc">
                   {m === "symlink"
                     ? "在 .agents/ 存放共享内容（commands / rules / skills / agents），各 agent 配置目录对应子项软链接到此处。与全量模式的子目录集合不同：此处为统一共享集。Windows 需开启开发者模式。"

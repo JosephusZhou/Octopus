@@ -63,7 +63,7 @@
 | `ClaudeJsonUser` | `mcpServers` | JSON | `claude-code`（独立方言，因为文件位置特殊：`~/.claude.json` 而非 `~/.claude/*.json`） |
 | `JsonMcpServers` | `mcpServers` | JSON / JSONC（按 spec） | `claude-desktop` / `workbuddy` / `pi` |
 | `JsonMcp` | `mcp`（**不是** `mcpServers`） | JSON / JSONC（`json5` 解析） | `opencode` |
-| `JsonGeminiMixed` | `mcpServers`，远程用 `httpUrl`（非 `url`） | JSON | `antigravity` |
+| `JsonAntigravity` | `mcpServers`，**仅写 stdio**（远程 `serverUrl` 不建模） | JSON | `antigravity`（闭源 Google App/IDE/CLI，非开源 gcli） |
 
 ### 3.2 MCP 路径（`agents::McpPath`）
 
@@ -77,12 +77,12 @@
 
 | Agent | Skills roots | 是否支持 |
 |-------|--------------|----------|
-| `codex` | `~/.codex/skills`, `~/.agents/skills` | ✅ |
+| `codex` | `~/.agents/skills`（现行官方 USER 位，不保留 legacy `~/.codex/skills`） | ✅ |
 | `claude-code` | `~/.claude/skills` | ✅ |
-| `claude-desktop` | — | ❌（云端 VM，无本地目录；客观限制） |
+| `claude-desktop` | — | ❌（skills 走账户同步，无本地文件目录） |
 | `opencode` | `~/.config/opencode/skills` | ✅ |
-| `antigravity` | `~/.gemini/skills`, `~/.gemini/antigravity-cli/skills` | ✅ |
-| `workbuddy` | `~/.workbuddy/skills` | ✅ |
+| `antigravity` | `~/.gemini/config/skills`（主）, `~/.gemini/antigravity-cli/skills`（CLI 根，兼容扫描） | ✅ |
+| `workbuddy` | `~/.workbuddy/skills`（半官方，待核实） | ✅ |
 | `pi` | `~/.pi/agent/skills` | ✅ |
 
 ### 3.4 写策略（已实现于 `mcp_config.rs`）
@@ -102,13 +102,13 @@
 
 | sniff `name` | MCP 文件 | 方言 | Skills 根 |
 |--------------|----------|------|-----------|
-| `codex` | `~/.codex/config.toml` | `TomlMcpServers` | `~/.codex/skills` + `~/.agents/skills` |
+| `codex` | `~/.codex/config.toml` | `TomlMcpServers` | `~/.agents/skills` |
 | `claude-code` | `~/.claude.json` 顶层 `mcpServers` | `ClaudeJsonUser` | `~/.claude/skills` |
 | `claude-desktop` | `~/Library/Application Support/Claude*/claude_desktop_config.json` | `JsonMcpServers` | — |
 | `opencode` | `~/.config/opencode/opencode.{jsonc,json}` | `JsonMcp` | `~/.config/opencode/skills` |
-| `antigravity` | `~/.gemini/settings.json` | `JsonGeminiMixed` | `~/.gemini/skills` + `~/.gemini/antigravity-cli/skills` |
-| `workbuddy` | `~/.workbuddy/.mcp.json` | `JsonMcpServers` | `~/.workbuddy/skills` |
-| `pi` | `~/.pi/agent/mcp.json` | `JsonMcpServers` | `~/.pi/agent/skills` |
+| `antigravity` | `~/.gemini/config/mcp_config.json` | `JsonAntigravity` | `~/.gemini/config/skills` + `~/.gemini/antigravity-cli/skills` |
+| `workbuddy` | `~/.workbuddy/mcp.json`（无点前缀） | `JsonMcpServers` | `~/.workbuddy/skills`（待核实） |
+| `pi` | `~/.pi/agent/mcp.json`（内置 builtin:mcp） | `JsonMcpServers` | `~/.pi/agent/skills` |
 
 ---
 
@@ -125,14 +125,14 @@
 | 文件 | `~/.codex/config.toml` |
 | 方言 | `TomlMcpServers` |
 | 结构 | `[mcp_servers.<server-name>]` |
-| stdio | `type = "stdio"`，`command`，`args`，可选 `enabled`/`cwd`/`startup_timeout_sec`；env 子表 `[mcp_servers.<name>.env]` |
-| http | `type = "http"`，`url`（+ 官方 header/auth 键） |
+| stdio | 官方按 `command` 推断，**不写 `type`**；`command`，`args`，可选 `enabled = true`；env 子表 `[mcp_servers.<name>.env]` |
+| http | 官方按 `url` 推断，**不写 `type`**；`url` + `http_headers`（不是 `headers`），可选 `enabled = true` |
 | CLI | `codex mcp add` / `codex mcp list` |
 
 **Skills**
 
-- 本机：`~/.codex/skills/<skill>/SKILL.md`
-- 官方：`~/.agents/skills`、仓库 `.agents/skills`
+- 主写位：`~/.agents/skills/<skill>/SKILL.md`（现行官方 USER 位置，不保留 legacy `~/.codex/skills`）
+- 项目：仓库 `.agents/skills`（原生读取，不建自建 skills 目录）
 - `config.toml` 中可有 `[[skills.config]]`（path / enabled）
 - 全局 `~/.codex/AGENTS.md`（不是 Skill，但是配置根一部分）
 
@@ -187,9 +187,9 @@
 
 **Skills**
 
-- Claude Desktop 属于官方 "Claude apps"（claude.ai 桌面壳），Skills 经**应用内 Settings → Features 上传 zip**、绑定账号、**云端 VM 执行**——**没有**本地磁盘 Skills 目录。
+- Claude Desktop 的 skills 走**账户同步**（Customize → Skills 上传、绑定账号），不读本地 `~/.claude/skills`；本地文件 skills 是 Claude Code 特性。
 - `agents.rs` 中 `skills_supported: false`，前端 `SKILL_UNSUPPORTED_AGENTS` 同步置灰。
-- 这是**客观限制**（云端执行而非本地），不是缺口。
+- 无本地磁盘 skills 目录，这是产品模型差异，不是缺口。
 
 ### 5.4 OpenCode (`opencode`)
 
@@ -220,25 +220,37 @@
 
 ### 5.5 Antigravity (`antigravity`)
 
-**配置根**：`~/.gemini`（Gemini CLI → Antigravity 迁移中；以**本机实测 + 官方迁移文档**双轨兼容）
+**性质**：闭源 Google Antigravity App/IDE/CLI（`agy`）；**不是**开源 Gemini CLI（gcli），
+本文不再保留 gcli 的 `settings.json` / `httpUrl` 口径。
+
+**配置根**：`~/.gemini`
 
 **MCP**
 
-| 优先级 | 路径 | 说明 |
-|--------|------|------|
-| 主写（本机已验证） | `~/.gemini/settings.json` → `mcpServers` | stdio：`command`+`args`+`env`；远程：`httpUrl`（非 `url`） |
-| 兼容读 | `~/.gemini/config/mcp_config.json` | 迁移文档中的独立 MCP 配置；本机可能为空文件 |
-| CLI 设置 | `~/.gemini/antigravity-cli/settings.json` | 模型/权限等，**非**本机 MCP 主存 |
+| 项 | 值 |
+|----|-----|
+| 文件 | `~/.gemini/config/mcp_config.json` |
+| 方言 | `JsonAntigravity`（顶层 `mcpServers`） |
+| stdio | `command`（字符串）+ `args[]` + `env{}`；DTO 无 `cwd`，不写；不写 `type` |
+| 远程 | **本应用不建模**（`serverUrl`/oauth/`disabled` 等不写）；非 stdio 直接报错不落盘 |
+| 读取 | 识别已有文件的 `serverUrl` → http transport 仅用于回显；保留其它键 |
+
+**项目级 MCP**：`<repo>/.agents/mcp_config.json`（**不建** `.gemini` 项目目录）。
 
 **Skills**
 
 | 项 | 值 |
 |----|-----|
-| 常见全局 | `~/.gemini/skills/` |
-| 迁移文档 | `~/.gemini/antigravity-cli/skills/`、`.agents/skills/` |
-| 推荐 | 写优先 `~/.gemini/skills/`；读时兼容 antigravity-cli 路径 |
+| 主写位 | `~/.gemini/config/skills/`（App/IDE 全局） |
+| 兼容扫描 | `~/.gemini/antigravity-cli/skills/`（CLI 根） |
+| 项目 | 原生读 `.agents/skills`，不建自建 skills 目录 |
+
+**提示文件**：`AGENTS.md`（全局 `~/.gemini/AGENTS.md`）。GEMINI.md 也会被读取，但
+AgentBuddy 只维护 AGENTS.md，不生成 GEMINI.md 指针。
 
 ### 5.6 WorkBuddy (`workbuddy`)
+
+**性质**：腾讯桌面办公版（WorkBuddy.app）；不含 CodeBuddy Code CLI，本文不保留 CodeBuddy 口径。
 
 **配置根**：`~/.workbuddy`
 
@@ -246,17 +258,20 @@
 
 | 项 | 值 |
 |----|-----|
-| 文件 | `~/.workbuddy/.mcp.json`（本机已验证） |
-| 方言 | `JsonMcpServers` |
-| 注意 | 合并时**保留**产品自带 server（如 `connector-proxy` 一类），禁止整体覆盖文件 |
+| 文件 | `~/.workbuddy/mcp.json`（**无点前缀**，不是 `.workbuddy/.mcp.json`） |
+| 方言 | `JsonMcpServers`（顶层 `mcpServers`，stdio：`command`/`args`/`env`） |
+| 远程格式 | 官方未披露（待核实）；当前按通用 `type: "http"` + `url` + `headers` 写入 |
+| 注意 | 合并时**保留**产品自带 server，禁止整体覆盖文件 |
 
 **Skills**
 
 | 项 | 值 |
 |----|-----|
-| 全局 | `~/.workbuddy/skills/` |
-| 项目 | `.workbuddy/skills/` |
+| 全局 | `~/.workbuddy/skills/`（半官方，待核实） |
+| 项目 | `.workbuddy/skills/`（Full 模式自建目录并链到 `.agents/skills`） |
 | 格式 | 目录 + `SKILL.md` |
+
+**提示文件**：`AGENTS.md`。
 
 ### 5.7 Pi (`pi`)
 
@@ -266,15 +281,18 @@
 
 | 项 | 值 |
 |----|-----|
-| 文件 | `~/.pi/agent/mcp.json` |
-| 方言 | `JsonMcpServers` |
-| 结构 | 顶层 `mcpServers`；stdio：`command` + `args` + `env`；远程：`type` + `url` |
+| 内置扩展 | `builtin:mcp`：0.99.0 起内置，1.x 默认开启；**不**依赖社区 pi-mcp-adapter |
+| 全局文件 | `~/.pi/agent/mcp.json`（顶层 `mcpServers`，方言 `JsonMcpServers`） |
+| 项目文件 | `<repo>/.pi/mcp.json`（单层 `.pi`，无 `agent` 层） |
+| stdio | `command` + `args` + `env` |
+| 远程 | streamable HTTP；**仅支持 stdio 与 streamable HTTP，拒绝 legacy SSE**（按 agent 名拦截，不写文件并报错） |
 
 **Skills**
 
 | 项 | 值 |
 |----|-----|
 | 全局 | `~/.pi/agent/skills/<name>/SKILL.md` |
+| 项目 | 兼容 `.agents/skills`，不建 `.pi/skills` 自建目录 |
 
 **模型配置**（`pi_model_config.rs` 后端）：
 
@@ -298,13 +316,17 @@ UI 模型（`McpManage.tsx`）：
 - `command` / `args[]` / `env{}`
 - `url` / `headers{}`
 
-| UI | `ClaudeJsonUser` / `JsonMcpServers`（Claude Code / Desktop / WorkBuddy / Pi） | `JsonMcp`（OpenCode） | `TomlMcpServers`（Codex） | `JsonGeminiMixed`（Antigravity） |
+| UI | `ClaudeJsonUser` / `JsonMcpServers`（Claude Code / Desktop / WorkBuddy / Pi） | `JsonMcp`（OpenCode） | `TomlMcpServers`（Codex） | `JsonAntigravity`（Antigravity） |
 |----|------------------------------------------------------|------------------------------|-----------------------------|---------------------|
 | title | `mcpServers[title]` | `mcp[title]` | `mcp_servers.title` | `mcpServers[title]` |
-| stdio | `command` + `args` + `env`；可选 `type: "stdio"` | `type: "local"` + `command: [cmd, ...args]` + `environment` | `type="stdio"` + `command` + `args` + `[.env]` | `command` + `args` + `env` |
-| http | `type: "http"` + `url` + `headers` | `type: "remote"` + `url` + `headers` | `type="http"` + `url`（headers 按官方键） | **`httpUrl`**（非 `url`） |
-| sse | `type: "sse"` + `url` + `headers` | 映射为 `remote`（或文档等价） | 若官方仅 http，降级为 http 或跳过并提示 | 优先 `httpUrl`；需实测 |
+| stdio | `command` + `args` + `env`；可选 `type: "stdio"` | `type: "local"` + `command: [cmd, ...args]` + `environment` | **不写 `type`**；`command` + `args` + `[.env]` + `enabled = true` | `command`（字符串）+ `args[]` + `env{}`；不写 `type` |
+| http | `type: "http"` + `url` + `headers` | `type: "remote"` + `url` + `headers` | **不写 `type`**；`url` + `http_headers` + `enabled = true` | 不建模（仅 stdio，非 stdio 报错不落盘） |
+| sse | `type: "sse"` + `url` + `headers` | 映射为 `remote`（或文档等价） | 若官方仅 http，降级为 http 或跳过并提示 | 不支持；不写 |
 | enabled | 可选 | 常写 `enabled: true` | `enabled = true` | 无统一字段时省略 |
+
+> Pi 的 SSE 在应用与项目两条路径都按 agent 名拦截：`agent == "pi" && transport == "sse"`
+> 直接报错「Pi 内置 MCP 仅支持 stdio 与 streamable HTTP，不支持 SSE」，不写文件。
+> `JsonMcpServers` 方言被 claude-desktop / workbuddy / pi 共用，拦截依据是 agent 名而非方言。
 
 ---
 
@@ -366,26 +388,33 @@ if removeFromAgentConfigs:
 
 ### 8.1 项目级 MCP 目标文件（来自 `project_config::AGENT_SPECS`）
 
-| sniff `name` | 项目级 MCP 文件（相对项目根） | 方言 |
-|--------------|-------------------------------|------|
-| `claude-code` | `.mcp.json` | `JsonMcpServers` |
-| `workbuddy` | `.mcp.json`（与 claude-code 同路径，去重只写一次） | `JsonMcpServers` |
-| `codex` | `.codex/config.toml` | `TomlMcpServers` |
-| `opencode` | `opencode.json` | `JsonMcp` |
-| `antigravity` | `.gemini/settings.json` | `JsonGeminiMixed` |
-| `claude-desktop` | — | ❌（桌面应用，不做项目级） |
-| `pi` | `.pi/agent/mcp.json` | `JsonMcpServers` |
+| sniff `name` | 项目级 MCP 文件（相对项目根） | 方言 | 自建 skills 目录 |
+|--------------|-------------------------------|------|:---:|
+| `claude-code` | `.mcp.json`（仓库根） | `JsonMcpServers` | ✅（原生 `.claude/skills`，链到 `.agents/skills`） |
+| `codex` | `.codex/config.toml` | `TomlMcpServers` | ❌（原生读 `.agents/skills`） |
+| `opencode` | `opencode.json` | `JsonMcp` | ❌（兼容 `.agents/skills`） |
+| `antigravity` | `.agents/mcp_config.json`（不建 `.gemini`） | `JsonAntigravity` | ❌（原生 `.agents/skills`） |
+| `workbuddy` | `.workbuddy/mcp.json` | `JsonMcpServers` | ✅（`.workbuddy/skills`） |
+| `pi` | `.pi/mcp.json`（单层，无 `agent` 层） | `JsonMcpServers` | ❌（兼容 `.agents/skills`，不建 `.pi/skills`） |
+| `claude-desktop` | — | ❌（桌面应用，不做项目级） | — |
 
 **写策略**：复用 `mcp_config::apply_draft_to_file` 的方言写器，**按 server title 合并**、保留文件其它键、
-原子写；不参与「覆盖/跳过」确认。
+原子写；不参与「覆盖/跳过」确认。claude-code 的仓库根 `.mcp.json` 与 workbuddy 的
+`.workbuddy/mcp.json` 是两个独立文件，分别写入，不再去重为同一目标。
 
-### 8.2 项目级 Skills
+### 8.2 项目级骨架目录与 Skills
 
-- 统一安装到 `<repo>/.agents/skills/<id>`（`skill-copy-or-symlink`：完整复制或软链接，源为
-  `~/.agentbuddy/skills` 技能库）。
-- 多 agent 共享：
-  - **Symlink 模式**：`<config_dir>/skills` 本已链接至 `.agents/skills`（每个被勾选的 agent 都享受）。多级目录使用对应层级的相对路径。
-  - **Full 模式**：勾选 skills 时为每个 agent 创建指向项目根 `.agents/skills` 的相对软链接（例如 `.pi/agent/skills → ../../.agents/skills`，跳过创建真实 skills 子目录），实现多 agent 共享。
+- 统一安装到 `<repo>/.agents/skills/<id>`（完整复制或软链接，源为 `~/.octopus/skills` 技能库）。
+- 每个 agent 的 `skills_own_dir` 布尔决定自建 skills 目录：
+  - **true**（`claude-code` / `workbuddy`）：Full / Symlink 模式勾选 skills 时把
+    `<config_dir>/skills` 相对链接到 `.agents/skills`；
+  - **false**（`codex` / `opencode` / `antigravity` / `pi`）：直接依赖通用 `.agents/skills`，
+    不建不链自己的 skills 目录。
+- 其它 Full 骨架子目录：`claude-code` → `.claude/{commands,agents}`；`opencode` →
+  `.opencode/{agents,commands,plugins,tools}`（复数）；`workbuddy` → `.workbuddy/{rules,skills}`；
+  `codex` / `antigravity` / `pi` 无额外子目录。
+- 提示文件：AGENTS.md 在项目最上方统一写一次；`claude-code` / `antigravity` 的 `root_file` 为
+  None，**不生成** CLAUDE.md / GEMINI.md 指针。
 - 安全语义：非空真实目录拒绝删除；overwrite 可替换软链接/空目录。
 
 ### 8.3 不支持项目级
@@ -398,13 +427,14 @@ if removeFromAgentConfigs:
 
 | 项 | 状态 | 处理 |
 |----|------|------|
-| Claude Desktop Skills | 客观不支持（云端 VM） | Skills 页置灰；只做 MCP |
-| Antigravity 双路径 | 迁移期 | 主写 `settings.json`；读兼容 `mcp_config.json` |
-| Gemini `httpUrl` | 与 UI `url` 字段名不一致 | `JsonGeminiMixed` 写器强制转换；headers 需实测 |
-| Codex Skills 双路径 | `~/.codex/skills` vs `~/.agents/skills` | 写本机已存在者；两者都无则写 `~/.codex/skills` |
+| Claude Desktop Skills | 账户同步模型，无本地文件目录 | Skills 页置灰；只做 MCP |
+| Antigravity MCP | 闭源 App/IDE/CLI，非 gcli | 只写 `~/.gemini/config/mcp_config.json`（`JsonAntigravity`，**仅 stdio**）；远程 `serverUrl`/oauth 不建模；gcli 的 `settings.json`/`httpUrl` 口径已移除 |
+| WorkBuddy 远程格式 | 官方未披露（待核实） | 当前按通用 http `url`+`headers` 写 `~/.workbuddy/mcp.json`；`~/.workbuddy/skills` 路径半官方（待核实） |
+| Codex Skills | 现行官方 USER 位仅 `~/.agents/skills` | 只写 `~/.agents/skills`，不保留 legacy `~/.codex/skills` |
+| Pi MCP | 内置 `builtin:mcp`（0.99.0 起，1.x 默认开） | 不再依赖社区 pi-mcp-adapter；仅 stdio / streamable HTTP，SSE 按 agent 名拦截 |
 | Claude Code 大文件 | `~/.claude.json` 含大量状态字段 | 只改 `mcpServers` 键，独立方言 `ClaudeJsonUser` |
 | 项目级 MCP | 写项目会进 git / 需信任 | 全局应用默认不写项目；项目级写入由用户在「项目配置」页显式勾选触发 |
-| SSE 方言差异 | 各产品支持不一 | 能映射则映射，否则提示跳过 |
+| SSE 方言差异 | 各产品支持不一 | Pi 直接拒绝 SSE；其余能映射则映射，否则提示跳过 |
 | 密钥 | 配置中常含 token | AgentBuddy 永不日志打印 env/headers 值；API Key 经 `crypto::encrypt` 落 SQLite |
 | OpenCode JSONC | 注释 / 尾逗号 | `json5` 解析；重写 pretty JSON（注释不保留，会抛 warn 给用户） |
 | partial failure | apply 批次中部分 agent 失败 | UI 只把 ok=true 的 agent 写进 `appliedAgents` |
@@ -419,10 +449,11 @@ if removeFromAgentConfigs:
 
 - Claude Code MCP / Settings / Skills：https://code.claude.com/docs/en/mcp 、https://code.claude.com/docs/en/settings 、https://code.claude.com/docs/en/skills
 - Claude Desktop MCP：https://modelcontextprotocol.io/docs/develop/connect-local-servers
-- Codex Config / MCP / Skills / AGENTS.md：https://developers.openai.com/codex/config-basic 、https://developers.openai.com/codex/extend/mcp 、https://developers.openai.com/codex/skills 、https://developers.openai.com/codex/guides/agents-md
-- OpenCode Config / MCP / Skills：https://opencode.ai/docs/config/ 、https://opencode.ai/docs/mcp-servers/ 、https://opencode.ai/docs/skills/
-- Antigravity / 迁移：https://antigravity.google/docs/cli-features 、https://antigravity.google/docs/gcli-migration
-- Pi：https://github.com/badlogic/pi-mono
+- Codex Config / MCP / Skills / AGENTS.md：https://developers.openai.com/codex/config-reference 、https://developers.openai.com/codex/mcp 、https://developers.openai.com/codex/skills 、https://developers.openai.com/codex/guides/agents-md
+- OpenCode Config / MCP / Skills：https://opencode.ai/docs/config/ 、https://opencode.ai/docs/en/mcp-servers 、https://opencode.ai/docs/skills/
+- Antigravity（闭源 App/IDE/CLI，非 gcli）：MCP https://antigravity.google/docs/mcp/ 、Skills https://antigravity.google/docs/skills/ 、Rules https://antigravity.google/docs/rules/
+- WorkBuddy 桌面（MCP 指南；远程格式与 skills 路径待官方复核）：https://www.workbuddy.ai/docs/zh/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/MCP-Guide
+- Pi（内置 builtin:mcp）：https://pi.dev/docs/latest/mcp 、https://pi.dev/docs/latest/configuration 、https://pi.dev/docs/latest/skills 、仓库 https://github.com/badlogic/pi-mono
 
 ### 工程内对照
 
@@ -440,18 +471,19 @@ if removeFromAgentConfigs:
 ## 11. 结论（可执行摘要）
 
 1. **5 种 MCP 方言**覆盖 7 个 Agent：`TomlMcpServers` / `ClaudeJsonUser` / `JsonMcpServers` /
-   `JsonMcp` / `JsonGeminiMixed`（其中 `ClaudeJsonUser` 为 Claude Code 独立方言，因其文件位置
+   `JsonMcp` / `JsonAntigravity`（其中 `ClaudeJsonUser` 为 Claude Code 独立方言，因其文件位置
    `~/.claude.json` 特殊）。
 2. **7 个 Agent**（2026-10）：`codex` / `claude-code` / `claude-desktop` / `opencode` /
    `antigravity` / `workbuddy` / `pi`。历史下线的 agent 由启动时配置升级统一清理残留。
-3. **Skills** 主流是 `<root>/skills/<name>/SKILL.md`；Claude Desktop 暂不支持（云端 VM）；
-   Codex 需兼容 `~/.agents/skills` 与 `~/.codex/skills` 双路径。
+3. **Skills** 主流是 `<root>/skills/<name>/SKILL.md`，项目优先复用通用 `.agents/skills`；
+   Claude Desktop 无本地文件 skills（账户同步）；Codex 只写 `~/.agents/skills`，不保留 legacy。
 4. **全局应用**默认只写用户级文件；Claude Code 写 `~/.claude.json` 顶层 `mcpServers`，
-   Antigravity 远程用 `httpUrl` 而非 `url`。
+   Antigravity 写 `~/.gemini/config/mcp_config.json`，**仅 stdio**，远程不建模。
 5. **项目级** MCP 由 `project_config::AGENT_SPECS` 决定落地路径；目前支持 6 个 agent
    （claude-code / workbuddy / codex / opencode / antigravity / pi）。
 6. **OpenCode** 用 `mcp` 顶层键 + `local`/`remote`，不是 `mcpServers`；JSONC 用 `json5`。
-7. **Pi** 用 `JsonMcpServers` 方言；模型配置经通用 `agent_model_config` + 各自
-   后端（`opencode_config` / `pi_model_config`）。
+7. **Pi** 内置 `builtin:mcp`（不再依赖 pi-mcp-adapter），用 `JsonMcpServers` 方言，仅 stdio /
+   streamable HTTP，拒绝 SSE；模型配置经通用 `agent_model_config` + 各自后端
+   （`opencode_config` / `pi_model_config`）。
 8. **改动路径**：改 agents / 方言 → 先改 `agents.rs` → 同步本文件 + `AGENT_PROJECT_INFOS`
    （前端 mirror）。

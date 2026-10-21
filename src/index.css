@@ -5354,6 +5354,11 @@ button.skill-tag-none:hover {
   font-weight: 400;
 }
 
+/* 无勾选圆点的模式卡片：描述与标题左对齐，不再按圆点缩进 */
+.proj-mode-option--plain .proj-mode-option-desc {
+  padding-left: 0;
+}
+
 /* 表单区不参与压缩，剩余高度留给结果日志 */
 .project-config-body > .form-group,
 .project-config-body > .proj-init-actions {

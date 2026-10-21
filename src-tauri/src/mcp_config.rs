@@ -353,7 +353,7 @@ fn read_agent_mcp_entries(agent: &str) -> Result<Vec<(String, McpDraft)>, OpErro
             read_json_map_entries(&target.path, "mcpServers", false, target.jsonc)
         }
         Dialect::JsonMcp => read_json_map_entries(&target.path, "mcp", true, target.jsonc),
-        Dialect::JsonGeminiMixed => read_json_map_entries(&target.path, "mcpServers", false, false),
+        Dialect::JsonAntigravity => read_json_map_entries(&target.path, "mcpServers", false, false),
     }
 }
 
@@ -388,19 +388,14 @@ fn read_json_map_entries(
         if title.trim().is_empty() {
             continue;
         }
-        if let Some(draft) = parse_entry_value(title, entry, opencode_style, false) {
+        if let Some(draft) = parse_entry_value(title, entry, opencode_style) {
             out.push((title.clone(), draft));
         }
     }
     Ok(out)
 }
 
-fn parse_entry_value(
-    title: &str,
-    entry: &Value,
-    opencode_style: bool,
-    _gemini: bool,
-) -> Option<McpDraft> {
+fn parse_entry_value(title: &str, entry: &Value, opencode_style: bool) -> Option<McpDraft> {
     let obj = entry.as_object()?;
 
     // OpenCode local/remote
@@ -442,8 +437,8 @@ fn parse_entry_value(
         }
     }
 
-    // Gemini httpUrl
-    if let Some(url) = obj.get("httpUrl").and_then(|v| v.as_str()) {
+    // 读取已有配置时识别 Antigravity 的 `serverUrl`（本应用只写 stdio，不回写远程）。
+    if let Some(url) = obj.get("serverUrl").and_then(|v| v.as_str()) {
         return Some(McpDraft {
             title: title.to_string(),
             transport: "http".into(),
@@ -753,7 +748,7 @@ pub(crate) fn apply_draft_to_file(
             apply_json_object_key(path, "mcpServers", &draft.title, draft, false, jsonc)
         }
         Dialect::JsonMcp => apply_json_object_key(path, "mcp", &draft.title, draft, true, jsonc),
-        Dialect::JsonGeminiMixed => apply_gemini(path, &draft.title, draft),
+        Dialect::JsonAntigravity => apply_antigravity(path, &draft.title, draft),
     };
     result.map_err(|e| match e.path {
         Some(p) => format!("{p}: {}", e.message),
@@ -834,6 +829,15 @@ fn claude_desktop_config_roots(home: &Path) -> Vec<PathBuf> {
 }
 
 fn apply_one(agent: &str, title: &str, draft: &McpDraft) -> Result<PathBuf, OpError> {
+    // Pi 内置 MCP 仅支持 stdio 与 streamable HTTP，拒绝 legacy SSE。JsonMcpServers
+    // 方言被 claude-desktop / workbuddy / pi 共用，必须按 agent 名拦截而不是按方言。
+    if agent == "pi" && draft.transport == "sse" {
+        return Err(err(
+            None,
+            "Pi 内置 MCP 仅支持 stdio 与 streamable HTTP，不支持 SSE",
+        ));
+    }
+
     if matches!(
         crate::agents::find(agent).map(|spec| spec.mcp.path),
         Some(McpPath::ClaudeDesktopScan)
@@ -864,7 +868,7 @@ fn apply_one(agent: &str, title: &str, draft: &McpDraft) -> Result<PathBuf, OpEr
         Dialect::JsonMcp => {
             apply_json_object_key(&target.path, "mcp", title, draft, true, target.jsonc)
         }
-        Dialect::JsonGeminiMixed => apply_gemini(&target.path, title, draft),
+        Dialect::JsonAntigravity => apply_antigravity(&target.path, title, draft),
         Dialect::ClaudeJsonUser => apply_claude_json(&target.path, title, draft),
     }
 }
@@ -893,7 +897,7 @@ fn remove_one(agent: &str, title: &str) -> Result<PathBuf, OpError> {
             remove_json_object_key(&target.path, "mcpServers", title, target.jsonc)
         }
         Dialect::JsonMcp => remove_json_object_key(&target.path, "mcp", title, target.jsonc),
-        Dialect::JsonGeminiMixed => {
+        Dialect::JsonAntigravity => {
             remove_json_object_key(&target.path, "mcpServers", title, false)
         }
         Dialect::ClaudeJsonUser => remove_claude_json(&target.path, title),
@@ -1081,27 +1085,15 @@ fn ui_to_opencode_entry(draft: &McpDraft) -> Value {
     Value::Object(entry)
 }
 
-fn ui_to_gemini_entry(draft: &McpDraft) -> Value {
+fn ui_to_antigravity_entry(draft: &McpDraft) -> Value {
+    // Antigravity 仅配置本地 stdio server；远程（serverUrl/oauth 等）不建模。
     let mut entry = Map::new();
-    match draft.transport.as_str() {
-        "stdio" => {
-            entry.insert("command".into(), json!(draft.command.trim()));
-            if !draft.args.is_empty() {
-                entry.insert("args".into(), json!(draft.args));
-            }
-            if !draft.env.is_empty() {
-                entry.insert("env".into(), json!(draft.env));
-            }
-            entry.insert("timeout".into(), json!(60000));
-        }
-        "http" | "sse" => {
-            // Gemini/Antigravity remote uses httpUrl
-            entry.insert("httpUrl".into(), json!(draft.url.trim()));
-            entry.insert("timeout".into(), json!(60000));
-        }
-        other => {
-            entry.insert("type".into(), json!(other));
-        }
+    entry.insert("command".into(), json!(draft.command.trim()));
+    if !draft.args.is_empty() {
+        entry.insert("args".into(), json!(draft.args));
+    }
+    if !draft.env.is_empty() {
+        entry.insert("env".into(), json!(draft.env));
     }
     Value::Object(entry)
 }
@@ -1315,10 +1307,20 @@ fn remove_json_object_key(
     Ok(path.to_path_buf())
 }
 
-fn apply_gemini(path: &Path, title: &str, draft: &McpDraft) -> Result<PathBuf, OpError> {
+fn apply_antigravity(path: &Path, title: &str, draft: &McpDraft) -> Result<PathBuf, OpError> {
+    // Antigravity 仅配置本地 stdio server；远程 serverUrl/oauth 等不在本应用建模。
+    if draft.transport != "stdio" {
+        return Err(err(
+            Some(path.to_path_buf()),
+            format!(
+                "Antigravity 仅支持本地 stdio MCP server，不支持「{}」远程配置",
+                draft.transport
+            ),
+        ));
+    }
     let mut doc = read_json_value(path, false)?;
     let map = map_mut(&mut doc, "mcpServers")?;
-    map.insert(title.to_string(), ui_to_gemini_entry(draft));
+    map.insert(title.to_string(), ui_to_antigravity_entry(draft));
     write_json_value(path, &doc)?;
     Ok(path.to_path_buf())
 }
@@ -1369,8 +1371,8 @@ fn apply_toml_mcp_servers(path: &Path, title: &str, draft: &McpDraft) -> Result<
 
     let mut table = toml_edit::Table::new();
     match draft.transport.as_str() {
+        // Codex 官方按 command/url 推断传输，不写 `type` 字段。
         "stdio" => {
-            table["type"] = toml_edit::value("stdio");
             table["command"] = toml_edit::value(draft.command.trim());
             if !draft.args.is_empty() {
                 let mut arr = toml_edit::Array::new();
@@ -1382,8 +1384,7 @@ fn apply_toml_mcp_servers(path: &Path, title: &str, draft: &McpDraft) -> Result<
             table["enabled"] = toml_edit::value(true);
         }
         "http" | "sse" => {
-            // Codex uses type = "http" for streamable HTTP
-            table["type"] = toml_edit::value("http");
+            // streamable HTTP：`url` + `http_headers`（不是 `headers`），无 `type`。
             table["url"] = toml_edit::value(draft.url.trim());
             table["enabled"] = toml_edit::value(true);
             if !draft.headers.is_empty() {
@@ -1839,14 +1840,22 @@ mod tests {
         .unwrap();
         assert_eq!(oc["mcp"][title]["type"], "local");
 
-        let gm: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join(".gemini/settings.json")).unwrap(),
+        // Antigravity: `~/.gemini/config/mcp_config.json`，stdio 写 command/args/env。
+        let ag: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(home.join(".gemini/config/mcp_config.json")).unwrap(),
         )
         .unwrap();
-        assert!(gm["mcpServers"][title]["command"].is_string());
+        assert!(ag["mcpServers"][title]["command"].is_string());
+        assert!(ag["mcpServers"][title].get("type").is_none());
 
-        let codex = std::fs::read_to_string(home.join(".codex/config.toml")).unwrap();
-        assert!(codex.contains(title));
+        // Codex TOML 不再写 `type` 字段（官方按 command/url 推断）。
+        let codex_doc = std::fs::read_to_string(home.join(".codex/config.toml"))
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        let codex_server = codex_doc["mcp_servers"][title].as_table().unwrap();
+        assert!(codex_server.contains_key("command"));
+        assert!(!codex_server.contains_key("type"));
 
         // Pi: standard mcpServers under agent dir
         let pi: serde_json::Value = serde_json::from_str(
@@ -1855,24 +1864,38 @@ mod tests {
         .unwrap();
         assert!(pi["mcpServers"][title]["command"].is_string());
 
-        // http mapping for gemini
+        // Pi 拒绝 SSE：不写文件，返回明确错误。
+        let sse_draft = McpDraft {
+            title: "__agentbuddy_sse_smoke__".into(),
+            transport: "sse".into(),
+            command: String::new(),
+            args: vec![],
+            env: Default::default(),
+            url: "https://example.com/sse".into(),
+            headers: Default::default(),
+        };
+        let r_sse = apply_mcp_to_agents(&sse_draft, &["pi".into()]);
+        assert!(!r_sse.all_ok, "{:?}", r_sse.results);
+        assert!(
+            r_sse.results[0].message.contains("SSE"),
+            "{:?}",
+            r_sse.results
+        );
+
+        // Antigravity 仅支持本地 stdio：http 远程拒绝写入、不落盘。
         let title2 = "__agentbuddy_http_smoke__";
         let r2 = apply_mcp_to_agents(&draft_http(title2), &["antigravity".into()]);
-        assert!(r2.all_ok, "{:?}", r2.results);
-        let gm2: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join(".gemini/settings.json")).unwrap(),
+        assert!(!r2.all_ok, "{:?}", r2.results);
+        assert!(r2.results[0].message.contains("stdio"), "{:?}", r2.results);
+        let ag_doc: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(home.join(".gemini/config/mcp_config.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            gm2["mcpServers"][title2]["httpUrl"],
-            "https://example.com/mcp"
-        );
+        assert!(ag_doc["mcpServers"].get(title2).is_none());
 
         // cleanup
         let r3 = remove_mcp_from_agents(title, &agents);
         assert!(r3.all_ok, "{:?}", r3.results);
-        let r4 = remove_mcp_from_agents(title2, &["antigravity".into()]);
-        assert!(r4.all_ok, "{:?}", r4.results);
 
         let codex2 = std::fs::read_to_string(home.join(".codex/config.toml")).unwrap();
         assert!(!codex2.contains(title));

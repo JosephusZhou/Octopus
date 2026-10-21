@@ -58,10 +58,10 @@ export interface AgentProjectInfo {
 }
 
 export const AGENT_PROJECT_INFOS: AgentProjectInfo[] = [
-  { name: "claude-code", displayName: "Claude Code", rootFile: "CLAUDE.md", configDir: ".claude" },
+  { name: "claude-code", displayName: "Claude Code", rootFile: null, configDir: ".claude" },
   { name: "codex", displayName: "Codex", rootFile: "AGENTS.md", configDir: ".codex" },
   { name: "opencode", displayName: "OpenCode", rootFile: "AGENTS.md", configDir: ".opencode" },
-  { name: "antigravity", displayName: "Antigravity", rootFile: "GEMINI.md", configDir: ".gemini" },
+  { name: "antigravity", displayName: "Antigravity", rootFile: null, configDir: ".agents" },
   { name: "workbuddy", displayName: "WorkBuddy", rootFile: "AGENTS.md", configDir: ".workbuddy" },
-  { name: "pi", displayName: "Pi", rootFile: "AGENTS.md", configDir: ".pi/agent" },
+  { name: "pi", displayName: "Pi", rootFile: "AGENTS.md", configDir: ".pi" },
 ];

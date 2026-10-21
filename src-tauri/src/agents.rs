@@ -13,8 +13,8 @@ pub enum McpDialect {
     JsonMcpServers,
     /// OpenCode: 顶层 `mcp`（JSON/JSONC）
     JsonMcp,
-    /// Antigravity / Gemini: `mcpServers`，远程用 `httpUrl`
-    JsonGeminiMixed,
+    /// Antigravity（闭源 Google App/CLI）: `mcpServers`，远程用 `serverUrl`
+    JsonAntigravity,
     /// Claude Code: `~/.claude.json` 顶层 `mcpServers`
     ClaudeJsonUser,
 }
@@ -181,7 +181,8 @@ static AGENTS: &[AgentSpec] = &[
             jsonc: false,
         },
         mcp_managed: true,
-        skills_roots: &["~/.codex/skills", "~/.agents/skills"],
+        // 现行官方 USER 位置 `~/.agents/skills`；不保留 legacy `~/.codex/skills`。
+        skills_roots: &["~/.agents/skills"],
         skills_supported: true,
         prompt_file: Some("AGENTS.md"),
         shared_root: None,
@@ -255,7 +256,7 @@ static AGENTS: &[AgentSpec] = &[
         prompt_file: Some("AGENTS.md"),
         shared_root: None,
     },
-    // 5. Antigravity（Google）
+    // 5. Antigravity（闭源 Google App/IDE/CLI；不是开源 Gemini CLI gcli）
     AgentSpec {
         name: "antigravity",
         display_name: "Antigravity",
@@ -265,17 +266,21 @@ static AGENTS: &[AgentSpec] = &[
         config_paths: &["~/.gemini"],
         scan_app_support: false,
         mcp: McpSpec {
-            dialect: McpDialect::JsonGeminiMixed,
-            path: McpPath::Fixed(".gemini/settings.json"),
+            dialect: McpDialect::JsonAntigravity,
+            path: McpPath::Fixed(".gemini/config/mcp_config.json"),
             jsonc: false,
         },
         mcp_managed: true,
-        skills_roots: &["~/.gemini/skills", "~/.gemini/antigravity-cli/skills"],
+        // App/IDE 全局 `~/.gemini/config/skills` 为主；CLI 根 `~/.gemini/antigravity-cli/skills` 兼容扫描。
+        skills_roots: &[
+            "~/.gemini/config/skills",
+            "~/.gemini/antigravity-cli/skills",
+        ],
         skills_supported: true,
-        prompt_file: Some("GEMINI.md"),
+        prompt_file: Some("AGENTS.md"),
         shared_root: None,
     },
-    // 6. WorkBuddy（腾讯）
+    // 6. WorkBuddy（腾讯桌面办公版；不含 CodeBuddy Code CLI）
     AgentSpec {
         name: "workbuddy",
         display_name: "WorkBuddy",
@@ -286,7 +291,7 @@ static AGENTS: &[AgentSpec] = &[
         scan_app_support: false,
         mcp: McpSpec {
             dialect: McpDialect::JsonMcpServers,
-            path: McpPath::Fixed(".workbuddy/.mcp.json"),
+            path: McpPath::Fixed(".workbuddy/mcp.json"),
             jsonc: false,
         },
         mcp_managed: true,
@@ -295,8 +300,9 @@ static AGENTS: &[AgentSpec] = &[
         prompt_file: Some("AGENTS.md"),
         shared_root: None,
     },
-    // 7. Pi（badlogic/pi-mono，CLI-only）
-    // MCP 非内置：社区标准 pi-mcp-adapter 扩展读取 `~/.pi/agent/mcp.json`（标准 mcpServers）。
+    // 7. Pi（earendil-works/pi，CLI-only）
+    // MCP 内置：0.99.0 起内置扩展 `builtin:mcp`（1.x 默认开启），直接读取
+    // `~/.pi/agent/mcp.json`（标准 mcpServers）；仅支持 stdio 与 streamable HTTP，拒绝 legacy SSE。
     AgentSpec {
         name: "pi",
         display_name: "Pi",

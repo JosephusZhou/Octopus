@@ -1449,12 +1449,6 @@ export function ModelConfigAgentPage({
           </div>
         )}
 
-        {agent === "pi" && view?.installed && (
-          <div className="oc-warning">
-            Pi 不内置 MCP：写入 ~/.pi/agent/mcp.json 后，需安装 pi-mcp-adapter 扩展才能生效。
-          </div>
-        )}
-
         {view?.installed && (
           <div className={`oc-catalog-bar ${catalogError ? "is-error" : catalog ? "is-ok" : ""}`}>
             <span>
