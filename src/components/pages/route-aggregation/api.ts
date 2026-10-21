@@ -1,6 +1,11 @@
 // Tauri invoke wrappers for route aggregation commands.
 
-import type { RouteAggregationConfig, RouteAggregationStatus, RouteLogEntry } from "./types";
+import type {
+  RouteAggregationConfig,
+  RouteAggregationStatus,
+  RouteLogDetail,
+  RouteLogEntry,
+} from "./types";
 
 export async function getStatus(): Promise<RouteAggregationStatus> {
   const { invoke } = await import("@tauri-apps/api/core");
@@ -88,6 +93,16 @@ export async function clearRouteLogs(): Promise<void> {
   return invoke("clear_route_aggregation_logs");
 }
 
+/** 按 id 从磁盘按需读取某条日志的完整请求/响应内容。
+ *
+ * 完整 body 只存日志文件、不常驻内存：仅在打开详情弹窗时读取，后端不缓存，
+ * 关闭弹窗后前端置空引用即可释放内存。日志文件被 7 天清理 / 清空 / 旧格式时
+ * 返回 null。 */
+export async function getRouteLogDetail(id: number): Promise<RouteLogDetail | null> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke("get_route_log_detail", { id });
+}
+
 /** 返回路由聚合日志文件的本地路径（JSONL），失败或未挂载时返回 null。 */
 export async function getRouteLogFilePath(): Promise<string | null> {
   const { invoke } = await import("@tauri-apps/api/core");
@@ -98,4 +113,10 @@ export async function getRouteLogFilePath(): Promise<string | null> {
 export async function revealRouteLogFile(): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke("reveal_route_aggregation_log_file");
+}
+
+/** 用系统默认应用直接打开日志文件（如默认文本编辑器）。 */
+export async function openRouteLogFile(): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke("open_route_aggregation_log_file");
 }

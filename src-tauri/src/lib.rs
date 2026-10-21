@@ -1453,13 +1453,30 @@ async fn regenerate_route_aggregation_api_key(
     Ok(api_key)
 }
 
-/// Snapshot of all in-memory route aggregation log entries, newest last.
-/// Returned to the UI's "进出日志" list. Empty when the server isn't running.
+/// Snapshot of route aggregation log entries, newest last.
+///
+/// 返回内存 ring 的全部条目（App 运行期间产生），并回填磁盘当天日志的最近
+/// 10 条——App 重启后内存从空开始，列表默认仍能看到当天最新记录。合并按 id
+/// 去重（内存行优先，磁盘行只补充内存中不存在的 id），按时间升序返回。
+/// 磁盘回填仅取预览（body 64KB 截断），完整内容仍由 `get_route_log_detail`
+/// 按需读取。
 #[tauri::command]
 async fn get_route_aggregation_logs(
     state: tauri::State<'_, route_aggregation::RouteAggregationState>,
 ) -> Result<Vec<route_aggregation::LogEntry>, String> {
-    Ok(state.log_store.snapshot().await)
+    let mut entries = state.log_store.snapshot().await;
+    if let Some(log_file) = state.log_store.file() {
+        let disk_entries = tokio::task::spawn_blocking(move || log_file.read_recent_entries(10))
+            .await
+            .map_err(|e| format!("读取本地日志失败: {e}"))?;
+        for disk in disk_entries {
+            if !entries.iter().any(|e| e.id == disk.id) {
+                entries.push(disk.to_preview());
+            }
+        }
+        entries.sort_by_key(|e| e.timestamp_ms);
+    }
+    Ok(entries)
 }
 
 /// Clear all in-memory route aggregation log entries.
@@ -1469,6 +1486,25 @@ async fn clear_route_aggregation_logs(
 ) -> Result<(), String> {
     state.log_store.clear().await;
     Ok(())
+}
+
+/// Read back the full on-disk entry for a log id — the complete request/response
+/// body is stored in the daily JSONL file, not in memory. Loading happens on
+/// demand (opening a log detail) and the result is never cached: memory is
+/// released as soon as the UI closes the detail view.
+#[tauri::command]
+async fn get_route_log_detail(
+    state: tauri::State<'_, route_aggregation::RouteAggregationState>,
+    id: u64,
+) -> Result<Option<route_aggregation::log::DiskLogEntry>, String> {
+    let log_file = state.log_store.file();
+    let Some(log_file) = log_file else {
+        return Ok(None);
+    };
+    let entry = tokio::task::spawn_blocking(move || log_file.read_entry_by_id(id))
+        .await
+        .map_err(|e| format!("读取日志详情失败: {e}"))?;
+    Ok(entry)
 }
 
 /// Path of the on-disk route aggregation log file, if a sink was attached
@@ -1496,6 +1532,20 @@ fn reveal_route_aggregation_log_file(
         .file_path()
         .ok_or_else(|| "本地日志文件未挂载".to_string())?;
     crate::platform::reveal_path(&path)
+}
+
+/// Open the route aggregation log file with the system default handler
+/// (e.g. the default text editor on macOS / Windows). Soft-fails if the file
+/// hasn't been created yet.
+#[tauri::command]
+fn open_route_aggregation_log_file(
+    state: tauri::State<'_, route_aggregation::RouteAggregationState>,
+) -> Result<(), String> {
+    let path = state
+        .log_store
+        .file_path()
+        .ok_or_else(|| "本地日志文件未挂载".to_string())?;
+    crate::platform::open_path(&path)
 }
 
 /// Get the effective model list of a provider for the route aggregation UI.
@@ -1888,8 +1938,10 @@ pub fn run() {
             get_route_aggregation_models,
             get_route_aggregation_logs,
             clear_route_aggregation_logs,
+            get_route_log_detail,
             get_route_aggregation_log_file_path,
             reveal_route_aggregation_log_file,
+            open_route_aggregation_log_file,
         ])
         .on_menu_event(|app, event| match event.id().as_ref() {
             "tray-open" => show_main_window(app),

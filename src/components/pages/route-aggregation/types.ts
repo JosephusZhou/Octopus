@@ -19,6 +19,9 @@ export interface RouteAggregationConfig {
   apiKeys: string[];
   /** 应用启动时是否自动拉起代理服务器（由启动/停止动作维护）。 */
   autoStart: boolean;
+  /** 是否记录流式（SSE）响应的完整内容。默认关闭：流式响应体不读入日志；
+   *  开启后采用分流方式在转发同时后台收集，流结束后写入本地日志文件。 */
+  recordStreamBodies: boolean;
 }
 
 export interface ProviderRouteStatus {
@@ -83,6 +86,39 @@ export interface RouteLogEntry {
   error: string | null;
 }
 
+/** 磁盘完整日志条目：打开详情时按 id 从日志文件按需加载的完整请求/响应内容。
+ *  对应 Rust 端 `DiskLogEntry`（camelCase）。不常驻内存，关闭弹窗即释放。 */
+export interface RouteLogDetail {
+  id: number;
+  /** Unix 毫秒。 */
+  timestampMs: number;
+  protocol: InboundProtocol;
+  inboundMethod: string;
+  inboundPath: string;
+  /** 进站请求头（已脱敏）。 */
+  inboundHeaders: Array<[string, string]>;
+  /** 入站请求体完整 JSON（脱敏后；超过 16MB 保护上限会被截断并置标志）。 */
+  inboundBody: unknown | null;
+  inboundBodyTruncated: boolean;
+  inboundModel: string | null;
+  upstreamModel: string | null;
+  providerId: string | null;
+  providerName: string | null;
+  upstreamUrl: string | null;
+  upstreamStatus: number | null;
+  upstreamHeaders: Array<[string, string]>;
+  /** 上游响应体完整文本（脱敏后；流式请求不读响应体为 null）。 */
+  upstreamBody: string | null;
+  upstreamBodyTruncated: boolean;
+  /** 是否为流式请求（SSE）。流式响应体不会读入日志。 */
+  stream: boolean;
+  durationMs: number;
+  success: boolean;
+  error: string | null;
+  /** 是否新版「全量 body」记录；旧格式文件（改版前只写 64KB 预览）为 false。 */
+  fullBody: boolean;
+}
+
 export const DEFAULT_CONFIG: RouteAggregationConfig = {
   listenAddress: "127.0.0.1",
   listenPort: 16888,
@@ -96,6 +132,7 @@ export const DEFAULT_CONFIG: RouteAggregationConfig = {
   codexVersion: "0.154.0",
   apiKeys: [],
   autoStart: false,
+  recordStreamBodies: false,
 };
 
 /** 是否可以参与路由聚合转发。

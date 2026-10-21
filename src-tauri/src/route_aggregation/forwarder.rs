@@ -49,6 +49,10 @@ pub struct ForwardResult {
     /// Effective upstream URL the request was sent to. Filled by forwarder so
     /// the log entry can surface "which exact endpoint served the request".
     pub upstream_url: String,
+    /// 流式请求且 `record_stream_bodies` 开启时：后台分流收集到的响应体接收端。
+    /// 转发本身完全不受影响（tee），接收端由 handler 在流结束后写盘。非流式
+    /// 或未开启时为 None。
+    pub stream_body_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Bytes>>,
 }
 
 /// 把客户端入口（RouteGroup）映射为协议格式。
@@ -194,6 +198,14 @@ pub async fn forward(
         );
 
         // 5. Send request
+        let (stream_body_rx, body_tx) = if is_stream && config.record_stream_bodies {
+            // tee 收集通道：转发流原样给客户端，同时逐 chunk 复制一份给收集端。
+            // 发送端随流的生命周期存在，流结束（或中断）即 drop，接收端据此落盘。
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+            (Some(rx), Some(tx))
+        } else {
+            (None, None)
+        };
         match send_request(
             &upstream_url,
             &cloaked_headers,
@@ -202,6 +214,7 @@ pub async fn forward(
             is_stream,
             reverse_tool_names,
             tool_remap_map.clone(),
+            body_tx,
         )
         .await
         {
@@ -227,6 +240,7 @@ pub async fn forward(
                     provider_name: provider.name.clone(),
                     effective_model: effective_model.clone(),
                     upstream_url,
+                    stream_body_rx,
                 });
             }
             Err(e) => {
@@ -332,10 +346,15 @@ fn build_upstream_url(
 
 /// Send the request to the upstream provider.
 ///
-/// Returns `(response, body_preview, body_truncated)`:
-/// - Streaming: `body_preview` is empty (we don't read streaming bodies — that
-///   would break backpressure and SSE event boundaries).
-/// - Non-streaming: `body_preview` is up to `BODY_PREVIEW_MAX_BYTES` bytes.
+/// Returns `(response, body_bytes, body_truncated)`:
+/// - Streaming: `body_bytes` is empty (we don't read streaming bodies — that
+///   would break backpressure and SSE event boundaries). When `body_tx` is
+///   `Some`, chunks are tee'd to it while forwarding stays untouched; the
+///   sender drops when the stream ends (or is interrupted), signalling the
+///   collector to persist the full body.
+/// - Non-streaming: `body_bytes` holds the **full** response body (tool-name
+///   reversed when applicable). The per-side 16MB guard is applied later in
+///   `log::build_disk_entry`, so `body_truncated` is always false here.
 async fn send_request(
     url: &str,
     headers: &HeaderMap,
@@ -344,6 +363,7 @@ async fn send_request(
     is_stream: bool,
     reverse_tool_names: bool,
     tool_remap_map: Arc<HashMap<String, String>>,
+    body_tx: Option<tokio::sync::mpsc::UnboundedSender<Bytes>>,
 ) -> Result<(Response, Vec<u8>, bool), String> {
     let client = build_proxied_client(config)?;
 
@@ -406,6 +426,20 @@ async fn send_request(
             )
         };
 
+        // tee：转发流不变，同时逐 chunk 复制到收集通道（仅 record_stream_bodies 开启）。
+        // 复制失败（接收端已 drop）则放弃收集，不影响转发。
+        let stream = match body_tx {
+            Some(tx) => Box::pin(stream.inspect(move |chunk| {
+                if let Ok(chunk) = chunk {
+                    let _ = tx.send(Bytes::clone(chunk));
+                }
+            }))
+                as std::pin::Pin<
+                    Box<dyn futures::Stream<Item = Result<Bytes, std::io::Error>> + Send>,
+                >,
+            None => stream,
+        };
+
         let response = response_builder
             .body(Body::from_stream(stream))
             .map_err(|e| format!("构建流式响应失败: {e}"))?;
@@ -420,12 +454,12 @@ async fn send_request(
         } else {
             body_bytes.to_vec()
         };
-        let (preview, truncated) =
-            super::log::truncate_for_preview(&body_bytes, super::log::BODY_PREVIEW_MAX_BYTES);
+        // 完整 body 一并返回给日志链路：内存只留预览，全量由 log 模块按
+        // DISK_BODY_MAX_BYTES 保护上限写入磁盘。
         let response = response_builder
-            .body(Body::from(body_bytes))
+            .body(Body::from(body_bytes.clone()))
             .map_err(|e| format!("构建响应失败: {e}"))?;
-        Ok((response, preview.into_bytes(), truncated))
+        Ok((response, body_bytes, false))
     }
 }
 

@@ -19,7 +19,8 @@ use std::time::Instant;
 use super::forwarder;
 use super::log::{
     body_preview_json, redact_json_for_log, redact_json_text_for_log, sanitize_header_value,
-    sanitize_url_for_log, truncate_for_preview, InboundProtocol, LogEntry, BODY_PREVIEW_MAX_BYTES,
+    sanitize_url_for_log, truncate_for_preview, InboundProtocol, LogEntry, LogEntryFull,
+    BODY_PREVIEW_MAX_BYTES,
 };
 use super::router::AppState;
 use super::RouteGroup;
@@ -162,8 +163,9 @@ async fn handle_with_log(
         })
         .collect();
 
-    // Inbound body preview (capped).
-    let raw_body_str = serde_json::to_string(&redact_json_for_log(&body)).unwrap_or_default();
+    // Inbound body: 内存保留 64KB 预览；全量脱敏 JSON 单独传给磁盘日志链路。
+    let full_inbound_body = redact_json_for_log(&body);
+    let raw_body_str = serde_json::to_string(&full_inbound_body).unwrap_or_default();
     let (inbound_body, inbound_body_truncated) =
         body_preview_json(raw_body_str.as_bytes(), BODY_PREVIEW_MAX_BYTES);
     let inbound_model = body
@@ -201,7 +203,16 @@ async fn handle_with_log(
             success: false,
             error: Some("未通过 API Key 鉴权".to_string()),
         };
-        state.log_store.push(entry).await;
+        state
+            .log_store
+            .push(
+                entry,
+                LogEntryFull {
+                    inbound_body: Some(full_inbound_body.clone()),
+                    upstream_body: None,
+                },
+            )
+            .await;
         return resp;
     }
 
@@ -219,7 +230,8 @@ async fn handle_with_log(
         Ok(result) => {
             let upstream_status = Some(result.response.status().as_u16());
             let upstream_headers = collect_response_headers(&result.response);
-            let upstream_body_str = if is_stream {
+            // 上游响应体：磁盘全量日志保留完整脱敏文本；内存 entry 只留 64KB 预览。
+            let upstream_full = if is_stream {
                 None
             } else if result.body_preview.is_empty() {
                 Some(String::new())
@@ -228,6 +240,11 @@ async fn handle_with_log(
                     &result.body_preview,
                 )))
             };
+            let (upstream_body, upstream_body_truncated) = match &upstream_full {
+                Some(full) => truncate_for_preview(full.as_bytes(), BODY_PREVIEW_MAX_BYTES),
+                None => (String::new(), false),
+            };
+            let upstream_body_str = upstream_full.as_ref().map(|_| upstream_body);
             let entry = LogEntry {
                 id: 0,
                 timestamp_ms: chrono_millis(),
@@ -245,13 +262,43 @@ async fn handle_with_log(
                 upstream_status,
                 upstream_headers,
                 upstream_body: upstream_body_str,
-                upstream_body_truncated: result.body_truncated,
+                upstream_body_truncated,
                 stream: is_stream,
                 duration_ms: started.elapsed().as_millis() as u64,
                 success: result.response.status().is_success(),
                 error: None,
             };
-            state.log_store.push(entry).await;
+            // 流式 + 开启完整记录：保留 meta 与入站全量，供流结束后补写磁盘完整行。
+            // 注意：真实 id 由 push 内部分配，此处 clone 的 entry.id 仍为 0，
+            // 必须在 push 返回后用返回值回填，否则补写行以 id=0 落盘、详情按
+            // 列表条目的真实 id 永远读不到完整流式响应。
+            let stream_recorder = if is_stream {
+                result
+                    .stream_body_rx
+                    .map(|rx| (entry.clone(), full_inbound_body.clone(), rx))
+            } else {
+                None
+            };
+            let id = state
+                .log_store
+                .push(
+                    entry,
+                    LogEntryFull {
+                        inbound_body: Some(full_inbound_body),
+                        upstream_body: upstream_full,
+                    },
+                )
+                .await;
+            if let Some((mut meta, inbound_full, rx)) = stream_recorder {
+                meta.id = id;
+                spawn_stream_body_recorder(
+                    state.log_store.clone(),
+                    meta,
+                    inbound_full,
+                    rx,
+                    std::time::Duration::from_secs(config.stream_idle_timeout),
+                );
+            }
             result.response
         }
         Err(err) => {
@@ -278,10 +325,72 @@ async fn handle_with_log(
                 success: false,
                 error: Some(error_label(&err)),
             };
-            state.log_store.push(entry).await;
+            state
+                .log_store
+                .push(
+                    entry,
+                    LogEntryFull {
+                        inbound_body: Some(full_inbound_body),
+                        upstream_body: None,
+                    },
+                )
+                .await;
             forward_error_to_response(err)
         }
     }
+}
+
+/// 流式请求（开启完整记录）的响应体收集与落盘。
+///
+/// tee 收集端随转发流结束（正常完成或中断）自动关闭；此时把收集到的完整
+/// 脱敏文本追加为**同 id** 的磁盘行（详情读取取最后一个匹配行，即最完整的一行）。
+/// 转发本身不受影响——收集只做复制，不阻塞也不缓冲给客户端。
+///
+/// `idle_timeout`：连续 `idle_timeout` 无新 chunk（如 Claude 长时间思考不吐
+/// token）时提前收尾写盘，已收集部分标记为截断；转发流继续照常向客户端输出。
+fn spawn_stream_body_recorder(
+    log_store: super::log::LogStore,
+    meta: LogEntry,
+    inbound_full: serde_json::Value,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<bytes::Bytes>,
+    idle_timeout: std::time::Duration,
+) {
+    tokio::spawn(async move {
+        let mut collected: Vec<u8> = Vec::new();
+        let mut truncated = false;
+        let mut idle_closed = false;
+        loop {
+            let chunk = match tokio::time::timeout(idle_timeout, rx.recv()).await {
+                Ok(Some(chunk)) => chunk,
+                // 流结束：发送端全部 drop（正常完成或中断）
+                Ok(None) => break,
+                // 闲置超时：提前收尾（转发流不受影响，后续 chunk 不再收集）
+                Err(_) => {
+                    idle_closed = true;
+                    break;
+                }
+            };
+            if collected.len() >= super::log::DISK_BODY_MAX_BYTES {
+                truncated = true;
+            } else {
+                let remaining = super::log::DISK_BODY_MAX_BYTES - collected.len();
+                collected.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+            }
+        }
+        // 流结束 / 闲置收尾：能收集多少写多少（16MB 保护上限内）
+        let full_text = redact_json_text_for_log(&String::from_utf8_lossy(&collected));
+        let mut disk = super::log::build_disk_entry(
+            &meta,
+            super::log::LogEntryFull {
+                inbound_body: Some(inbound_full),
+                upstream_body: Some(full_text),
+            },
+        );
+        disk.upstream_body_truncated = truncated || idle_closed || disk.upstream_body_truncated;
+        if let Some(file) = log_store.file() {
+            let _ = tokio::task::spawn_blocking(move || file.write_entry(&disk)).await;
+        }
+    });
 }
 
 fn error_label(err: &forwarder::ForwardError) -> String {
@@ -384,7 +493,7 @@ pub async fn handle_list_models(State(state): State<AppState>, headers: HeaderMa
             success: false,
             error: Some("未通过 API Key 鉴权".to_string()),
         };
-        state.log_store.push(entry).await;
+        state.log_store.push(entry, LogEntryFull::none()).await;
         return resp;
     }
 
@@ -434,7 +543,16 @@ pub async fn handle_list_models(State(state): State<AppState>, headers: HeaderMa
         success: true,
         error: None,
     };
-    state.log_store.push(entry).await;
+    state
+        .log_store
+        .push(
+            entry,
+            LogEntryFull {
+                inbound_body: None,
+                upstream_body: Some(body_str),
+            },
+        )
+        .await;
 
     (StatusCode::OK, Json(body)).into_response()
 }

@@ -45,6 +45,11 @@ pub struct RouteAggregationConfig {
     /// Kept in sync with the server's start/stop actions.
     #[serde(default)]
     pub auto_start: bool,
+    /// 是否记录流式（SSE）响应的完整内容。默认关闭：流式响应体不会读入日志
+    /// （读流会破坏背压与 SSE 事件边界）。开启后采用分流（tee）方式在转发
+    /// 的同时后台收集，流结束后写入本地日志文件；详情弹窗按需读取。
+    #[serde(default)]
+    pub record_stream_bodies: bool,
 }
 
 fn default_listen_address() -> String {
@@ -115,6 +120,7 @@ impl Default for RouteAggregationConfig {
             claude_context_management: true,
             api_keys: Vec::new(),
             auto_start: false,
+            record_stream_bodies: false,
         }
     }
 }

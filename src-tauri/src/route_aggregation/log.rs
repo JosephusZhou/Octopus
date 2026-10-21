@@ -10,7 +10,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock;
 
@@ -26,9 +26,16 @@ pub const DEFAULT_LOG_CAP: usize = 2000;
 /// under a megabyte even with 2000 entries in the ring buffer.
 pub const BODY_PREVIEW_MAX_BYTES: usize = 64 * 1024;
 
+/// 磁盘全量日志的单侧 body 上限（入站请求 / 上游响应各一）。
+///
+/// 正常对话 body 只有几十 KB ~ 几 MB，全量落盘不受影响；仅当出现异常超大
+/// body（客户端异常、上传超大内容等）时截断到前 16MB 并置 truncated 标志，
+/// 防止日志文件被单条记录瞬间撑爆。
+pub const DISK_BODY_MAX_BYTES: usize = 16 * 1024 * 1024;
+
 /// Inbound protocol of a logged request. Phase 5+：路由聚合只保留两种入站
 /// 协议（Claude Messages + Codex Responses），与 RouteGroup 一一对应。
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum InboundProtocol {
     ClaudeMessages,
@@ -108,6 +115,114 @@ pub struct LogEntry {
     pub error: Option<String>,
 }
 
+/// 磁盘专用完整日志条目，与内存预览 [`LogEntry`] 分离。
+///
+/// body 存**脱敏后的全量内容**（凭证字段沿用 [`redact_json_for_log`] /
+/// [`redact_json_text_for_log`] 规则打码，prompt / 上下文原样保留），仅序列化
+/// 写入 JSONL 日志文件，不进入内存 ring——内存始终只保留预览版 `LogEntry`，
+/// 完整 body 在打开详情时按 id 从磁盘按需读取，读完即弃。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskLogEntry {
+    /// 单调递增 ID，与对应内存预览条目的 id 一致，用于按需定位读取。
+    pub id: u64,
+    /// Unix millis when the inbound request entered the handler.
+    pub timestamp_ms: i64,
+    pub protocol: InboundProtocol,
+    pub inbound_method: String,
+    pub inbound_path: String,
+    /// Sanitized inbound headers (credential values masked to "***").
+    pub inbound_headers: Vec<[String; 2]>,
+    /// 入站请求体完整 JSON（脱敏后）。超过 [`DISK_BODY_MAX_BYTES`] 时截断并置标志。
+    pub inbound_body: Option<serde_json::Value>,
+    pub inbound_body_truncated: bool,
+    /// 原始 `model` 字段；转发失败未发起上游请求时为 None。
+    pub inbound_model: Option<String>,
+    /// 实际转发给上游的模型 ID（[1m] 变体回写后）；未发起上游请求时为 None。
+    pub upstream_model: Option<String>,
+    pub provider_id: Option<String>,
+    pub provider_name: Option<String>,
+    /// 最终上游 URL（query 中凭证参数已打码）。
+    pub upstream_url: Option<String>,
+    pub upstream_status: Option<u16>,
+    pub upstream_headers: Vec<[String; 2]>,
+    /// 上游响应体完整文本（脱敏后）。流式请求不读响应体，为 None。
+    pub upstream_body: Option<String>,
+    pub upstream_body_truncated: bool,
+    /// 是否为流式请求（SSE）。流式响应体不会读入日志。
+    pub stream: bool,
+    pub duration_ms: u64,
+    pub success: bool,
+    pub error: Option<String>,
+    /// 是否为新版「全量 body」记录。旧格式行（改版前只写 64KB 预览）反序列化
+    /// 时该字段缺失、默认 false，前端据此提示完整内容可能不可用。
+    #[serde(default)]
+    pub full_body: bool,
+}
+
+/// 磁盘条目的全量 body 载荷：由 handler 在记录时提供（均已脱敏）。
+/// 与预览版 `LogEntry` 分开传递，避免全量内容进入内存 ring。
+#[derive(Debug, Clone)]
+pub struct LogEntryFull {
+    /// 入站请求体完整 JSON（脱敏后）。
+    pub inbound_body: Option<serde_json::Value>,
+    /// 上游响应体完整文本（脱敏后）；流式请求为 None。
+    pub upstream_body: Option<String>,
+}
+
+impl LogEntryFull {
+    /// 空载荷：用于无 body 可记录的场景（如鉴权失败且无入站内容时）。
+    pub fn none() -> Self {
+        Self {
+            inbound_body: None,
+            upstream_body: None,
+        }
+    }
+}
+
+impl DiskLogEntry {
+    /// 磁盘完整条目 → 内存预览条目：body 按 64KB 截断，完整内容不入内存。
+    ///
+    /// 用于 App 重启后把磁盘当天日志回填到列表：详情仍走
+    /// `read_entry_by_id` 按需读取完整内容，列表只显示预览。
+    pub fn to_preview(&self) -> LogEntry {
+        let (inbound_body, inbound_body_truncated) = match &self.inbound_body {
+            Some(value) => body_preview_json(
+                serde_json::to_string(value).unwrap_or_default().as_bytes(),
+                BODY_PREVIEW_MAX_BYTES,
+            ),
+            None => (None, false),
+        };
+        let (upstream_body, upstream_truncated) = match &self.upstream_body {
+            Some(text) => truncate_for_preview(text.as_bytes(), BODY_PREVIEW_MAX_BYTES),
+            None => (String::new(), false),
+        };
+        LogEntry {
+            id: self.id,
+            timestamp_ms: self.timestamp_ms,
+            protocol: self.protocol,
+            inbound_method: self.inbound_method.clone(),
+            inbound_path: self.inbound_path.clone(),
+            inbound_headers: self.inbound_headers.clone(),
+            inbound_body,
+            inbound_body_truncated,
+            inbound_model: self.inbound_model.clone(),
+            upstream_model: self.upstream_model.clone(),
+            provider_id: self.provider_id.clone(),
+            provider_name: self.provider_name.clone(),
+            upstream_url: self.upstream_url.clone(),
+            upstream_status: self.upstream_status,
+            upstream_headers: self.upstream_headers.clone(),
+            upstream_body: self.upstream_body.as_ref().map(|_| upstream_body),
+            upstream_body_truncated: upstream_truncated || self.upstream_body_truncated,
+            stream: self.stream,
+            duration_ms: self.duration_ms,
+            success: self.success,
+            error: self.error.clone(),
+        }
+    }
+}
+
 /// Thread-safe bounded log store. Cloning the Arc gives a new handle to the
 /// same underlying buffer.
 #[derive(Clone)]
@@ -168,19 +283,30 @@ impl LogStore {
             .and_then(|guard| guard.as_ref().map(|f| f.path()))
     }
 
+    /// Handle to the on-disk log file, if attached (for on-demand detail reads).
+    /// The returned handle is a cheap `Arc` clone; reads never hold the writer lock.
+    pub fn file(&self) -> Option<LogFile> {
+        self.inner.file.lock().ok().and_then(|guard| guard.clone())
+    }
+
     /// Append a new entry, assigning its ID. FIFO-evicts when full. Also
-    /// mirrors the entry to the on-disk file if one is attached.
-    pub async fn push(&self, mut entry: LogEntry) {
+    /// mirrors the entry to the on-disk file if one is attached: the disk
+    /// receives a [`DiskLogEntry`] built from `entry` + `full` (full body
+    /// never enters the in-memory ring — it lives on disk only and is read
+    /// back on demand by the log-detail command).
+    ///
+    /// Returns the assigned ID so callers can later append a follow-up full
+    /// line when a streamed response finishes (see handler).
+    pub async fn push(&self, mut entry: LogEntry, full: LogEntryFull) -> u64 {
         let _append_guard = self.inner.append_lock.lock().await;
         let mut id_guard = self.inner.next_id.write().await;
-        entry.id = *id_guard;
+        let id = *id_guard;
+        entry.id = id;
         *id_guard = id_guard.wrapping_add(1);
         drop(id_guard);
 
-        // Keep the exact entry assigned above. Reading the ring's back after
-        // releasing its lock is racy: another request may already have made
-        // a newer entry the back item.
-        let disk_entry = entry.clone();
+        // 磁盘全量条目在写盘路径上组装，不进入内存 ring。
+        let disk_entry = build_disk_entry(&entry, full);
 
         let mut entries = self.inner.entries.write().await;
         while entries.len() >= self.inner.capacity {
@@ -195,6 +321,7 @@ impl LogStore {
         if let Some(file) = file {
             let _ = tokio::task::spawn_blocking(move || file.write_entry(&disk_entry)).await;
         }
+        id
     }
 
     /// Snapshot all entries (newest last). Cloned for the frontend consumer.
@@ -362,6 +489,68 @@ pub fn body_preview_json(raw: &[u8], max: usize) -> (Option<serde_json::Value>, 
     }
 }
 
+/// 全量 JSON body 的单侧保护上限截断：正常大小原样保留；超过上限时取序列化
+/// 前缀（截断可能落在 UTF-8 边界或 JSON 中途，能解析则存 JSON，否则存字符串
+/// 预览），并置 truncated 标志。
+fn truncate_full_json(
+    value: Option<serde_json::Value>,
+    max: usize,
+) -> (Option<serde_json::Value>, bool) {
+    let Some(value) = value else {
+        return (None, false);
+    };
+    let serialized = serde_json::to_string(&value).unwrap_or_default();
+    if serialized.len() <= max {
+        return (Some(value), false);
+    }
+    let preview = String::from_utf8_lossy(&serialized.as_bytes()[..max]).into_owned();
+    match serde_json::from_str::<serde_json::Value>(&preview) {
+        Ok(parsed) => (Some(parsed), true),
+        Err(_) => (Some(serde_json::Value::String(preview)), true),
+    }
+}
+
+/// 把内存预览条目 + 全量 body 载荷组装为磁盘全量条目。
+///
+/// body 按 [`DISK_BODY_MAX_BYTES`] 做单侧保护上限截断：正常大小原样全量落盘，
+/// 仅异常超大 body 截断并置 truncated 标志，防止日志文件被单条记录撑爆。
+pub fn build_disk_entry(entry: &LogEntry, full: LogEntryFull) -> DiskLogEntry {
+    let (inbound_body, inbound_body_truncated) =
+        truncate_full_json(full.inbound_body, DISK_BODY_MAX_BYTES);
+    let (upstream_body, upstream_body_truncated) = match &full.upstream_body {
+        Some(body) => (
+            Some(truncate_for_preview(body.as_bytes(), DISK_BODY_MAX_BYTES).0),
+            body.len() > DISK_BODY_MAX_BYTES,
+        ),
+        None => (None, false),
+    };
+
+    DiskLogEntry {
+        id: entry.id,
+        timestamp_ms: entry.timestamp_ms,
+        protocol: entry.protocol,
+        inbound_method: entry.inbound_method.clone(),
+        inbound_path: entry.inbound_path.clone(),
+        inbound_headers: entry.inbound_headers.clone(),
+        inbound_body,
+        inbound_body_truncated,
+        inbound_model: entry.inbound_model.clone(),
+        upstream_model: entry.upstream_model.clone(),
+        provider_id: entry.provider_id.clone(),
+        provider_name: entry.provider_name.clone(),
+        upstream_url: entry.upstream_url.clone(),
+        upstream_status: entry.upstream_status,
+        upstream_headers: entry.upstream_headers.clone(),
+        upstream_body,
+        upstream_body_truncated,
+        stream: entry.stream,
+        duration_ms: entry.duration_ms,
+        success: entry.success,
+        error: entry.error.clone(),
+        full_body: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,29 +627,32 @@ mod tests {
             let store = store.clone();
             tasks.push(tokio::spawn(async move {
                 store
-                    .push(LogEntry {
-                        id: 0,
-                        timestamp_ms: index,
-                        protocol: InboundProtocol::ClaudeMessages,
-                        inbound_method: "POST".into(),
-                        inbound_path: "/v1/messages".into(),
-                        inbound_headers: Vec::new(),
-                        inbound_body: None,
-                        inbound_body_truncated: false,
-                        inbound_model: None,
-                        upstream_model: None,
-                        provider_id: None,
-                        provider_name: None,
-                        upstream_url: None,
-                        upstream_status: None,
-                        upstream_headers: Vec::new(),
-                        upstream_body: None,
-                        upstream_body_truncated: false,
-                        stream: false,
-                        duration_ms: 0,
-                        success: true,
-                        error: None,
-                    })
+                    .push(
+                        LogEntry {
+                            id: 0,
+                            timestamp_ms: index,
+                            protocol: InboundProtocol::ClaudeMessages,
+                            inbound_method: "POST".into(),
+                            inbound_path: "/v1/messages".into(),
+                            inbound_headers: Vec::new(),
+                            inbound_body: None,
+                            inbound_body_truncated: false,
+                            inbound_model: None,
+                            upstream_model: None,
+                            provider_id: None,
+                            provider_name: None,
+                            upstream_url: None,
+                            upstream_status: None,
+                            upstream_headers: Vec::new(),
+                            upstream_body: None,
+                            upstream_body_truncated: false,
+                            stream: false,
+                            duration_ms: 0,
+                            success: true,
+                            error: None,
+                        },
+                        LogEntryFull::none(),
+                    )
                     .await;
             }));
         }
@@ -475,5 +667,75 @@ mod tests {
             .map(|entry| entry.id)
             .collect();
         assert_eq!(ids, (33..=64).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn truncate_full_json_keeps_small_and_truncates_large() {
+        // 正常大小：原样保留，不置截断
+        let small = serde_json::json!({ "prompt": "hello", "nested": [1, 2, 3] });
+        let (kept, truncated) = truncate_full_json(Some(small.clone()), 4096);
+        assert_eq!(kept, Some(small));
+        assert!(!truncated);
+
+        // 超大：截断到上限并置标志
+        let big_value = serde_json::json!({ "prompt": "x".repeat(8192) });
+        let (cut, truncated) = truncate_full_json(Some(big_value), 1024);
+        assert!(truncated);
+        assert!(cut.is_some());
+        let text = match cut.unwrap() {
+            serde_json::Value::String(s) => s,
+            other => serde_json::to_string(&other).unwrap(),
+        };
+        assert!(text.len() <= 1024);
+    }
+
+    #[test]
+    fn disk_entry_roundtrip_and_legacy_default() {
+        let entry = LogEntry {
+            id: 42,
+            timestamp_ms: 1000,
+            protocol: InboundProtocol::CodexResponses,
+            inbound_method: "POST".into(),
+            inbound_path: "/v1/responses".into(),
+            inbound_headers: vec![["authorization".into(), "***".into()]],
+            inbound_body: Some(serde_json::json!({ "input": "full prompt here", "stream": false })),
+            inbound_body_truncated: false,
+            inbound_model: Some("gpt-4o".into()),
+            upstream_model: Some("gpt-4o".into()),
+            provider_id: Some("p1".into()),
+            provider_name: Some("Provider One".into()),
+            upstream_url: Some("https://example.test/v1/responses".into()),
+            upstream_status: Some(200),
+            upstream_headers: vec![["content-type".into(), "application/json".into()]],
+            upstream_body: Some("full response body".into()),
+            upstream_body_truncated: false,
+            stream: false,
+            duration_ms: 123,
+            success: true,
+            error: None,
+        };
+        let full = LogEntryFull {
+            inbound_body: Some(serde_json::json!({ "input": "full prompt here", "stream": false })),
+            upstream_body: Some("full response body".into()),
+        };
+        let disk = build_disk_entry(&entry, full);
+        assert!(disk.full_body);
+
+        // 新格式：序列化 → 反序列化 roundtrip，body 全量保留
+        let json = serde_json::to_string(&disk).unwrap();
+        let back: DiskLogEntry = serde_json::from_str(&json).unwrap();
+        assert!(back.full_body);
+        assert_eq!(
+            back.inbound_body,
+            Some(serde_json::json!({ "input": "full prompt here", "stream": false }))
+        );
+        assert_eq!(back.upstream_body.as_deref(), Some("full response body"));
+
+        // 旧格式行（无 fullBody 字段）反序列化：full_body 默认 false
+        let legacy: DiskLogEntry = serde_json::from_str(
+            r#"{"id":1,"timestampMs":0,"protocol":"claudeMessages","inboundMethod":"POST","inboundPath":"/v1/messages","inboundHeaders":[],"inboundBody":null,"inboundBodyTruncated":false,"inboundModel":null,"upstreamModel":null,"providerId":null,"providerName":null,"upstreamUrl":null,"upstreamStatus":null,"upstreamHeaders":[],"upstreamBody":null,"upstreamBodyTruncated":false,"stream":false,"durationMs":0,"success":true,"error":null}"#,
+        )
+        .unwrap();
+        assert!(!legacy.full_body);
     }
 }
