@@ -181,8 +181,8 @@ static AGENTS: &[AgentSpec] = &[
             jsonc: false,
         },
         mcp_managed: true,
-        // 现行官方 USER 位置 `~/.agents/skills`；不保留 legacy `~/.codex/skills`。
-        skills_roots: &["~/.agents/skills"],
+        // Codex 全局 skills 收敛为 `~/.codex/skills`：扫描与写入均仅此一处。
+        skills_roots: &["~/.codex/skills"],
         skills_supported: true,
         prompt_file: Some("AGENTS.md"),
         shared_root: None,

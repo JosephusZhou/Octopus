@@ -2782,6 +2782,133 @@ a[href]:focus-visible {
   margin-top: 0;
   flex-shrink: 0;
 }
+
+/* ===== Picker modal body（MCP / Skills 共用）—— 整 body 不滚动，内部各区域独立滚动 ===== */
+.mcp-pick-modal > .mcp-modal-body.mcp-pick-body,
+.skill-pick-modal > .mcp-modal-body.mcp-pick-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-height: none; /* 覆盖 .mcp-modal-body 的 max-height，高度由 flex 链路自行约束 */
+}
+.mcp-pick-top {
+  flex-shrink: 0;
+}
+.mcp-pick-modal .mcp-pick-top .mcp-search {
+  margin-bottom: 12px; /* 搜索框 → 类型筛 chip 间距 */
+}
+/* 筛选结果统计行：固定在滚动区上方，不参与滚动 */
+.mcp-pick-header-row {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+}
+.mcp-pick-header-row .proj-mode-option-desc {
+  padding-left: 0; /* 不再按勾选圆点缩进 */
+}
+/* 仅列表 / 空状态滚动，隐藏滚动条（macOS overlay 滚动条不占位） */
+.mcp-pick-modal .mcp-pick-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+.mcp-pick-modal .mcp-pick-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.mcp-pick-modal .mcp-pick-empty {
+  display: block;
+  margin-top: 16px;
+}
+/* 非 picker 场景（Skills 弹窗等）沿用原来的 8px 间距 */
+.mcp-search {
+  margin-bottom: 8px;
+}
+.mcp-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+/* 弹窗中复用 .mcp-card.selectable：紧凑 padding、无内置勾选框 */
+.mcp-pick-list .mcp-card {
+  padding: 10px 12px;
+  border-radius: var(--seed-radius-md);
+  cursor: pointer;
+}
+.mcp-pick-list .mcp-card .mcp-card-check {
+  display: none;
+}
+
+/* ===== Skills picker — 双列布局（独立于 MCP picker） ===== */
+/* ===== Picker modal（MCP / Skills 共用）—— 给 modal 一个固定高度，内部 flex 链可正确分配空间 ===== */
+.mcp-pick-modal,
+.skill-pick-modal {
+  height: 70vh;
+}
+.skill-pick-modal {
+  width: 780px;
+}
+.skill-pick-modal .mcp-search {
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+.skill-pick-columns {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: 20px;
+}
+.skill-pick-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.skill-pick-col-filters {
+  flex: 0 0 200px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.skill-pick-col-filters::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.skill-pick-col-label {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--seed-muted);
+  margin-bottom: 6px;
+}
+.skill-pick-col-list {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.skill-pick-col-list .mcp-pick-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.skill-pick-col-list .mcp-pick-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+/* 两列场景下，列表与「筛选结果」header 之间的间距已由 header-row 自身 margin 控制 */
+.skill-pick-col-list .mcp-pick-list {
+  margin-top: 8px;
+}
+.skill-pick-col-list .mcp-pick-empty {
+  margin-top: 16px;
+  display: block;
+}
+
 .btn-icon-action {
   display: flex;
   align-items: center;
@@ -5322,13 +5449,14 @@ button.skill-tag-none:hover {
 
 .proj-mode-list {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 8px;
 }
 
 .proj-mode-option {
   display: flex;
-  width: 100%;
+  flex: 1 1 0;
+  min-width: 0;
   cursor: pointer;
   flex-direction: column;
   align-items: flex-start;
@@ -5367,6 +5495,8 @@ button.skill-tag-none:hover {
 
 .proj-init-actions {
   margin-top: 4px;
+  display: flex;
+  justify-content: flex-end;
 }
 
 /*

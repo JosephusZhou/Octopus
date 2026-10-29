@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useStatusMessage } from "@/lib/useStatusMessage";
 import { Toast } from "@/components/Toast";
-import { CheckGlyph, useOverlayDismiss } from "../ui";
+import { useOverlayDismiss } from "../ui";
 import { getAgentIcon } from "../agent-icons";
 import { SourceFilterChips, buildSourceOptions, sourceKeyOf } from "./skills/controls";
 import {
@@ -24,6 +24,13 @@ import { Folder } from "lucide-react";
 
 const IconFolder = () => <Folder size={16} strokeWidth={1.8} />;
 
+/** Skill 来源（SkillOption.source）→ 友好显示标签 */
+const SOURCE_LABEL: Record<SkillOption["source"], string> = {
+  local: "本地",
+  github: "GitHub",
+  gitcode: "GitCode",
+};
+
 /** MCP transport types in fixed display order; only types present in the list are shown. */
 const MCP_TYPE_ORDER = ["stdio", "http", "sse"] as const;
 
@@ -45,9 +52,11 @@ export default function ProjectConfig() {
   const [skillMode, setSkillMode] = useState<SkillInstallMode>("link");
   const [mcpDialogOpen, setMcpDialogOpen] = useState(false);
   const [mcpTypeFilter, setMcpTypeFilter] = useState<string>("all");
+  const [mcpSearch, setMcpSearch] = useState("");
   const [skillsDialogOpen, setSkillsDialogOpen] = useState(false);
   const [skillSourceFilter, setSkillSourceFilter] = useState<string>("all");
   const [skillTagFilter, setSkillTagFilter] = useState<string>("all");
+  const [skillSearch, setSkillSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
   const [initResult, setInitResult] = useState<InitResult | null>(null);
@@ -103,10 +112,19 @@ export default function ProjectConfig() {
     return opts;
   }, [mcpOptions]);
 
-  const filteredMcps = useMemo(
-    () => mcpOptions.filter((m) => mcpTypeFilter === "all" || m.type === mcpTypeFilter),
-    [mcpOptions, mcpTypeFilter],
-  );
+  const filteredMcps = useMemo(() => {
+    const q = mcpSearch.trim().toLowerCase();
+    return mcpOptions.filter((m) => {
+      if (mcpTypeFilter !== "all" && m.type !== mcpTypeFilter) return false;
+      if (!q) return true;
+      return (
+        m.title.toLowerCase().includes(q) ||
+        m.type.toLowerCase().includes(q) ||
+        (m.command && m.command.toLowerCase().includes(q)) ||
+        (m.url && m.url.toLowerCase().includes(q))
+      );
+    });
+  }, [mcpOptions, mcpTypeFilter, mcpSearch]);
 
   const selectFilteredMcps = (on: boolean) => {
     setSelectedMcps((prev) => {
@@ -117,6 +135,10 @@ export default function ProjectConfig() {
       return next;
     });
   };
+
+  // 当前筛选结果是否已被全部选中（用于「全选筛选结果 / 取消全选」切换按钮）。
+  const allFilteredMcpsSelected =
+    filteredMcps.length > 0 && filteredMcps.every((m) => selectedMcps.has(m.title));
 
   /* ===== Skills dialog: source + tag filters + filtered batch selection ===== */
 
@@ -142,15 +164,20 @@ export default function ProjectConfig() {
     return opts;
   }, [skillOptions]);
 
-  const filteredSkills = useMemo(
-    () =>
-      skillOptions.filter((s) => {
-        const sourceOk = skillSourceFilter === "all" || sourceKeyOf(s) === skillSourceFilter;
-        const tagOk = skillTagFilter === "all" || (s.tag?.trim() ?? "") === skillTagFilter;
-        return sourceOk && tagOk;
-      }),
-    [skillOptions, skillSourceFilter, skillTagFilter],
-  );
+  const filteredSkills = useMemo(() => {
+    const q = skillSearch.trim().toLowerCase();
+    return skillOptions.filter((s) => {
+      const sourceOk = skillSourceFilter === "all" || sourceKeyOf(s) === skillSourceFilter;
+      const tagOk = skillTagFilter === "all" || (s.tag?.trim() ?? "") === skillTagFilter;
+      if (!sourceOk || !tagOk) return false;
+      if (!q) return true;
+      return (
+        s.title.toLowerCase().includes(q) ||
+        (s.description && s.description.toLowerCase().includes(q)) ||
+        (s.tag && s.tag.toLowerCase().includes(q))
+      );
+    });
+  }, [skillOptions, skillSourceFilter, skillTagFilter, skillSearch]);
 
   const selectFilteredSkills = (on: boolean) => {
     setSelectedSkills((prev) => {
@@ -161,6 +188,10 @@ export default function ProjectConfig() {
       return next;
     });
   };
+
+  // 当前筛选结果是否已被全部选中（用于「全选筛选结果 / 取消全选」切换按钮）。
+  const allFilteredSkillsSelected =
+    filteredSkills.length > 0 && filteredSkills.every((s) => selectedSkills.has(s.id));
 
   /* ===== Page actions ===== */
 
@@ -319,18 +350,16 @@ export default function ProjectConfig() {
               <button
                 type="button"
                 className="mcp-agent-action"
-                onClick={() => setSelected(new Set(AGENT_PROJECT_INFOS.map((a) => a.name)))}
+                onClick={() =>
+                  setSelected(
+                    selected.size === AGENT_PROJECT_INFOS.length
+                      ? new Set()
+                      : new Set(AGENT_PROJECT_INFOS.map((a) => a.name)),
+                  )
+                }
                 disabled={busy}
               >
-                全选
-              </button>
-              <button
-                type="button"
-                className="mcp-agent-action"
-                onClick={() => setSelected(new Set())}
-                disabled={busy}
-              >
-                清空
+                {selected.size === AGENT_PROJECT_INFOS.length ? "取消全选" : "全选"}
               </button>
             </div>
           </div>
@@ -373,8 +402,8 @@ export default function ProjectConfig() {
                 </span>
                 <span className="proj-mode-option-desc">
                   {m === "symlink"
-                    ? "在 .agents/ 存放共享内容（commands / rules / skills / agents），各 agent 配置目录对应子项软链接到此处。与全量模式的子目录集合不同：此处为统一共享集。Windows 需开启开发者模式。"
-                    : "每个 agent 按常用骨架独立创建配置文件与子目录，互不依赖、无软链接。（若下方勾选了 Skills，则 skills 仍统一放入 .agents/skills 并为各 agent 创建软链接，以实现多 agent 共享。）"}
+                    ? "在 .agents/ 存放共享内容（当前为 skills）：勾选 Skills 时各 agent 配置目录的 skills 软链接到 .agents/skills，实现多 agent 共享。Windows 需开启开发者模式。"
+                    : "每个 agent 独立创建配置文件（AGENTS.md / MCP 配置），互不依赖、无软链接。（若下方勾选了 Skills，则 skills 仍统一放入 .agents/skills 并为各 agent 创建软链接，以实现多 agent 共享。）"}
                 </span>
               </button>
             ))}
@@ -394,10 +423,13 @@ export default function ProjectConfig() {
               <button
                 type="button"
                 className="mcp-agent-action"
-                onClick={() => setMcpDialogOpen(true)}
+                onClick={() => {
+                  setMcpSearch("");
+                  setMcpDialogOpen(true);
+                }}
                 disabled={busy}
               >
-                选择…
+                选择
               </button>
             </div>
           </div>
@@ -423,10 +455,13 @@ export default function ProjectConfig() {
               <button
                 type="button"
                 className="mcp-agent-action"
-                onClick={() => setSkillsDialogOpen(true)}
+                onClick={() => {
+                  setSkillSearch("");
+                  setSkillsDialogOpen(true);
+                }}
                 disabled={busy}
               >
-                选择…
+                选择
               </button>
             </div>
           </div>
@@ -448,18 +483,13 @@ export default function ProjectConfig() {
                 <button
                   key={sm}
                   type="button"
-                  className={`agent-pick proj-mode-option ${skillMode === sm ? "selected" : ""}`}
+                  className={`agent-pick proj-mode-option proj-mode-option--plain ${skillMode === sm ? "selected" : ""}`}
                   onClick={() => setSkillMode(sm)}
                   disabled={busy}
                 >
-                  <div className="proj-mode-option-row">
-                    <span className={`agent-pick-check ${skillMode === sm ? "checked" : ""}`}>
-                      {skillMode === sm ? "✓" : ""}
-                    </span>
-                    <span className="agent-pick-name">
-                      {sm === "link" ? "软链接（推荐）" : "完整复制"}
-                    </span>
-                  </div>
+                  <span className="agent-pick-name">
+                    {sm === "link" ? "软链接（推荐）" : "完整复制"}
+                  </span>
                   <span className="proj-mode-option-desc">
                     {sm === "link"
                       ? "在 .agents/skills 中创建指向软件技能库的软链接，库中更新后项目内同步生效。Windows 需开启开发者模式。"
@@ -526,7 +556,11 @@ export default function ProjectConfig() {
 
       {/* MCP 选择弹窗 */}
       <div className={`modal-overlay ${mcpDialogOpen ? "visible" : ""}`} {...mcpDialogDismiss}>
-        <div className="modal modal-lg" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="modal modal-lg mcp-pick-modal"
+          data-no-autofocus
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="modal-header">
             <span className="modal-title">
               选择 MCP
@@ -538,31 +572,42 @@ export default function ProjectConfig() {
               ✕
             </button>
           </div>
-          <div className="modal-body mcp-modal-body">
+          <div className="modal-body mcp-modal-body mcp-pick-body">
             {mcpOptions.length === 0 ? (
               <span className="proj-mode-option-desc">
                 暂无可选 MCP — 可先在「MCP」页添加或嗅探。
               </span>
             ) : (
               <>
-                <div className="skill-source-filter" role="group" aria-label="按类型筛选">
-                  {mcpTypeOptions.map((opt) => {
-                    const active = opt.key === mcpTypeFilter;
-                    return (
-                      <button
-                        key={opt.key}
-                        type="button"
-                        className={`skill-source-chip ${opt.key === "all" ? "skill-source-chip-all" : ""} ${active ? "active" : ""}`}
-                        aria-pressed={active}
-                        onClick={() => setMcpTypeFilter(opt.key)}
-                      >
-                        <span className="skill-source-chip-label">{opt.label}</span>
-                        <span className="skill-source-chip-count">{opt.count}</span>
-                      </button>
-                    );
-                  })}
+                <div className="mcp-pick-top">
+                  <div className="mcp-search">
+                    <input
+                      type="text"
+                      className="form-input"
+                      placeholder="搜索 MCP 名称 / 类型 / 命令…"
+                      value={mcpSearch}
+                      onChange={(e) => setMcpSearch(e.target.value)}
+                    />
+                  </div>
+                  <div className="skill-source-filter" role="group" aria-label="按类型筛选">
+                    {mcpTypeOptions.map((opt) => {
+                      const active = opt.key === mcpTypeFilter;
+                      return (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          className={`skill-source-chip ${opt.key === "all" ? "skill-source-chip-all" : ""} ${active ? "active" : ""}`}
+                          aria-pressed={active}
+                          onClick={() => setMcpTypeFilter(opt.key)}
+                        >
+                          <span className="skill-source-chip-label">{opt.label}</span>
+                          <span className="skill-source-chip-count">{opt.count}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-                <div className="agent-pick-header" style={{ marginTop: 12 }}>
+                <div className="mcp-pick-header-row">
                   <span className="proj-mode-option-desc">
                     筛选结果 {filteredMcps.length} 项（已选{" "}
                     {filteredMcps.filter((m) => selectedMcps.has(m.title)).length}）
@@ -571,39 +616,48 @@ export default function ProjectConfig() {
                     <button
                       type="button"
                       className="mcp-agent-action"
-                      onClick={() => selectFilteredMcps(true)}
+                      onClick={() => selectFilteredMcps(!allFilteredMcpsSelected)}
                       disabled={filteredMcps.length === 0}
                     >
-                      全选筛选结果
-                    </button>
-                    <button
-                      type="button"
-                      className="mcp-agent-action"
-                      onClick={() => selectFilteredMcps(false)}
-                      disabled={filteredMcps.length === 0}
-                    >
-                      清空筛选结果
+                      {allFilteredMcpsSelected ? "取消全选" : "全选筛选结果"}
                     </button>
                   </div>
                 </div>
-                {filteredMcps.length === 0 ? (
-                  <span className="proj-mode-option-desc">该类型下暂无 MCP。</span>
-                ) : (
-                  filteredMcps.map((mcp) => (
-                    <label key={mcp.title} className="ui-check">
-                      <input
-                        type="checkbox"
-                        className="ui-check-input"
-                        checked={selectedMcps.has(mcp.title)}
-                        onChange={() => setSelectedMcps((prev) => toggleIn(prev, mcp.title))}
-                      />
-                      <CheckGlyph />
-                      <span className="ui-check-label">
-                        {mcp.title} <code>{mcp.type}</code>
-                      </span>
-                    </label>
-                  ))
-                )}
+                <div className="mcp-pick-scroll">
+                  {filteredMcps.length === 0 ? (
+                    <span className="proj-mode-option-desc mcp-pick-empty">
+                      {mcpSearch || mcpTypeFilter !== "all"
+                        ? "没有匹配的 MCP。"
+                        : "该类型下暂无 MCP。"}
+                    </span>
+                  ) : (
+                    <div className="mcp-pick-list">
+                      {filteredMcps.map((mcp) => {
+                        const checked = selectedMcps.has(mcp.title);
+                        return (
+                          <div
+                            key={mcp.title}
+                            className={`mcp-card selectable ${checked ? "selected" : ""}`}
+                            role="checkbox"
+                            aria-checked={checked}
+                            onClick={() => setSelectedMcps((prev) => toggleIn(prev, mcp.title))}
+                          >
+                            <div className="mcp-card-header">
+                              <div className="mcp-card-main">
+                                <div className="mcp-card-title-row">
+                                  <span className="mcp-card-title">{mcp.title}</span>
+                                  <span className={`skill-tag mcp-tag-${mcp.type}`}>
+                                    {mcp.type}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -624,7 +678,11 @@ export default function ProjectConfig() {
         className={`modal-overlay ${skillsDialogOpen ? "visible" : ""}`}
         {...skillsDialogDismiss}
       >
-        <div className="modal modal-lg" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="modal modal-lg skill-pick-modal"
+          data-no-autofocus
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="modal-header">
             <span className="modal-title">
               选择 Skills
@@ -640,89 +698,121 @@ export default function ProjectConfig() {
               ✕
             </button>
           </div>
-          <div className="modal-body mcp-modal-body">
+          <div className="modal-body mcp-modal-body mcp-pick-body">
             {skillOptions.length === 0 ? (
               <span className="proj-mode-option-desc">
                 暂无可选 Skills — 可先在「Skills」页添加或嗅探。
               </span>
             ) : (
               <>
-                <SourceFilterChips
-                  options={skillSourceOptions}
-                  active={skillSourceFilter}
-                  onSelect={setSkillSourceFilter}
-                />
-                {skillTagOptions.length > 1 && (
-                  <div
-                    className="skill-tag-filter"
-                    role="group"
-                    aria-label="按标签筛选"
-                    style={{ marginTop: 8 }}
-                  >
-                    {skillTagOptions.map((opt) => {
-                      const active = opt.key === skillTagFilter;
-                      return (
-                        <button
-                          key={opt.key || "__untagged"}
-                          type="button"
-                          className={`skill-source-chip skill-source-chip-tag ${active ? "active" : ""}`}
-                          aria-pressed={active}
-                          data-tooltip={opt.label}
-                          onClick={() => setSkillTagFilter(opt.key)}
-                        >
-                          <span className="skill-source-chip-label">{opt.label}</span>
-                          <span className="skill-source-chip-count">{opt.count}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-                <div className="agent-pick-header" style={{ marginTop: 12 }}>
-                  <span className="proj-mode-option-desc">
-                    筛选结果 {filteredSkills.length} 项（已选{" "}
-                    {filteredSkills.filter((s) => selectedSkills.has(s.id)).length}）
-                  </span>
-                  <div className="mcp-agent-actions">
-                    <button
-                      type="button"
-                      className="mcp-agent-action"
-                      onClick={() => selectFilteredSkills(true)}
-                      disabled={filteredSkills.length === 0}
-                    >
-                      全选筛选结果
-                    </button>
-                    <button
-                      type="button"
-                      className="mcp-agent-action"
-                      onClick={() => selectFilteredSkills(false)}
-                      disabled={filteredSkills.length === 0}
-                    >
-                      清空筛选结果
-                    </button>
-                  </div>
+                <div className="mcp-search">
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="搜索 Skill 名称 / 描述 / 标签…"
+                    value={skillSearch}
+                    onChange={(e) => setSkillSearch(e.target.value)}
+                  />
                 </div>
-                {filteredSkills.length === 0 ? (
-                  <span className="proj-mode-option-desc">当前筛选条件下暂无 Skills。</span>
-                ) : (
-                  filteredSkills.map((skill) => (
-                    <label key={skill.id} className="ui-check">
-                      <input
-                        type="checkbox"
-                        className="ui-check-input"
-                        checked={selectedSkills.has(skill.id)}
-                        onChange={() => setSelectedSkills((prev) => toggleIn(prev, skill.id))}
-                      />
-                      <CheckGlyph />
-                      <span
-                        className="ui-check-label"
-                        data-tooltip={skill.description || skill.title}
-                      >
-                        {skill.title}
-                        {skill.tag?.trim() ? <code>{skill.tag.trim()}</code> : null}
+                <div className="skill-pick-columns">
+                  {/* 左列：筛选条件 */}
+                  <aside className="skill-pick-col skill-pick-col-filters">
+                    <div className="skill-pick-col-label">来源</div>
+                    <SourceFilterChips
+                      options={skillSourceOptions}
+                      active={skillSourceFilter}
+                      onSelect={setSkillSourceFilter}
+                    />
+                    {skillTagOptions.length > 1 && (
+                      <>
+                        <div className="skill-pick-col-label" style={{ marginTop: 12 }}>
+                          标签
+                        </div>
+                        <div className="skill-tag-filter" role="group" aria-label="按标签筛选">
+                          {skillTagOptions.map((opt) => {
+                            const active = opt.key === skillTagFilter;
+                            return (
+                              <button
+                                key={opt.key || "__untagged"}
+                                type="button"
+                                className={`skill-source-chip skill-source-chip-tag ${active ? "active" : ""}`}
+                                aria-pressed={active}
+                                data-tooltip={opt.label}
+                                onClick={() => setSkillTagFilter(opt.key)}
+                              >
+                                <span className="skill-source-chip-label">{opt.label}</span>
+                                <span className="skill-source-chip-count">{opt.count}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </aside>
+                  {/* 右列：筛选结果 + 卡片列表（仅此区域滚动） */}
+                  <section className="skill-pick-col skill-pick-col-list">
+                    <div className="mcp-pick-header-row">
+                      <span className="proj-mode-option-desc">
+                        筛选结果 {filteredSkills.length} 项（已选{" "}
+                        {filteredSkills.filter((s) => selectedSkills.has(s.id)).length}）
                       </span>
-                    </label>
-                  ))
-                )}
+                      <div className="mcp-agent-actions">
+                        <button
+                          type="button"
+                          className="mcp-agent-action"
+                          onClick={() => selectFilteredSkills(!allFilteredSkillsSelected)}
+                          disabled={filteredSkills.length === 0}
+                        >
+                          {allFilteredSkillsSelected ? "取消全选" : "全选筛选结果"}
+                        </button>
+                      </div>
+                    </div>
+                    {filteredSkills.length === 0 ? (
+                      <span className="proj-mode-option-desc mcp-pick-empty">
+                        {skillSearch || skillSourceFilter !== "all" || skillTagFilter !== "all"
+                          ? "没有匹配的 Skill。"
+                          : "当前筛选条件下暂无 Skills。"}
+                      </span>
+                    ) : (
+                      <div className="mcp-pick-scroll">
+                        <div className="mcp-pick-list">
+                          {filteredSkills.map((skill) => {
+                            const checked = selectedSkills.has(skill.id);
+                            const sourceCls = `skill-tag skill-tag-${skill.source}`;
+                            return (
+                              <div
+                                key={skill.id}
+                                className={`mcp-card selectable ${checked ? "selected" : ""}`}
+                                role="checkbox"
+                                aria-checked={checked}
+                                onClick={() =>
+                                  setSelectedSkills((prev) => toggleIn(prev, skill.id))
+                                }
+                                data-tooltip={skill.description || undefined}
+                              >
+                                <div className="mcp-card-header">
+                                  <div className="mcp-card-main">
+                                    <div className="mcp-card-title-row">
+                                      <span className="mcp-card-title">{skill.title}</span>
+                                      <span className={sourceCls}>
+                                        {SOURCE_LABEL[skill.source]}
+                                      </span>
+                                      {skill.tag?.trim() ? (
+                                        <span className="skill-tag skill-tag-custom">
+                                          {skill.tag.trim()}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </section>
+                </div>
               </>
             )}
           </div>

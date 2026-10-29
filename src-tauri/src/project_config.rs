@@ -84,8 +84,9 @@ static AGENT_SPECS: &[AgentProjectSpec] = &[
         name: "claude-code",
         root_file: None,
         config_dir: ".claude",
-        full_sub_dirs: &["commands", "agents"],
-        shared_sub_dirs: &["commands", "agents"],
+        // 当前仅聚焦 AGENTS.md / skills / MCP：不建 commands、agents 等骨架目录。
+        full_sub_dirs: &[],
+        shared_sub_dirs: &[],
         config_files: &[],
         skills_own_dir: true,
         mcp: Some(ProjectMcpSpec {
@@ -112,8 +113,9 @@ static AGENT_SPECS: &[AgentProjectSpec] = &[
         name: "opencode",
         root_file: Some("AGENTS.md"),
         config_dir: ".opencode",
-        full_sub_dirs: &["agents", "commands", "plugins", "tools"],
-        shared_sub_dirs: &["agents", "commands", "plugins", "tools"],
+        // 当前仅聚焦 AGENTS.md / skills / MCP：不建 agents、commands、plugins、tools 等骨架目录。
+        full_sub_dirs: &[],
+        shared_sub_dirs: &[],
         config_files: &[],
         skills_own_dir: false,
         mcp: Some(ProjectMcpSpec {
@@ -140,8 +142,9 @@ static AGENT_SPECS: &[AgentProjectSpec] = &[
         name: "workbuddy",
         root_file: Some("AGENTS.md"),
         config_dir: ".workbuddy",
-        full_sub_dirs: &["rules", "skills"],
-        shared_sub_dirs: &["rules"],
+        // 当前仅聚焦 AGENTS.md / skills / MCP：不建 rules 等骨架目录；skills 由 skills_own_dir 处理。
+        full_sub_dirs: &[],
+        shared_sub_dirs: &[],
         config_files: &[],
         skills_own_dir: true,
         mcp: Some(ProjectMcpSpec {
@@ -809,13 +812,14 @@ mod tests {
         );
 
         assert!(base.join(".workbuddy").is_dir());
-        assert!(base.join(".workbuddy/rules").is_dir());
-        assert!(base.join(".workbuddy/skills").is_dir());
+        // 当前聚焦 AGENTS.md / skills / MCP：不再建 rules / skills 骨架目录。
+        assert!(!base.join(".workbuddy/rules").exists());
+        assert!(!base.join(".workbuddy/skills").exists());
         // Codex: 不再生成 instructions.md，也不建自建 skills 目录。
         assert!(!base.join(".codex/instructions.md").exists());
-        // OpenCode Full 子目录用复数。
-        assert!(base.join(".opencode/agents").is_dir());
-        assert!(!base.join(".opencode/agent").exists());
+        // OpenCode 不再建 agents/commands/plugins/tools 骨架目录。
+        assert!(!base.join(".opencode/agents").exists());
+        assert!(!base.join(".opencode/commands").exists());
 
         // Only one AGENTS.md create entry
         let agents_creates = result
@@ -1014,7 +1018,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn symlink_mode_creates_relative_dir_links() {
+    fn symlink_mode_skips_skeleton_subdir_links() {
         let base = scratch("symlink");
         let result = init_project_config(
             base.to_str().unwrap(),
@@ -1035,14 +1039,12 @@ mod tests {
         );
         assert!(!base.join(".agents/AGENTS.md").exists());
 
-        let link = base.join(".claude/commands");
-        let meta = fs::symlink_metadata(&link).unwrap();
-        assert!(meta.file_type().is_symlink());
-        let target = fs::read_link(&link).unwrap();
-        assert_eq!(target, PathBuf::from("../.agents/commands"));
-
-        // Relative link resolves from dest parent
-        assert!(base.join(".claude").join(&target).is_dir());
+        // 当前聚焦 AGENTS.md / skills / MCP：不再建 commands/rules/agents 等共享子目录与链接。
+        assert!(base.join(".claude").is_dir());
+        assert!(!base.join(".claude/commands").exists());
+        assert!(!base.join(".claude/agents").exists());
+        assert!(!base.join(".agents/commands").exists());
+        assert!(!base.join(".agents/rules").exists());
 
         // 共享 AGENTS.md 只写一次；claude-code 不再生成 CLAUDE.md 指针。
         assert!(base.join("AGENTS.md").is_file());
@@ -1079,32 +1081,32 @@ mod tests {
     #[test]
     fn symlink_overwrite_replaces_old_link_not_target() {
         let base = scratch("symlink-ow");
-        fs::create_dir_all(base.join(".agents/commands")).unwrap();
+        let lib_skill = scratch("symlink-ow-src");
+        fs::write(lib_skill.join("SKILL.md"), "---\nname: demo\n---\n").unwrap();
+        let sources = vec![("demo".to_string(), lib_skill.clone())];
         fs::create_dir_all(base.join(".claude")).unwrap();
-        // Pre-seed a wrong link and ensure target content is safe
-        fs::write(base.join(".agents/commands/a.md"), "shared\n").unwrap();
-        std::os::unix::fs::symlink("../.agents/commands", base.join(".claude/commands")).unwrap();
+        // Pre-seed a wrong link to a nonexistent dir; ensure the shared store is safe.
+        std::os::unix::fs::symlink("../nowhere", base.join(".claude/skills")).unwrap();
 
-        let result = init_project_config(
-            base.to_str().unwrap(),
+        let result = run_init(
+            &base,
             &[req("claude-code")],
             &InitMode::Symlink,
             true,
             &[],
-            &[],
-            SkillInstallMode::Link,
-        )
-        .unwrap();
-        assert!(result.errors.is_empty(), "{:?}", result.errors);
-        assert_eq!(
-            fs::read_to_string(base.join(".agents/commands/a.md")).unwrap(),
-            "shared\n"
+            &sources,
+            SkillInstallMode::Copy,
         );
-        assert!(fs::symlink_metadata(base.join(".claude/commands"))
-            .unwrap()
-            .file_type()
-            .is_symlink());
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        // shared store content intact
+        assert!(base.join(".agents/skills/demo/SKILL.md").is_file());
+        // old wrong link replaced with a link to the shared store
+        assert_eq!(
+            fs::read_link(base.join(".claude/skills")).unwrap(),
+            PathBuf::from("../.agents/skills")
+        );
         cleanup(&base);
+        cleanup(&lib_skill);
     }
 
     fn mcp_draft(title: &str) -> McpDraft {

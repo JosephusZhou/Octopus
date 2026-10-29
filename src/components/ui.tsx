@@ -26,6 +26,8 @@ export function useGlobalModalA11y() {
       if (modal === activeModal) return;
       activeModal = modal;
       if (!modal) return;
+      // 部分弹窗（如 picker）不希望打开时自动聚焦；在 .modal 上标记 data-no-autofocus 即可跳过。
+      if (modal.hasAttribute("data-no-autofocus")) return;
       // 初始焦点：优先第一个文本输入框，否则第一个可交互元素。
       const firstInput = Array.from(
         modal.querySelectorAll<HTMLElement>(

@@ -77,12 +77,12 @@
 
 | Agent | Skills roots | 是否支持 |
 |-------|--------------|----------|
-| `codex` | `~/.agents/skills`（现行官方 USER 位，不保留 legacy `~/.codex/skills`） | ✅ |
+| `codex` | `~/.codex/skills`（扫描与写入均仅此一处） | ✅ |
 | `claude-code` | `~/.claude/skills` | ✅ |
 | `claude-desktop` | — | ❌（skills 走账户同步，无本地文件目录） |
 | `opencode` | `~/.config/opencode/skills` | ✅ |
 | `antigravity` | `~/.gemini/config/skills`（主）, `~/.gemini/antigravity-cli/skills`（CLI 根，兼容扫描） | ✅ |
-| `workbuddy` | `~/.workbuddy/skills`（半官方，待核实） | ✅ |
+| `workbuddy` | `~/.workbuddy/skills`（官方文档：用户级路径） | ✅ |
 | `pi` | `~/.pi/agent/skills` | ✅ |
 
 ### 3.4 写策略（已实现于 `mcp_config.rs`）
@@ -102,12 +102,12 @@
 
 | sniff `name` | MCP 文件 | 方言 | Skills 根 |
 |--------------|----------|------|-----------|
-| `codex` | `~/.codex/config.toml` | `TomlMcpServers` | `~/.agents/skills` |
+| `codex` | `~/.codex/config.toml` | `TomlMcpServers` | `~/.codex/skills` |
 | `claude-code` | `~/.claude.json` 顶层 `mcpServers` | `ClaudeJsonUser` | `~/.claude/skills` |
 | `claude-desktop` | `~/Library/Application Support/Claude*/claude_desktop_config.json` | `JsonMcpServers` | — |
 | `opencode` | `~/.config/opencode/opencode.{jsonc,json}` | `JsonMcp` | `~/.config/opencode/skills` |
 | `antigravity` | `~/.gemini/config/mcp_config.json` | `JsonAntigravity` | `~/.gemini/config/skills` + `~/.gemini/antigravity-cli/skills` |
-| `workbuddy` | `~/.workbuddy/mcp.json`（无点前缀） | `JsonMcpServers` | `~/.workbuddy/skills`（待核实） |
+| `workbuddy` | `~/.workbuddy/mcp.json`（无点前缀） | `JsonMcpServers` | `~/.workbuddy/skills` |
 | `pi` | `~/.pi/agent/mcp.json`（内置 builtin:mcp） | `JsonMcpServers` | `~/.pi/agent/skills` |
 
 ---
@@ -131,7 +131,7 @@
 
 **Skills**
 
-- 主写位：`~/.agents/skills/<skill>/SKILL.md`（现行官方 USER 位置，不保留 legacy `~/.codex/skills`）
+- 主写位：`~/.codex/skills/<skill>/SKILL.md`（全局仅此一处，扫描与写入一致；不用 `~/.agents/skills`）
 - 项目：仓库 `.agents/skills`（原生读取，不建自建 skills 目录）
 - `config.toml` 中可有 `[[skills.config]]`（path / enabled）
 - 全局 `~/.codex/AGENTS.md`（不是 Skill，但是配置根一部分）
@@ -260,14 +260,14 @@ AgentBuddy 只维护 AGENTS.md，不生成 GEMINI.md 指针。
 |----|-----|
 | 文件 | `~/.workbuddy/mcp.json`（**无点前缀**，不是 `.workbuddy/.mcp.json`） |
 | 方言 | `JsonMcpServers`（顶层 `mcpServers`，stdio：`command`/`args`/`env`） |
-| 远程格式 | 官方未披露（待核实）；当前按通用 `type: "http"` + `url` + `headers` 写入 |
+| 远程格式 | 官方仅披露 stdio 示例；远程 `type: "http"` + `url` + `headers` 条目默认可加载（已确认） |
 | 注意 | 合并时**保留**产品自带 server，禁止整体覆盖文件 |
 
 **Skills**
 
 | 项 | 值 |
 |----|-----|
-| 全局 | `~/.workbuddy/skills/`（半官方，待核实） |
+| 全局 | `~/.workbuddy/skills/`（官方用户级路径） |
 | 项目 | `.workbuddy/skills/`（Full 模式自建目录并链到 `.agents/skills`） |
 | 格式 | 目录 + `SKILL.md` |
 
@@ -410,9 +410,9 @@ if removeFromAgentConfigs:
     `<config_dir>/skills` 相对链接到 `.agents/skills`；
   - **false**（`codex` / `opencode` / `antigravity` / `pi`）：直接依赖通用 `.agents/skills`，
     不建不链自己的 skills 目录。
-- 其它 Full 骨架子目录：`claude-code` → `.claude/{commands,agents}`；`opencode` →
-  `.opencode/{agents,commands,plugins,tools}`（复数）；`workbuddy` → `.workbuddy/{rules,skills}`；
-  `codex` / `antigravity` / `pi` 无额外子目录。
+- 骨架范围（2026-10-22 起收敛）：只创建 `AGENTS.md`、skills（`.agents/skills` 及 `skills_own_dir` 链接）、
+  项目 MCP 文件三类，**不创建** `commands` / `rules` / `agents`（含 opencode 的 `plugins` / `tools`）
+  等骨架目录；`codex` / `antigravity` / `pi` 无额外子目录。
 - 提示文件：AGENTS.md 在项目最上方统一写一次；`claude-code` / `antigravity` 的 `root_file` 为
   None，**不生成** CLAUDE.md / GEMINI.md 指针。
 - 安全语义：非空真实目录拒绝删除；overwrite 可替换软链接/空目录。
@@ -427,10 +427,10 @@ if removeFromAgentConfigs:
 
 | 项 | 状态 | 处理 |
 |----|------|------|
-| Claude Desktop Skills | 账户同步模型，无本地文件目录 | Skills 页置灰；只做 MCP |
+| Claude Desktop Skills / MCP | 均走账户同步（Customize > Skills / MCP），无本地文件目录 | MCP 页 `mcp_managed: false`、Skills 页 `skills_supported: false`，均不应用；通配扫描仅作兼容展示 |
 | Antigravity MCP | 闭源 App/IDE/CLI，非 gcli | 只写 `~/.gemini/config/mcp_config.json`（`JsonAntigravity`，**仅 stdio**）；远程 `serverUrl`/oauth 不建模；gcli 的 `settings.json`/`httpUrl` 口径已移除 |
-| WorkBuddy 远程格式 | 官方未披露（待核实） | 当前按通用 http `url`+`headers` 写 `~/.workbuddy/mcp.json`；`~/.workbuddy/skills` 路径半官方（待核实） |
-| Codex Skills | 现行官方 USER 位仅 `~/.agents/skills` | 只写 `~/.agents/skills`，不保留 legacy `~/.codex/skills` |
+| WorkBuddy 远程格式 | 官方文档仅披露 stdio 示例；远程 `url`+`headers` 条目默认可加载（已确认） | 按通用 http `url`+`headers` 写 `~/.workbuddy/mcp.json`；`~/.workbuddy/skills` 为官方用户级路径 |
+| Codex Skills | 全局收敛为 `~/.codex/skills` | 扫描与写入均仅使用 `~/.codex/skills`（不再使用 `~/.agents/skills`） |
 | Pi MCP | 内置 `builtin:mcp`（0.99.0 起，1.x 默认开） | 不再依赖社区 pi-mcp-adapter；仅 stdio / streamable HTTP，SSE 按 agent 名拦截 |
 | Claude Code 大文件 | `~/.claude.json` 含大量状态字段 | 只改 `mcpServers` 键，独立方言 `ClaudeJsonUser` |
 | 项目级 MCP | 写项目会进 git / 需信任 | 全局应用默认不写项目；项目级写入由用户在「项目配置」页显式勾选触发 |
@@ -452,7 +452,7 @@ if removeFromAgentConfigs:
 - Codex Config / MCP / Skills / AGENTS.md：https://developers.openai.com/codex/config-reference 、https://developers.openai.com/codex/mcp 、https://developers.openai.com/codex/skills 、https://developers.openai.com/codex/guides/agents-md
 - OpenCode Config / MCP / Skills：https://opencode.ai/docs/config/ 、https://opencode.ai/docs/en/mcp-servers 、https://opencode.ai/docs/skills/
 - Antigravity（闭源 App/IDE/CLI，非 gcli）：MCP https://antigravity.google/docs/mcp/ 、Skills https://antigravity.google/docs/skills/ 、Rules https://antigravity.google/docs/rules/
-- WorkBuddy 桌面（MCP 指南；远程格式与 skills 路径待官方复核）：https://www.workbuddy.ai/docs/zh/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/MCP-Guide
+- WorkBuddy 桌面（MCP 指南；远程格式与 skills 路径已确认可用）：https://www.workbuddy.ai/docs/zh/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/MCP-Guide
 - Pi（内置 builtin:mcp）：https://pi.dev/docs/latest/mcp 、https://pi.dev/docs/latest/configuration 、https://pi.dev/docs/latest/skills 、仓库 https://github.com/badlogic/pi-mono
 
 ### 工程内对照
@@ -476,7 +476,7 @@ if removeFromAgentConfigs:
 2. **7 个 Agent**（2026-10）：`codex` / `claude-code` / `claude-desktop` / `opencode` /
    `antigravity` / `workbuddy` / `pi`。历史下线的 agent 由启动时配置升级统一清理残留。
 3. **Skills** 主流是 `<root>/skills/<name>/SKILL.md`，项目优先复用通用 `.agents/skills`；
-   Claude Desktop 无本地文件 skills（账户同步）；Codex 只写 `~/.agents/skills`，不保留 legacy。
+   Claude Desktop 无本地文件 skills/MCP（账户同步）；Codex 全局 skills 收敛为 `~/.codex/skills`（扫描与写入一致）。
 4. **全局应用**默认只写用户级文件；Claude Code 写 `~/.claude.json` 顶层 `mcpServers`，
    Antigravity 写 `~/.gemini/config/mcp_config.json`，**仅 stdio**，远程不建模。
 5. **项目级** MCP 由 `project_config::AGENT_SPECS` 决定落地路径；目前支持 6 个 agent

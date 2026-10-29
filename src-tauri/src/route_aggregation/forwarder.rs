@@ -31,12 +31,11 @@ pub enum ForwardError {
 /// `body_preview` is the upstream response body, capped at
 /// `super::log::BODY_PREVIEW_MAX_BYTES`. For streaming responses we skip
 /// reading the body so we don't break backpressure; `body_preview` will be
-/// empty and `body_truncated` is meaningless (always `false` in that case).
+/// empty.
 #[derive(Debug)]
 pub struct ForwardResult {
     pub response: Response,
     pub body_preview: Vec<u8>,
-    pub body_truncated: bool,
     /// Id of the provider that successfully served this request. Used by the
     /// handler to fill the `provider_id` / `provider_name` fields on the
     /// inbound/outbound log entry.
@@ -218,7 +217,7 @@ pub async fn forward(
         )
         .await
         {
-            Ok((resp, body_preview, body_truncated)) => {
+            Ok((resp, body_preview, _body_truncated)) => {
                 // 成功数只统计 2xx：拿到 4xx/5xx 说明该次上游请求报错
                 // （鉴权失败、限流、上游错误等），必须计入失败，与进出日志
                 // 的 `success` 字段（`status.is_success()`）保持同一口径，
@@ -235,7 +234,6 @@ pub async fn forward(
                 return Ok(ForwardResult {
                     response: resp,
                     body_preview,
-                    body_truncated,
                     provider_id: provider.id.clone(),
                     provider_name: provider.name.clone(),
                     effective_model: effective_model.clone(),
