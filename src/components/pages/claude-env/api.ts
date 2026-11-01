@@ -97,11 +97,6 @@ export async function invokeRemoveEnvAlias(id: string): Promise<ClaudeEnvShellSt
   return invoke("remove_claude_env_alias", { id }) as Promise<ClaudeEnvShellStatus>;
 }
 
-export async function invokeRemoveAllAliases(): Promise<ClaudeEnvShellStatus> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke("remove_all_claude_env_aliases") as Promise<ClaudeEnvShellStatus>;
-}
-
 export async function invokeShellStatus(): Promise<ClaudeEnvShellStatus> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke("get_claude_env_shell_status") as Promise<ClaudeEnvShellStatus>;
@@ -150,9 +145,4 @@ export async function invokeSyncSkills(
     message: string;
     skillCount: number;
   }>;
-}
-
-export async function invokeSyncAllMcp(): Promise<ClaudeEnvMcpSyncResult> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke("sync_all_claude_env_mcp") as Promise<ClaudeEnvMcpSyncResult>;
 }

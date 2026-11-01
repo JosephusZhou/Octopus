@@ -22,6 +22,8 @@ export interface CodexEnvironment {
   mcpSyncStatus?: string;
   mcpServerCount?: number;
   globalMcpServerCount?: number;
+  mcpServerNames?: string[];
+  skillNames?: string[];
   // config.toml 实时读取（不入库）
   model: string;
   modelProvider: string;

@@ -54,6 +54,10 @@ pub struct CodexEnvironment {
     pub mcp_sync_status: String,
     pub mcp_server_count: u32,
     pub global_mcp_server_count: u32,
+    /// 当前环境自己的 MCP server 名称（默认环境为全局清单），按字母排序。
+    pub mcp_server_names: Vec<String>,
+    /// 当前环境 skills 目录下可见的 skill 名称，按字母排序。
+    pub skill_names: Vec<String>,
     /// config.toml → model（实时读取，不入库）
     pub model: String,
     /// config.toml → model_provider
@@ -370,6 +374,19 @@ fn probe_dir(path: &Path) -> (bool, bool, bool, bool) {
 
 fn skill_count(config_dir: &Path) -> u32 {
     crate::skills::count_skills_in_root(&config_dir.join("skills")) as u32
+}
+
+fn list_skill_names(config_dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(config_dir.join("skills"))
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| crate::skills::is_visible_skill_dir(&entry.path()))
+        .filter_map(|entry| entry.file_name().to_str().map(|name| name.to_string()))
+        .collect();
+    names.sort();
+    names
 }
 
 fn skills_snapshot(skills_dir: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>, String> {
@@ -952,6 +969,17 @@ fn row_to_public(row: CodexEnvironmentRow) -> CodexEnvironment {
     let (global_names, global_exists) = read_mcp_server_names(&global_path);
     let global_count = global_names.len() as u32;
     let (status, local_count) = mcp_status_for_row(&row, dir_exists, &global_names, global_exists);
+    let mcp_server_names: Vec<String> = if row.is_default {
+        global_names.iter().cloned().collect()
+    } else {
+        let (local_names, _) = read_mcp_server_names(&env_config_path(&path));
+        local_names.into_iter().collect()
+    };
+    let skill_names = if dir_exists {
+        list_skill_names(&path)
+    } else {
+        Vec::new()
+    };
     let (skills_sync_status, skill_count) = skills_status_for_row(&row, dir_exists);
 
     let managed = if dir_exists {
@@ -986,6 +1014,8 @@ fn row_to_public(row: CodexEnvironmentRow) -> CodexEnvironment {
         mcp_sync_status: status,
         mcp_server_count: local_count,
         global_mcp_server_count: global_count,
+        mcp_server_names,
+        skill_names,
         model: managed.model,
         model_provider: managed.model_provider,
         base_url: managed.base_url,
@@ -1206,7 +1236,15 @@ fn ensure_unique_fields(
 
 fn ensure_default_environment() -> Result<(), String> {
     let rows = db::load_codex_environment_rows()?;
-    if rows.iter().any(|r| r.is_default) {
+    if let Some(mut existing) = rows.into_iter().find(|r| r.is_default) {
+        // 旧版本默认备注迁移到新文案；用户自行编辑过的备注保持不变。
+        const LEGACY_NOTES: &str = "直接运行 codex 使用此环境（不写入 shell 别名块）";
+        const DEFAULT_NOTES: &str = "直接运行 codex 使用默认环境";
+        if existing.notes == LEGACY_NOTES {
+            existing.notes = DEFAULT_NOTES.into();
+            existing.updated_at = now_secs();
+            db::upsert_codex_environment_row(&existing)?;
+        }
         return Ok(());
     }
     let config_dir = default_codex_home()?;
@@ -1219,7 +1257,7 @@ fn ensure_default_environment() -> Result<(), String> {
         alias_name: "codex".into(),
         is_default: true,
         source: "default".into(),
-        notes: "直接运行 codex 使用此环境（不写入 shell 别名块）".into(),
+        notes: "直接运行 codex 使用默认环境".into(),
         alias_installed: false,
         provider_id: String::new(),
         created_at: now,

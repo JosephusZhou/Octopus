@@ -48,6 +48,10 @@ pub struct ClaudeEnvironment {
     pub mcp_sync_status: String,
     pub mcp_server_count: u32,
     pub global_mcp_server_count: u32,
+    /// 当前环境自己的 MCP server 名称（默认环境为全局清单），按字母排序。
+    pub mcp_server_names: Vec<String>,
+    /// 当前环境 skills 目录下可见的 skill 名称，按字母排序。
+    pub skill_names: Vec<String>,
     /// settings.json → env.ANTHROPIC_BASE_URL（实时读取，不入库）。缺失为空串。
     pub base_url: String,
     /// settings.json → env.ANTHROPIC_AUTH_TOKEN。出于安全，列表接口不回传明文，
@@ -110,14 +114,16 @@ pub struct ClaudeEnvUpsertPayload {
     pub provider_id: Option<String>,
 }
 
-/// 从 payload 的四档可选字段构造档位覆盖（空值归一为空串）。
+/// 从 payload 的四档可选字段构造档位覆盖，保持 Option 语义：
+/// - `None` 入参 → `None` 输出（前端没下发 = 没改这档）
+/// - `Some(s)` 入参 → `Some(s.trim())` 输出（trim 后可能是空串 = 清空这档）
 fn tier_overrides_from(
     haiku: Option<&String>,
     sonnet: Option<&String>,
     opus: Option<&String>,
     fable: Option<&String>,
 ) -> ModelTierOverrides {
-    let norm = |v: Option<&String>| v.map(|s| s.trim().to_string()).unwrap_or_default();
+    let norm = |v: Option<&String>| v.map(|s| s.trim().to_string());
     ModelTierOverrides {
         haiku: norm(haiku),
         sonnet: norm(sonnet),
@@ -434,6 +440,19 @@ fn skill_count(config_dir: &Path) -> u32 {
     crate::skills::count_skills_in_root(&config_dir.join("skills")) as u32
 }
 
+fn list_skill_names(config_dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(config_dir.join("skills"))
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| crate::skills::is_visible_skill_dir(&entry.path()))
+        .filter_map(|entry| entry.file_name().to_str().map(|name| name.to_string()))
+        .collect();
+    names.sort();
+    names
+}
+
 fn skills_snapshot(skills_dir: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>, String> {
     let mut files = BTreeMap::new();
     for entry in fs::read_dir(skills_dir).into_iter().flatten() {
@@ -495,6 +514,17 @@ fn row_to_public(row: ClaudeEnvironmentRow) -> ClaudeEnvironment {
     let (global_names, _) = read_mcp_server_names(&shared_mcp_path());
     let global_count = global_names.len() as u32;
     let (status, local_count) = mcp_status_for_row(&row, dir_exists, &global_names);
+    let mcp_server_names: Vec<String> = if row.is_default {
+        global_names.iter().cloned().collect()
+    } else {
+        let (local_names, _) = read_mcp_server_names(&env_mcp_path(&path));
+        local_names.into_iter().collect()
+    };
+    let skill_names = if dir_exists {
+        list_skill_names(&path)
+    } else {
+        Vec::new()
+    };
     let (skills_sync_status, skill_count) = skills_status_for_row(&row, dir_exists);
     let (base_url, api_key_plain, model, tiers) = if dir_exists {
         read_settings_env(&path)
@@ -507,16 +537,19 @@ fn row_to_public(row: ClaudeEnvironmentRow) -> ClaudeEnvironment {
         )
     };
     let has_api_key = !api_key_plain.is_empty();
-    // 编辑表单回填用：仅保留与主模型不同的档位值（相同即「跟随默认」，留空即可）
+    // 编辑表单回填用：保留所有已显式配置的档位值，包括等于主模型的
+    // （显式设相同值 ≠ 跟随默认，用户可能在主模型变更后仍想保持档位独立）。
     let mut model_tiers = std::collections::HashMap::new();
     for (key, val) in [
-        ("haiku", &tiers.haiku),
-        ("sonnet", &tiers.sonnet),
-        ("opus", &tiers.opus),
-        ("fable", &tiers.fable),
+        ("haiku", tiers.haiku.as_deref()),
+        ("sonnet", tiers.sonnet.as_deref()),
+        ("opus", tiers.opus.as_deref()),
+        ("fable", tiers.fable.as_deref()),
     ] {
-        if !val.is_empty() && *val != model {
-            model_tiers.insert(key.to_string(), val.clone());
+        if let Some(v) = val {
+            if !v.is_empty() {
+                model_tiers.insert(key.to_string(), v.to_string());
+            }
         }
     }
     ClaudeEnvironment {
@@ -538,6 +571,8 @@ fn row_to_public(row: ClaudeEnvironmentRow) -> ClaudeEnvironment {
         mcp_sync_status: status,
         mcp_server_count: local_count,
         global_mcp_server_count: global_count,
+        mcp_server_names,
+        skill_names,
         base_url,
         // 不回传明文 token：列表只给「是否已设置」，编辑时按需拉取真值。
         api_key: String::new(),
@@ -958,26 +993,20 @@ fn move_environment_dir(src: &Path, dst: &Path) -> Result<EnvMoveOutcome, String
     }
 }
 
-/// 四档模型覆盖：写入 ANTHROPIC_DEFAULT_{TIER}_MODEL / _NAME 时按档取值，
-/// 留空的档回退到主模型（ANTHROPIC_MODEL）。与供应商库的档位语义一致。
+/// 四档模型覆盖：写入 ANTHROPIC_DEFAULT_{TIER}_MODEL / _NAME 时按档取值。
+///
+/// 每个字段的 Option 语义：
+/// - `None`  → 用户没改这档（保持磁盘原值，或回退主模型）
+/// - `Some("")` → 用户想清空这档（回退主模型）
+/// - `Some(v)`  → 用户想把这档设为 v
+///
+/// 与供应商库的档位语义一致。
 #[derive(Debug, Clone, Default)]
 pub struct ModelTierOverrides {
-    pub haiku: String,
-    pub sonnet: String,
-    pub opus: String,
-    pub fable: String,
-}
-
-impl ModelTierOverrides {
-    fn get(&self, tier: &str) -> &str {
-        match tier {
-            "HAIKU" => &self.haiku,
-            "SONNET" => &self.sonnet,
-            "OPUS" => &self.opus,
-            "FABLE" => &self.fable,
-            _ => "",
-        }
-    }
+    pub haiku: Option<String>,
+    pub sonnet: Option<String>,
+    pub opus: Option<String>,
+    pub fable: Option<String>,
 }
 
 const MODEL_TIER_NAMES: [&str; 4] = ["HAIKU", "SONNET", "OPUS", "FABLE"];
@@ -1058,10 +1087,10 @@ fn read_settings_env(config_dir: &Path) -> (String, String, String, ModelTierOve
             .to_string()
     };
     let tiers = ModelTierOverrides {
-        haiku: get("ANTHROPIC_DEFAULT_HAIKU_MODEL"),
-        sonnet: get("ANTHROPIC_DEFAULT_SONNET_MODEL"),
-        opus: get("ANTHROPIC_DEFAULT_OPUS_MODEL"),
-        fable: get("ANTHROPIC_DEFAULT_FABLE_MODEL"),
+        haiku: Some(get("ANTHROPIC_DEFAULT_HAIKU_MODEL")),
+        sonnet: Some(get("ANTHROPIC_DEFAULT_SONNET_MODEL")),
+        opus: Some(get("ANTHROPIC_DEFAULT_OPUS_MODEL")),
+        fable: Some(get("ANTHROPIC_DEFAULT_FABLE_MODEL")),
     };
     (
         get("ANTHROPIC_BASE_URL"),
@@ -1096,7 +1125,10 @@ fn apply_settings_env_edit(
     let base = base_url.map(|s| s.trim().to_string());
     let key = api_key.map(|s| s.trim().to_string());
     let model = model.map(|s| s.trim().to_string());
-    if base.is_none() && key.is_none() && model.is_none() {
+    let tiers_has_any = tiers
+        .map(|t| t.haiku.is_some() || t.sonnet.is_some() || t.opus.is_some() || t.fable.is_some())
+        .unwrap_or(false);
+    if base.is_none() && key.is_none() && model.is_none() && !tiers_has_any {
         return Ok(Vec::new());
     }
 
@@ -1163,22 +1195,64 @@ fn apply_settings_env_edit(
         Some(m) if m.is_empty() => {
             apply_keys(Some(String::new()), MODEL_ENV_KEYS, "模型")?;
         }
-        // 写入：主键取模型本身；各档按 tiers 取值，留空回退主模型
+        // 写入：主键取模型本身；各档按 tiers 决定（None 保持原样，Some 写入）
         Some(m) => {
             apply_keys(Some(m.clone()), &["ANTHROPIC_MODEL"], "模型")?;
-            for tier in MODEL_TIER_NAMES {
-                let override_val = tiers.map(|t| t.get(tier)).unwrap_or("").trim();
-                let effective = if override_val.is_empty() {
-                    m.clone()
-                } else {
-                    override_val.to_string()
-                };
-                let model_key = format!("ANTHROPIC_DEFAULT_{}_MODEL", tier);
-                let name_key = format!("ANTHROPIC_DEFAULT_{}_MODEL_NAME", tier);
-                apply_keys(Some(effective), &[&model_key, &name_key], "模型")?;
+            if let Some(t) = tiers {
+                for tier in MODEL_TIER_NAMES {
+                    let tier_val: Option<&str> = match tier {
+                        "HAIKU" => t.haiku.as_deref(),
+                        "SONNET" => t.sonnet.as_deref(),
+                        "OPUS" => t.opus.as_deref(),
+                        "FABLE" => t.fable.as_deref(),
+                        _ => continue,
+                    };
+                    if let Some(val) = tier_val {
+                        let effective = if val.is_empty() {
+                            m.clone() // 用户清空这档 → 回退主模型
+                        } else {
+                            val.to_string()
+                        };
+                        let model_key = format!("ANTHROPIC_DEFAULT_{}_MODEL", tier);
+                        let name_key = format!("ANTHROPIC_DEFAULT_{}_MODEL_NAME", tier);
+                        apply_keys(Some(effective), &[&model_key, &name_key], "模型")?;
+                    }
+                    // None → 用户没改这档，保持磁盘原值
+                }
+            } else {
+                // tiers 未提供档位控制 → 全部回退到主模型
+                for tier in MODEL_TIER_NAMES {
+                    let model_key = format!("ANTHROPIC_DEFAULT_{}_MODEL", tier);
+                    let name_key = format!("ANTHROPIC_DEFAULT_{}_MODEL_NAME", tier);
+                    apply_keys(Some(m.clone()), &[&model_key, &name_key], "模型")?;
+                }
             }
         }
-        None => {}
+        // 主键未变，但可能有 tier 覆盖（用户只改了档位）
+        None => {
+            if let Some(t) = tiers {
+                for tier in MODEL_TIER_NAMES {
+                    let tier_val: Option<&str> = match tier {
+                        "HAIKU" => t.haiku.as_deref(),
+                        "SONNET" => t.sonnet.as_deref(),
+                        "OPUS" => t.opus.as_deref(),
+                        "FABLE" => t.fable.as_deref(),
+                        _ => continue,
+                    };
+                    if let Some(val) = tier_val {
+                        let model_key = format!("ANTHROPIC_DEFAULT_{}_MODEL", tier);
+                        let name_key = format!("ANTHROPIC_DEFAULT_{}_MODEL_NAME", tier);
+                        if val.is_empty() {
+                            // 用户清空这档 → 删除该档键（Claude 会自动回退主键）
+                            apply_keys(Some(String::new()), &[&model_key, &name_key], "模型")?;
+                        } else {
+                            apply_keys(Some(val.to_string()), &[&model_key, &name_key], "模型")?;
+                        }
+                    }
+                    // None → 用户没改这档，保持磁盘原值
+                }
+            }
+        }
     }
     // 同一字段多次 apply_keys 可能重复记录标签，去重保持「模型」只出现一次
     {
@@ -1250,7 +1324,15 @@ fn ensure_unique_fields(
 
 fn ensure_default_environment() -> Result<(), String> {
     let rows = db::load_claude_environment_rows()?;
-    if rows.iter().any(|r| r.is_default) {
+    if let Some(mut existing) = rows.into_iter().find(|r| r.is_default) {
+        // 旧版本默认备注迁移到新文案；用户自行编辑过的备注保持不变。
+        const LEGACY_NOTES: &str = "直接运行 claude 使用此环境（不写入 shell 别名块）";
+        const DEFAULT_NOTES: &str = "直接运行 claude 使用默认环境";
+        if existing.notes == LEGACY_NOTES {
+            existing.notes = DEFAULT_NOTES.into();
+            existing.updated_at = now_secs();
+            db::upsert_claude_environment_row(&existing)?;
+        }
         return Ok(());
     }
     let home = home_dir()?;
@@ -1264,7 +1346,7 @@ fn ensure_default_environment() -> Result<(), String> {
         alias_name: "claude".into(),
         is_default: true,
         source: "default".into(),
-        notes: "直接运行 claude 使用此环境（不写入 shell 别名块）".into(),
+        notes: "直接运行 claude 使用默认环境".into(),
         alias_installed: false,
         provider_id: String::new(),
         created_at: now,
@@ -1840,12 +1922,18 @@ pub fn clone_environment(payload: ClaudeEnvClonePayload) -> Result<ClaudeEnvActi
         }
     }
 
-    let clone_tiers = tier_overrides_from(
+    let mut clone_tiers = tier_overrides_from(
         payload.model_haiku.as_ref(),
         payload.model_sonnet.as_ref(),
         payload.model_opus.as_ref(),
         payload.model_fable.as_ref(),
     );
+    // 新建环境沿用旧语义：未填写的档位回退到本次指定的主模型，
+    // 避免复制源环境 settings.json 后残留源模型的档位值。
+    clone_tiers.haiku.get_or_insert_with(String::new);
+    clone_tiers.sonnet.get_or_insert_with(String::new);
+    clone_tiers.opus.get_or_insert_with(String::new);
+    clone_tiers.fable.get_or_insert_with(String::new);
     let override_fields = match apply_settings_overrides(
         &dst,
         payload.base_url.as_deref(),
@@ -2981,8 +3069,8 @@ mod tests {
             // 模型与档位不由供应商同步，保留环境里已有的值。
             assert_eq!(model, "claude-old", "{} 不应覆盖主模型", dir.display());
             assert_eq!(
-                tier_values.opus,
-                "claude-old-opus",
+                tier_values.opus.as_deref(),
+                Some("claude-old-opus"),
                 "{} 不应覆盖档位模型",
                 dir.display()
             );

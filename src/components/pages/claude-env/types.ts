@@ -19,6 +19,8 @@ export interface ClaudeEnvironment {
   mcpSyncStatus?: string;
   mcpServerCount?: number;
   globalMcpServerCount?: number;
+  mcpServerNames?: string[];
+  skillNames?: string[];
   // settings.json → env 节点实时读取（不入库），缺失为空串。
   baseUrl: string;
   // 列表接口出于安全不回传明文 token，此字段恒为空；编辑时经 get_claude_env_secret 拉取。

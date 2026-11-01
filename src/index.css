@@ -4073,28 +4073,6 @@ button.skill-tag-none:hover {
   align-items: center;
   gap: 6px;
 }
-.claude-env-shell-hint {
-  color: var(--seed-muted);
-  font-size: var(--text-sm);
-}
-.claude-env-summary-actions {
-  flex-basis: 100%;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-top: 2px;
-}
-.claude-env-link-btn {
-  border: none;
-  background: transparent;
-  color: var(--seed-primary);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  padding: 0;
-}
-.claude-env-link-btn:hover {
-  text-decoration: underline;
-}
 .claude-env-disclaimer {
   margin: 0 0 14px;
   padding: 10px 12px;
@@ -4164,11 +4142,6 @@ button.skill-tag-none:hover {
   border: 1px solid var(--seed-border);
   color: var(--seed-muted);
   background: transparent;
-}
-.claude-env-badge.source-default {
-  color: var(--seed-primary);
-  border-color: color-mix(in srgb, var(--seed-primary) 40%, transparent);
-  background: color-mix(in srgb, var(--seed-primary) 10%, transparent);
 }
 .claude-env-badge.source-managed,
 .claude-env-badge.source-imported {

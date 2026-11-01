@@ -89,11 +89,6 @@ export async function invokeRemoveEnvAlias(id: string): Promise<CodexEnvShellSta
   return invoke("remove_codex_env_alias", { id }) as Promise<CodexEnvShellStatus>;
 }
 
-export async function invokeRemoveAllAliases(): Promise<CodexEnvShellStatus> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke("remove_all_codex_env_aliases") as Promise<CodexEnvShellStatus>;
-}
-
 export async function invokeShellStatus(): Promise<CodexEnvShellStatus> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke("get_codex_env_shell_status") as Promise<CodexEnvShellStatus>;
@@ -142,9 +137,4 @@ export async function invokeSyncSkills(
     message: string;
     skillCount: number;
   }>;
-}
-
-export async function invokeSyncAllMcp(): Promise<CodexEnvMcpSyncResult> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke("sync_all_codex_env_mcp") as Promise<CodexEnvMcpSyncResult>;
 }

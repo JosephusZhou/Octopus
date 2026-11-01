@@ -15,7 +15,6 @@ import {
   invokeDelete,
   invokeInstallEnvAlias,
   invokeRemoveEnvAlias,
-  invokeRemoveAllAliases,
   invokeShellStatus,
   invokeReveal,
   invokeOpenConfig,
@@ -23,7 +22,6 @@ import {
   invokeFetchRemoteModels,
   invokeSyncMcp,
   invokeSyncSkills,
-  invokeSyncAllMcp,
 } from "./codex-env/api";
 import { invokeList as invokeProviderList } from "./ai-providers/api";
 import {
@@ -248,26 +246,14 @@ function sourceLabel(source: string, isDefault: boolean): string {
   return source;
 }
 
-function mcpStatusLabel(env: CodexEnvironment): string {
-  const local = env.mcpServerCount ?? 0;
-  const global = env.globalMcpServerCount ?? 0;
-  const status = env.mcpSyncStatus || "";
-  if (env.isDefault || status === "default") {
-    return global > 0 ? `MCP：全局 ${global} 个` : "MCP：全局无配置";
-  }
-  if (status === "in_sync") {
-    return global > 0 ? `MCP：与全局一致 (${local})` : "MCP：与全局一致 (0)";
-  }
-  if (status === "missing") {
-    return global > 0 ? `MCP：未同步 (0/${global})` : "MCP：无本地文件";
-  }
-  if (status === "out_of_sync") {
-    return `MCP：未对齐 (${local}/${global})`;
-  }
-  if (status === "no_global") {
-    return local > 0 ? `MCP：本地 ${local} 个（无全局文件）` : "MCP：无全局文件";
-  }
-  return "MCP：未知";
+function namesSummary(
+  label: string,
+  names: string[] | undefined,
+  count: number | undefined,
+): string {
+  const list = names ?? [];
+  if (list.length === 0) return `${label}：无`;
+  return `${label}：${list.join("、")} 等 ${count ?? list.length} 个`;
 }
 
 /* ===== Component ===== */
@@ -424,8 +410,6 @@ export default function CodexEnv() {
     if (!showClone) setCloneSourceOpen(false);
   }, [showClone, showEdit]);
 
-  const nonDefaultCount = useMemo(() => envs.filter((e) => !e.isDefault).length, [envs]);
-
   const cloneSourceEnv = useMemo(
     () => envs.find((e) => e.id === cloneSourceId) ?? null,
     [envs, cloneSourceId],
@@ -453,7 +437,7 @@ export default function CodexEnv() {
       setCloneSyncMcp(true);
       setCloneSyncSkills(true);
       setCloneSyncAgents(true);
-      setCloneSyncOtherData(false);
+      setCloneSyncOtherData(true);
       setCloneSyncMode("full");
       setCloneInstallAlias(true);
       setCloneError("");
@@ -853,20 +837,6 @@ export default function CodexEnv() {
     [refresh],
   );
 
-  const handleRemoveAllAliases = useCallback(async () => {
-    setBusy(true);
-    try {
-      const status = await invokeRemoveAllAliases();
-      setShell(status);
-      setStatusMsg(status.message);
-      await refresh();
-    } catch (err) {
-      setStatusMsg(`清除别名失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setBusy(false);
-    }
-  }, [refresh]);
-
   const handleReveal = useCallback(async (id: string) => {
     try {
       const result = await invokeReveal(id);
@@ -925,27 +895,6 @@ export default function CodexEnv() {
     [refresh],
   );
 
-  const handleSyncAllMcp = useCallback(async () => {
-    setBusy(true);
-    try {
-      const result = await invokeSyncAllMcp();
-      setStatusMsg(result.message);
-      await refresh();
-    } catch (err) {
-      setStatusMsg(`批量同步 MCP 失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setBusy(false);
-    }
-  }, [refresh]);
-
-  const mcpOutOfSyncCount = useMemo(
-    () =>
-      envs.filter(
-        (e) => !e.isDefault && (e.mcpSyncStatus === "out_of_sync" || e.mcpSyncStatus === "missing"),
-      ).length,
-    [envs],
-  );
-
   const copyPreview = useCallback(async () => {
     const text = shell?.preview || "";
     if (!text) return;
@@ -995,53 +944,16 @@ export default function CodexEnv() {
         {loaded && envs.length > 0 && (
           <div className="mcp-summary claude-env-summary">
             共 <strong>{envs.length}</strong> 个环境
-            {nonDefaultCount > 0 && (
-              <>
-                ，其中 <strong>{nonDefaultCount}</strong> 个额外环境
-              </>
-            )}
-            {shell && (
-              <span className="claude-env-shell-hint">
-                {shell.blockPresent
-                  ? ` · shell 别名已写入（${shell.aliases.length} 个）`
-                  : " · 尚未写入 shell 别名"}
-              </span>
-            )}
-            {(nonDefaultCount > 0 || shell?.blockPresent) && (
-              <div className="claude-env-summary-actions">
-                {nonDefaultCount > 0 && (
-                  <button
-                    type="button"
-                    className="claude-env-link-btn"
-                    onClick={() => void handleSyncAllMcp()}
-                    disabled={busy}
-                  >
-                    {mcpOutOfSyncCount > 0
-                      ? `同步 MCP 到自定义（${mcpOutOfSyncCount} 未对齐）`
-                      : "同步 MCP 到自定义"}
-                  </button>
-                )}
-                {shell?.blockPresent && (
-                  <button
-                    type="button"
-                    className="claude-env-link-btn"
-                    onClick={() => void handleRemoveAllAliases()}
-                    disabled={busy}
-                  >
-                    清除全部别名块
-                  </button>
-                )}
-              </div>
-            )}
           </div>
         )}
 
         {loaded && envs.length > 0 && (
           <div className="claude-env-disclaimer">
-            通过 <code>CODEX_HOME</code> 隔离多套 Codex CLI 配置目录（主要服务 CLI）。复制始终包含
-            config.toml，AGENTS.md / skills 可在新建时勾选，不含 auth / 会话。MCP 源为默认{" "}
-            <code>~/.codex/config.toml</code> 的 <code>[mcp_servers]</code>
-            ；可用「同步 MCP」覆盖写入各自定义环境。全局 MCP 页仍只写默认根。
+            通过 <code>CODEX_HOME</code> 隔离多套 Codex CLI 配置目录。新建环境默认复制源环境的
+            config.toml 和 AGENTS.md，skills、会话、记忆等配置可选软链接或者全量复制。默认环境的 MCP
+            在 <code>~/.codex/config.toml</code>；自定义环境在{" "}
+            <code>{"${自定义配置目录}/config.toml"}</code>
+            ，默认隔离，可用「同步 MCP」功能把默认环境 MCP 同步到自定义环境中。
           </div>
         )}
 
@@ -1070,11 +982,11 @@ export default function CodexEnv() {
                 <div className="claude-env-card-main">
                   <div className="claude-env-title-row">
                     <span className="claude-env-name">{env.name}</span>
-                    <span
-                      className={`claude-env-badge source-${env.isDefault ? "default" : env.source}`}
-                    >
-                      {sourceLabel(env.source, env.isDefault)}
-                    </span>
+                    {!env.isDefault && (
+                      <span className={`claude-env-badge source-${env.source}`}>
+                        {sourceLabel(env.source, env.isDefault)}
+                      </span>
+                    )}
                     {!env.dirExists && <span className="claude-env-badge warn">目录不存在</span>}
                     {env.aliasInstalled && !env.isDefault && (
                       <span className="claude-env-badge ok">别名已写入</span>
@@ -1100,35 +1012,24 @@ export default function CodexEnv() {
                     启动：
                     {env.isDefault ? <code>codex</code> : <code>{env.aliasName}</code>}
                     {!env.isDefault && (
-                      <span className="claude-env-meta-dim"> （CODEX_HOME → 该目录）</span>
+                      <span className="claude-env-meta-dim">
+                        {" （"}
+                        <code>{`CODEX_HOME=${displayPath(env.configDir)} codex`}</code>
+                        {"）"}
+                      </span>
                     )}
                   </div>
-                  <div className="claude-env-meta">{mcpStatusLabel(env)}</div>
-                  <div className="claude-env-meta">skills: {env.skillCount ?? 0}个</div>
-                  {(env.model || env.modelProvider || env.baseUrl) && (
+                  <div className="claude-env-meta">
+                    {namesSummary("MCP", env.mcpServerNames, env.mcpServerCount)}
+                  </div>
+                  <div className="claude-env-meta">
+                    {namesSummary("skills", env.skillNames, env.skillCount)}
+                  </div>
+                  {env.model && (
                     <div className="claude-env-meta">
-                      {env.model ? (
-                        <>
-                          模型：<code>{env.model}</code>{" "}
-                        </>
-                      ) : null}
-                      {env.modelProvider ? (
-                        <>
-                          Provider：<code>{env.modelProvider}</code>{" "}
-                        </>
-                      ) : null}
-                      {env.baseUrl ? (
-                        <>
-                          Base：<code>{env.baseUrl}</code>
-                        </>
-                      ) : null}
+                      模型：<code>{env.model}</code>
                     </div>
                   )}
-                  <div className="claude-env-tags">
-                    <span className={env.hasConfig ? "on" : "off"}>config</span>
-                    <span className={env.hasSkills ? "on" : "off"}>skills</span>
-                    <span className={env.hasAuth ? "on" : "off"}>auth</span>
-                  </div>
                   {env.notes ? <div className="claude-env-notes">{env.notes}</div> : null}
                 </div>
                 <div className="claude-env-actions">
@@ -1136,7 +1037,7 @@ export default function CodexEnv() {
                     <button
                       type="button"
                       className="claude-env-action-btn"
-                      data-tooltip="同步默认环境 skills 到此环境"
+                      data-tooltip="同步默认环境 skills"
                       onClick={() => void handleSyncSkills(env)}
                       disabled={busy || !env.dirExists}
                     >
@@ -1147,7 +1048,7 @@ export default function CodexEnv() {
                     <button
                       type="button"
                       className="claude-env-action-btn"
-                      data-tooltip="同步默认环境 MCP 到此环境"
+                      data-tooltip="同步默认环境 MCP"
                       onClick={() => void handleSyncMcp(env)}
                       disabled={busy || !env.dirExists}
                     >
@@ -1554,21 +1455,6 @@ export default function CodexEnv() {
                   同步 AGENTS.md（复制源环境 <code>AGENTS.md</code> 到新环境）
                 </span>
               </label>
-              <label className="ui-check" htmlFor="xe-sync-mcp">
-                <input
-                  id="xe-sync-mcp"
-                  type="checkbox"
-                  className="ui-check-input"
-                  checked={cloneSyncMcp}
-                  onChange={(e) => setCloneSyncMcp(e.target.checked)}
-                  disabled={busy}
-                />
-                <CheckGlyph />
-                <span className="ui-check-label">
-                  同步默认环境 MCP（将 <code>~/.codex/config.toml</code> 的 [mcp_servers]
-                  写入新环境）
-                </span>
-              </label>
               <label className="ui-check" htmlFor="xe-sync-other-data">
                 <input
                   id="xe-sync-other-data"
@@ -1613,6 +1499,21 @@ export default function CodexEnv() {
                   <span>软链接同步</span>
                 </label>
               </div>
+              <label className="ui-check" htmlFor="xe-sync-mcp">
+                <input
+                  id="xe-sync-mcp"
+                  type="checkbox"
+                  className="ui-check-input"
+                  checked={cloneSyncMcp}
+                  onChange={(e) => setCloneSyncMcp(e.target.checked)}
+                  disabled={busy}
+                />
+                <CheckGlyph />
+                <span className="ui-check-label">
+                  同步默认环境 MCP（将 <code>~/.codex/config.toml</code> 的 [mcp_servers]
+                  写入新环境）
+                </span>
+              </label>
               <label className="ui-check" htmlFor="xe-install-alias">
                 <input
                   id="xe-install-alias"
@@ -1634,30 +1535,30 @@ export default function CodexEnv() {
             </div>
             <div className="claude-env-form-hint">
               <span className="claude-env-form-hint-line">
-                * 始终复制 config.toml；AGENTS.md、skills/
-                按上方勾选决定是否复制。其他数据默认不复制；勾选后会复制源环境中除上述选项外的目录和文件。
+                * 默认复制 config.toml、AGENTS.md， 其他数据可选复制
               </span>
               <span className="claude-env-form-hint-line">
-                * model / provider / Base URL 留空时沿用源环境 config.toml；填写后写入目标
-                config.toml。
+                * model / provider / Base URL 留空时沿用源环境 config.toml，填写则写入新环境
+                config.toml
               </span>
               <span className="claude-env-form-hint-line">
-                * Token 留空不写 auth.json；填写后写入目标环境 <code>auth.json</code> 的{" "}
-                <code>OPENAI_API_KEY</code>。
+                * Token 留空时沿用源环境 auth.json，填写则写入新环境 <code>auth.json</code> 的{" "}
+                <code>OPENAI_API_KEY</code>
               </span>
               <span className="claude-env-form-hint-line">
-                * 勾选同步 MCP 会以默认环境 <code>[mcp_servers]</code> 覆盖新环境。
-              </span>
-              <span className="claude-env-form-hint-line">
-                * 软链接同步会使已选的 skills、AGENTS.md
-                与其他数据跟随源环境变化；全量同步会创建独立副本。
+                * 软链接同步（推荐）会使已选的 skills、AGENTS.md
+                与其他数据跟随源环境变化，即共用源环境的会话、历史和记忆等内容，全量同步会创建独立副本
               </span>
               <span className="claude-env-form-hint-line">
                 * 由于 Codex MCP 与供应商配置共同位于 <code>config.toml</code>，软链接模式无法对 MCP
-                单独建立双向同步，Codex MCP 仍会按配置内容复制到新环境。
+                单独建立双向同步，Codex MCP 仍会按配置内容复制到新环境
               </span>
               <span className="claude-env-form-hint-line">
-                * 勾选写入别名会把启动别名追加进当前 shell 配置，需 source 或新开终端后生效。
+                * 勾选同步 MCP 会以默认环境 <code>[mcp_servers]</code> 覆盖新环境的 MCP 配置
+              </span>
+              <span className="claude-env-form-hint-line">
+                * 勾选写入别名会把该环境的启动别名追加进当前 shell 配置文件，需 source
+                或新开终端后生效
               </span>
             </div>
             {cloneError && <div className="mcp-form-error">{cloneError}</div>}
