@@ -11,7 +11,7 @@ Octopus 是一个 Tauri 2 桌面应用，用于发现本机 AI coding agent，�
 - 应用数据：macOS/Linux 使用 `~/.octopus/`；Windows 优先使用
   `%LOCALAPPDATA%\Octopus`，同时兼容旧的 `~/.octopus/`。
 
-版本发布：当前版本为 `0.4.0`。更新版本号时需要同步修改以下 5 个文件：
+版本发布：当前版本为 `0.5.0`。更新版本号时需要同步修改以下 5 个文件：
 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`、
 `src-tauri/Cargo.lock` 和 `README.md`。
 
