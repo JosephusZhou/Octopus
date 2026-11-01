@@ -29,18 +29,15 @@ pub struct UpgradeStep {
 }
 
 /// 已从注册表移除、需要在适配升级时从配置与数据库中清掉的 agent 标识。
-/// 覆盖：国际版 codebuddy、CodeBuddy CN（codebuddy-cn）、Oh-My-Pi（oh-my-pi/omp）。
-const REMOVED_AGENT_NAMES: &[&str] = &["codebuddy", "codebuddy-cn", "oh-my-pi", "omp"];
+/// 覆盖：国际版 codebuddy、CodeBuddy CN（codebuddy-cn）。Oh-My-Pi 已重新支持，不再清理。
+const REMOVED_AGENT_NAMES: &[&str] = &["codebuddy", "codebuddy-cn"];
 
 /// 判断配置键名是否涉及已下线 agent（大小写不敏感；兼容 camelCase / kebab / snake 写法）。
 /// - `codebuddy`：任意位置子串（含 codebuddy-cn / CodeBuddyCN 等变体）
-/// - `ohmy`：任意位置子串（含 oh-my-pi / ohMyPi 等变体）
-/// - `omp`：仅匹配独立键名或以 `omp` 前缀的键（如 omp / ompConfig / omp-cli），
-///   避免误删 prompt / component / company 等普通英文键
 fn is_legacy_key(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
     let compact: String = lower.chars().filter(|c| *c != '-' && *c != '_').collect();
-    compact.contains("codebuddy") || compact.contains("ohmy") || compact.starts_with("omp")
+    compact.contains("codebuddy")
 }
 
 /// 递归剔除 JSON 对象中键名涉及已下线 agent 的字段，返回移除数量。
@@ -104,7 +101,8 @@ pub fn scrub_legacy_skills_meta() -> Result<(), String> {
 
 /* ===== 各版本适配步骤 ===== */
 
-/// 0.3.0：清理已下线 agent（codebuddy 系列 / oh-my-pi 系列）在配置文件与数据库中的残留。
+/// 0.3.0：清理已下线 agent（仅 codebuddy 系列）在配置文件与数据库中的残留。
+/// Oh-My-Pi 已重新支持，本步骤不再清理其配置键与数据库绑定。
 fn migrate_v_0_3_0(root: &mut Value) -> Result<(), String> {
     clean_legacy_agent_data()?;
     scrub_legacy_skills_meta()?;
@@ -218,10 +216,14 @@ mod tests {
             }
         });
         let removed = scrub_legacy_agent_keys(&mut root);
-        assert_eq!(removed, 3);
+        // 只清理 codebuddy；Oh-My-Pi 已重新支持，其键名必须保留。
+        assert_eq!(removed, 1);
         assert!(root.get("codebuddy").is_none());
-        assert!(root.get("omp").is_none());
-        assert!(root.get("nested").unwrap().get("ohMyPi").is_none());
+        assert_eq!(root["omp"], "legacy");
+        assert_eq!(
+            root["nested"]["ohMyPi"]["providerId"],
+            serde_json::json!("x")
+        );
         assert_eq!(root["nested"]["keep"]["prompt"], "ok");
         assert_eq!(root["backup"]["enabled"], true);
     }

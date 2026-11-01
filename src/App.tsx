@@ -4,6 +4,7 @@ import AgentSniff from "./components/pages/AgentSniff";
 import AiProviders from "./components/pages/AiProviders";
 import BackupManage from "./components/pages/BackupManage";
 import OpenCodeConfig from "./components/pages/OpenCodeConfig";
+import OmpConfig from "./components/pages/OmpConfig";
 import PiConfig from "./components/pages/PiConfig";
 import ProjectConfig from "./components/pages/ProjectConfig";
 import SkillsManage from "./components/pages/SkillsManage";
@@ -34,6 +35,7 @@ export type MainView =
   | "ai-providers"
   | "opencode-config"
   | "pi-config"
+  | "omp-config"
   | "project-config"
   | "skills-manage"
   | "mcp-manage"
@@ -186,6 +188,7 @@ export default function App() {
         {view === "ai-providers" && <AiProviders />}
         {view === "opencode-config" && <OpenCodeConfig />}
         {view === "pi-config" && <PiConfig />}
+        {view === "omp-config" && <OmpConfig />}
         {view === "project-config" && <ProjectConfig />}
         {view === "skills-manage" && <SkillsManage />}
         {view === "mcp-manage" && <McpManage />}

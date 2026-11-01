@@ -1,4 +1,4 @@
-/** OpenCode / Pi 配置页的 Tauri 命令封装。 */
+/** OpenCode / Pi / Oh-My-Pi 配置页的 Tauri 命令封装。 */
 
 import type {
   AgentActionResult,

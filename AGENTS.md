@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Octopus 是一个 Tauri 2 桌面应用，用于发现本机 AI coding agent，并管理 MCP、Skills、
-多环境、OpenCode配置、Pi配置、供应商、项目配置和备份。
+多环境、OpenCode配置、Pi配置、OMP配置、供应商、项目配置和备份。
 
 ## 技术栈与命令
 
@@ -50,8 +50,8 @@ src-tauri/src/
   skills.rs                       Skills 库、导入、更新、导出和分发
   claude_env.rs / codex_env.rs    CLAUDE_CONFIG_DIR / CODEX_HOME 多环境
   opencode_config.rs              OpenCode provider/model/auth
-  pi_model_config.rs              Pi 模型和 auth
-  agent_model_config.rs           OpenCode / Pi 的统一模型分派
+  pi_model_config.rs              Pi / Oh-My-Pi 模型和 auth
+  agent_model_config.rs           OpenCode / Pi / Oh-My-Pi 的统一模型分派
   project_config.rs               项目级 AI 骨架、MCP 和共享 Skills
   ai_provider.rs                  供应商、加密 API Key 和 custom models
   agent_open.rs                  打开 Agent 配置文件的 command
@@ -100,7 +100,7 @@ await invoke("command_name", { ... });
 
 ```text
 codex, claude-code, claude-desktop, opencode, antigravity,
-workbuddy, pi
+workbuddy, pi, oh-my-pi
 ```
 
 历史上下线的 agent 由启动时的版本适配升级统一清理：`config::run_startup_config_upgrade`
@@ -202,7 +202,7 @@ CLIProxyAPI 只提供行为同步参考，不是运行时依赖。上游变更�
 ## 前端视图
 
 主界面包含 Agent、MCP、Skills、Claude 环境、Codex 环境、OpenCode配置、Pi配置、
-供应商、路由聚合、项目配置和备份管理；设置界面包含偏好、网络代理和 WebDAV。
+OMP配置、供应商、路由聚合、项目配置和备份管理；设置界面包含偏好、网络代理和 WebDAV。
 
 ## 修改规则
 

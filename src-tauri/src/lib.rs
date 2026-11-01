@@ -860,7 +860,7 @@ async fn fetch_claude_env_remote_models(
         .map_err(|e| format!("拉取远端模型任务失败: {e}"))?
 }
 
-/* ===== Agent 通用模型配置（OpenCode / Pi）===== */
+/* ===== Agent 通用模型配置（OpenCode / Pi / Oh-My-Pi）===== */
 
 #[tauri::command]
 async fn get_agent_model_config(

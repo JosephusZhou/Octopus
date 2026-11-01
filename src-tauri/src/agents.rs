@@ -9,7 +9,7 @@
 pub enum McpDialect {
     /// Codex: `config.toml` → `[mcp_servers.*]`
     TomlMcpServers,
-    /// Claude Desktop / WorkBuddy / Pi: 顶层 `mcpServers`
+    /// Claude Desktop / WorkBuddy / Pi / Oh-My-Pi: 顶层 `mcpServers`
     JsonMcpServers,
     /// OpenCode: 顶层 `mcp`（JSON/JSONC）
     JsonMcp,
@@ -324,6 +324,33 @@ static AGENTS: &[AgentSpec] = &[
         skills_roots: &["~/.pi/agent/skills"],
         skills_supported: true,
         prompt_file: Some("AGENTS.md"),
+        shared_root: None,
+    },
+    // 8. Oh-My-Pi（can1357/oh-my-pi，CLI `omp`，Pi 的全功能 fork）
+    // 全局 MCP：内置 `mcp.json`（标准 mcpServers），支持 stdio / http / sse。
+    AgentSpec {
+        name: "oh-my-pi",
+        display_name: "Oh-My-Pi",
+        icon: "Om",
+        bin_paths: &[
+            "~/.bun/bin/omp",
+            "~/.local/bin/omp",
+            "/usr/local/bin/omp",
+            "/opt/homebrew/bin/omp",
+        ],
+        search_names: &["omp"],
+        config_paths: &["~/.omp"],
+        scan_app_support: false,
+        mcp: McpSpec {
+            dialect: McpDialect::JsonMcpServers,
+            path: McpPath::Fixed(".omp/agent/mcp.json"),
+            jsonc: false,
+        },
+        mcp_managed: true,
+        skills_roots: &["~/.omp/agent/skills"],
+        skills_supported: true,
+        // OMP 的用户级提示词位于 agent 子目录（`~/.omp/agent/AGENTS.md`）。
+        prompt_file: Some("agent/AGENTS.md"),
         shared_root: None,
     },
 ];

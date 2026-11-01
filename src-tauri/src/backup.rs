@@ -584,7 +584,7 @@ fn build_generic_agent_unit(
             }
         }
         // OpenCode auth（配置目录外）与 Pi 家族 auth/模型文件
-        if matches!(spec.name, "opencode" | "pi") {
+        if matches!(spec.name, "opencode" | "pi" | "oh-my-pi") {
             if let Some(auth) = agent_auth_path(spec.name) {
                 if auth.is_file() {
                     bytes = bytes.saturating_add(file_size(&auth));
@@ -624,7 +624,7 @@ fn build_generic_agent_unit(
         kind: "agent".into(),
         available,
         selected_by_default: is_found && available,
-        contains_secrets: secrets || matches!(spec.name, "opencode" | "codex" | "pi"),
+        contains_secrets: secrets || matches!(spec.name, "opencode" | "codex" | "pi" | "oh-my-pi"),
         estimated_bytes: bytes,
         path_summary: paths.into_iter().take(3).collect::<Vec<_>>().join(" · "),
         warnings: if is_found {
@@ -686,17 +686,18 @@ fn display_path(path: &Path) -> String {
 }
 
 /// 配置目录之外的 auth.json：OpenCode 存于 `~/.local/share/opencode`；
-/// Pi 的 auth 在 agent 目录内，但仍统一登记以便清单与打包。
+/// Pi / Oh-My-Pi 的 auth 在 agent 目录内，但仍统一登记以便清单与打包。
 fn agent_auth_path(agent_name: &str) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     Some(match agent_name {
         "opencode" => home.join(".local/share/opencode/auth.json"),
         "pi" => home.join(".pi/agent/auth.json"),
+        "oh-my-pi" => home.join(".omp/agent/auth.json"),
         _ => return None,
     })
 }
 
-/// Pi 的供应商/默认模型文件（不随 MCP 文件打包，需单独纳入备份）。
+/// Pi 家族的供应商/默认模型文件（不随 MCP 文件打包，需单独纳入备份）。
 fn agent_model_files(agent_name: &str) -> Vec<PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
@@ -705,6 +706,15 @@ fn agent_model_files(agent_name: &str) -> Vec<PathBuf> {
         "pi" => vec![
             home.join(".pi/agent/models.json"),
             home.join(".pi/agent/settings.json"),
+        ],
+        // Oh-My-Pi：模型文件可能为 models.yml / models.yaml / 旧版 models.json，
+        // 默认模型与其它配置在 config.yml / config.yaml；只纳入实际存在的文件。
+        "oh-my-pi" => vec![
+            home.join(".omp/agent/models.yml"),
+            home.join(".omp/agent/models.yaml"),
+            home.join(".omp/agent/models.json"),
+            home.join(".omp/agent/config.yml"),
+            home.join(".omp/agent/config.yaml"),
         ],
         _ => Vec::new(),
     }
@@ -1984,8 +1994,8 @@ fn collect_generic_agent(name: &str, out: &mut Vec<FileEntry>, warnings: &mut Ve
         }
     }
 
-    // OpenCode / Pi 配置目录外的补充文件（auth、供应商模型配置）
-    if matches!(spec.name, "opencode" | "pi") {
+    // OpenCode / Pi 家族配置目录外的补充文件（auth、供应商模型配置）
+    if matches!(spec.name, "opencode" | "pi" | "oh-my-pi") {
         if let Some(auth) = agent_auth_path(spec.name) {
             push_file(
                 out,
@@ -1998,12 +2008,14 @@ fn collect_generic_agent(name: &str, out: &mut Vec<FileEntry>, warnings: &mut Ve
         }
         for f in agent_model_files(spec.name) {
             let fname = f.file_name().and_then(|n| n.to_str()).unwrap_or("models");
+            // Oh-My-Pi 的 models.yml 可能含明文 apiKey，按敏感文件登记。
+            let secret = spec.name == "oh-my-pi";
             push_file(
                 out,
                 &f,
                 &format!("{}/{}", archive_root, fname),
                 &unit,
-                false,
+                secret,
                 warnings,
             );
         }

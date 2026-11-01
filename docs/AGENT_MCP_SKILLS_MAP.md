@@ -9,13 +9,17 @@
 > 改 agents 路径或方言时，**先改 `agents.rs`**，再同步本文。
 >
 > **修订摘要（相对 v3 2026-08-14）**：
-> - Agent 注册表收窄为 7 个：`codex` / `claude-code` / `claude-desktop` / `opencode` /
->   `antigravity` / `workbuddy` / `pi`（历史下线的 agent 由启动时配置升级统一清理残留）
+> - Agent 注册表为 8 个：`codex` / `claude-code` / `claude-desktop` / `opencode` /
+>   `antigravity` / `workbuddy` / `pi` / `oh-my-pi`（历史下线的 agent 由启动时配置升级统一清理残留）
 > - McpPath 移除 `CodebuddyMcp` 变体
-> - 模型配置后端仅保留 OpenCode / Pi 两个通用后端（`opencode_config` / `pi_model_config`）
+> - 模型配置后端保留 OpenCode / Pi 两个通用后端（`opencode_config` / `pi_model_config`），
+>   `pi_model_config` 同时承载 Pi 与 Oh-My-Pi
 > - 项目级 MCP 写入：经 `project_config::init_project_config` 的 `AGENT_SPECS`
 >   落地（不再分散在适配器代码里）
 > - §10 本机校验摘要删除（机器相关，迁入测试 fixtures）
+> - 2026-10 起重新纳入 Oh-My-Pi（`oh-my-pi`）：全局 MCP `~/.omp/agent/mcp.json`、
+>   项目 MCP `.omp/mcp.json`、Skills `~/.omp/agent/skills`、模型配置 YAML；
+>   0.3.0 启动升级只清理 `codebuddy` / `codebuddy-cn`，不再清理 OMP 残留
 
 ---
 
@@ -40,6 +44,7 @@
 | 5 | `antigravity` | Antigravity | `~/.gemini` | false |
 | 6 | `workbuddy` | WorkBuddy | `~/.workbuddy` | false |
 | 7 | `pi` | Pi | `~/.pi` | false |
+| 8 | `oh-my-pi` | Oh-My-Pi | `~/.omp` | false |
 
 规则（与 `sniff.rs` / `agents.rs` 一致）：
 
@@ -61,7 +66,7 @@
 |---------|--------|----------|------------|
 | `TomlMcpServers` | `[mcp_servers.*]` | TOML | `codex` |
 | `ClaudeJsonUser` | `mcpServers` | JSON | `claude-code`（独立方言，因为文件位置特殊：`~/.claude.json` 而非 `~/.claude/*.json`） |
-| `JsonMcpServers` | `mcpServers` | JSON / JSONC（按 spec） | `claude-desktop` / `workbuddy` / `pi` |
+| `JsonMcpServers` | `mcpServers` | JSON / JSONC（按 spec） | `claude-desktop` / `workbuddy` / `pi` / `oh-my-pi` |
 | `JsonMcp` | `mcp`（**不是** `mcpServers`） | JSON / JSONC（`json5` 解析） | `opencode` |
 | `JsonAntigravity` | `mcpServers`，**仅写 stdio**（远程 `serverUrl` 不建模） | JSON | `antigravity`（闭源 Google App/IDE/CLI，非开源 gcli） |
 
@@ -69,7 +74,7 @@
 
 | variant | 含义 | 用到 |
 |---------|------|------|
-| `Fixed(&'static str)` | 相对用户主目录的固定路径，如 `.codex/config.toml` | `codex` / `claude-code` / `antigravity` / `workbuddy` / `pi` |
+| `Fixed(&'static str)` | 相对用户主目录的固定路径，如 `.codex/config.toml` | `codex` / `claude-code` / `antigravity` / `workbuddy` / `pi` / `oh-my-pi` |
 | `OpencodeConfig` | `~/.config/opencode/opencode.{jsonc,json}`（存在优先，缺省 `.json`） | `opencode` |
 | `ClaudeDesktopScan` | `~/Library/Application Support` 下扫 `claude_desktop_config.json` | `claude-desktop` |
 
@@ -84,6 +89,7 @@
 | `antigravity` | `~/.gemini/config/skills`（主）, `~/.gemini/antigravity-cli/skills`（CLI 根，兼容扫描） | ✅ |
 | `workbuddy` | `~/.workbuddy/skills`（官方文档：用户级路径） | ✅ |
 | `pi` | `~/.pi/agent/skills` | ✅ |
+| `oh-my-pi` | `~/.omp/agent/skills` | ✅ |
 
 ### 3.4 写策略（已实现于 `mcp_config.rs`）
 
@@ -109,6 +115,7 @@
 | `antigravity` | `~/.gemini/config/mcp_config.json` | `JsonAntigravity` | `~/.gemini/config/skills` + `~/.gemini/antigravity-cli/skills` |
 | `workbuddy` | `~/.workbuddy/mcp.json`（无点前缀） | `JsonMcpServers` | `~/.workbuddy/skills` |
 | `pi` | `~/.pi/agent/mcp.json`（内置 builtin:mcp） | `JsonMcpServers` | `~/.pi/agent/skills` |
+| `oh-my-pi` | `~/.omp/agent/mcp.json` | `JsonMcpServers` | `~/.omp/agent/skills` |
 
 ---
 
@@ -305,6 +312,45 @@ AgentBuddy 只维护 AGENTS.md，不生成 GEMINI.md 指针。
 字段映射到通用 DTO：`contextWindow`→`limitContext`、`maxTokens`→`limitOutput`、
 `input`→`modalitiesInput`；未建模字段进 `extraOptions` 原样往返。列表 DTO **永不**回传明文 API Key。
 
+### 5.8 Oh-My-Pi (`oh-my-pi`)
+
+**性质**：Pi 的社区分支，CLI 命令 `omp`，配置根 `~/.omp`（与 Pi 的 `~/.pi` 完全独立）。
+与 Pi 共用 `pi_model_config.rs` 后端，但文件格式与密钥归属不同。
+
+**MCP**
+
+| 项 | 值 |
+|----|-----|
+| 全局文件 | `~/.omp/agent/mcp.json`（顶层 `mcpServers`，方言 `JsonMcpServers`） |
+| 项目文件 | `<repo>/.omp/mcp.json`（单层 `.omp`，无 `agent` 层） |
+| stdio | `command` + `args` + `env` |
+| 远程 | 支持 `stdio` / `http` / `sse` 三种；**不做 Pi 式 SSE 拦截**（拦截依据是 agent 名 `pi`，OMP 不受影响） |
+
+**Skills**
+
+| 项 | 值 |
+|----|-----|
+| 全局 | `~/.omp/agent/skills/<name>/SKILL.md` |
+| 项目 | 兼容 `.agents/skills`，不建 `.omp/skills` 自建目录 |
+
+**提示文件**：`AGENTS.md`（全局 `~/.omp/agent/AGENTS.md`）。
+
+**模型配置**（复用 `pi_model_config.rs` 后端，经 `agent_model_config` 分派 `OhMyPi`）：
+
+| 项 | 值 |
+|----|-----|
+| 模型文件 | `~/.omp/agent/models.yml`（YAML，顶层 `providers`；兼容扫描 `models.yaml` / `models.json`） |
+| 密钥位置 | provider 内 `apiKey`（可为环境变量名或字面密钥），无独立密钥文件 |
+| 默认模型 | `~/.omp/agent/config.yml` 的 `modelRoles.default`（模型 id 可含 `/`，原样读写） |
+| 旧版兼容 | `~/.omp/agent/auth.json` 为一次性迁移来源：读取时把 `auth.json` 中非 `none` 的 provider 密钥迁入 `providers.<id>.apiKey` 并删除对应条目；迁移失败时列表回退为空并给出 warning |
+| 文件权限 | 写入 `models.yml` / `config.yml` 后设为 0600（`atomic_write_secret`） |
+| 支持 API 类型 | `openai-completions` / `openai-responses` / `anthropic-messages` |
+| YAML 注释 | 读写走 `serde_yaml`，保存后原文件注释丢失；前端在 YAML 文本配置上追加 warning 提示 |
+
+字段映射与 Pi 相同：`contextWindow`→`limitContext`、`maxTokens`→`limitOutput`、
+`input`→`modalitiesInput`；未建模字段进 `extraOptions` 原样往返。列表 DTO **永不**回传明文 API Key。
+`modelRoles.default` 由 OMP配置页可读写，其它角色与顶层键保留。
+
 ---
 
 ## 6. AgentBuddy 表单 → 各方言字段映射
@@ -316,7 +362,7 @@ UI 模型（`McpManage.tsx`）：
 - `command` / `args[]` / `env{}`
 - `url` / `headers{}`
 
-| UI | `ClaudeJsonUser` / `JsonMcpServers`（Claude Code / Desktop / WorkBuddy / Pi） | `JsonMcp`（OpenCode） | `TomlMcpServers`（Codex） | `JsonAntigravity`（Antigravity） |
+| UI | `ClaudeJsonUser` / `JsonMcpServers`（Claude Code / Desktop / WorkBuddy / Pi / Oh-My-Pi） | `JsonMcp`（OpenCode） | `TomlMcpServers`（Codex） | `JsonAntigravity`（Antigravity） |
 |----|------------------------------------------------------|------------------------------|-----------------------------|---------------------|
 | title | `mcpServers[title]` | `mcp[title]` | `mcp_servers.title` | `mcpServers[title]` |
 | stdio | `command` + `args` + `env`；可选 `type: "stdio"` | `type: "local"` + `command: [cmd, ...args]` + `environment` | **不写 `type`**；`command` + `args` + `[.env]` + `enabled = true` | `command`（字符串）+ `args[]` + `env{}`；不写 `type` |
@@ -326,7 +372,8 @@ UI 模型（`McpManage.tsx`）：
 
 > Pi 的 SSE 在应用与项目两条路径都按 agent 名拦截：`agent == "pi" && transport == "sse"`
 > 直接报错「Pi 内置 MCP 仅支持 stdio 与 streamable HTTP，不支持 SSE」，不写文件。
-> `JsonMcpServers` 方言被 claude-desktop / workbuddy / pi 共用，拦截依据是 agent 名而非方言。
+> `JsonMcpServers` 方言被 claude-desktop / workbuddy / pi / oh-my-pi 共用，拦截依据是 agent 名而非方言；
+> Oh-My-Pi 实际支持 SSE，故不拦截。
 
 ---
 
@@ -396,6 +443,7 @@ if removeFromAgentConfigs:
 | `antigravity` | `.agents/mcp_config.json`（不建 `.gemini`） | `JsonAntigravity` | ❌（原生 `.agents/skills`） |
 | `workbuddy` | `.workbuddy/mcp.json` | `JsonMcpServers` | ✅（`.workbuddy/skills`） |
 | `pi` | `.pi/mcp.json`（单层，无 `agent` 层） | `JsonMcpServers` | ❌（兼容 `.agents/skills`，不建 `.pi/skills`） |
+| `oh-my-pi` | `.omp/mcp.json`（单层，无 `agent` 层） | `JsonMcpServers` | ❌（兼容 `.agents/skills`，不建 `.omp/skills`） |
 | `claude-desktop` | — | ❌（桌面应用，不做项目级） | — |
 
 **写策略**：复用 `mcp_config::apply_draft_to_file` 的方言写器，**按 server title 合并**、保留文件其它键、
@@ -408,11 +456,11 @@ if removeFromAgentConfigs:
 - 每个 agent 的 `skills_own_dir` 布尔决定自建 skills 目录：
   - **true**（`claude-code` / `workbuddy`）：Full / Symlink 模式勾选 skills 时把
     `<config_dir>/skills` 相对链接到 `.agents/skills`；
-  - **false**（`codex` / `opencode` / `antigravity` / `pi`）：直接依赖通用 `.agents/skills`，
+  - **false**（`codex` / `opencode` / `antigravity` / `pi` / `oh-my-pi`）：直接依赖通用 `.agents/skills`，
     不建不链自己的 skills 目录。
 - 骨架范围（2026-10-22 起收敛）：只创建 `AGENTS.md`、skills（`.agents/skills` 及 `skills_own_dir` 链接）、
   项目 MCP 文件三类，**不创建** `commands` / `rules` / `agents`（含 opencode 的 `plugins` / `tools`）
-  等骨架目录；`codex` / `antigravity` / `pi` 无额外子目录。
+  等骨架目录；`codex` / `antigravity` / `pi` / `oh-my-pi` 无额外子目录。
 - 提示文件：AGENTS.md 在项目最上方统一写一次；`claude-code` / `antigravity` 的 `root_file` 为
   None，**不生成** CLAUDE.md / GEMINI.md 指针。
 - 安全语义：非空真实目录拒绝删除；overwrite 可替换软链接/空目录。
@@ -432,13 +480,19 @@ if removeFromAgentConfigs:
 | WorkBuddy 远程格式 | 官方文档仅披露 stdio 示例；远程 `url`+`headers` 条目默认可加载（已确认） | 按通用 http `url`+`headers` 写 `~/.workbuddy/mcp.json`；`~/.workbuddy/skills` 为官方用户级路径 |
 | Codex Skills | 全局收敛为 `~/.codex/skills` | 扫描与写入均仅使用 `~/.codex/skills`（不再使用 `~/.agents/skills`） |
 | Pi MCP | 内置 `builtin:mcp`（0.99.0 起，1.x 默认开） | 不再依赖社区 pi-mcp-adapter；仅 stdio / streamable HTTP，SSE 按 agent 名拦截 |
+| Oh-My-Pi MCP | 支持 `stdio` / `http` / `sse` 三种传输 | 复用 `JsonMcpServers`；SSE 拦截只针对 agent 名 `pi`，OMP 不拦截 |
+| Oh-My-Pi 模型配置 | YAML（`~/.omp/agent/models.yml`），密钥在 provider 内 `apiKey` | `serde_yaml` 读写，写入后 0600；YAML 注释保存后丢失，前端给 warning |
+| Oh-My-Pi 旧版 auth | `~/.omp/agent/auth.json` 为历史密钥文件 | 读取时一次性迁移到 `providers.<id>.apiKey` 并移除对应条目；迁移失败时列表为空并 warning |
+| Oh-My-Pi 默认模型 | `~/.omp/agent/config.yml` 的 `modelRoles.default` | 可读写该字段，保留其它角色与顶层键 |
+| 0.3.0 启动升级 | 曾清理 OMP 相关残留 | 现仅清理 `codebuddy` / `codebuddy-cn`；OMP 数据（`omp` / `ohMyPi` 键）保留 |
 | Claude Code 大文件 | `~/.claude.json` 含大量状态字段 | 只改 `mcpServers` 键，独立方言 `ClaudeJsonUser` |
 | 项目级 MCP | 写项目会进 git / 需信任 | 全局应用默认不写项目；项目级写入由用户在「项目配置」页显式勾选触发 |
-| SSE 方言差异 | 各产品支持不一 | Pi 直接拒绝 SSE；其余能映射则映射，否则提示跳过 |
+| SSE 方言差异 | 各产品支持不一 | Pi 直接拒绝 SSE；Oh-My-Pi 支持；其余能映射则映射，否则提示跳过 |
 | 密钥 | 配置中常含 token | AgentBuddy 永不日志打印 env/headers 值；API Key 经 `crypto::encrypt` 落 SQLite |
 | OpenCode JSONC | 注释 / 尾逗号 | `json5` 解析；重写 pretty JSON（注释不保留，会抛 warn 给用户） |
 | partial failure | apply 批次中部分 agent 失败 | UI 只把 ok=true 的 agent 写进 `appliedAgents` |
 | Pi 模型配置 | JSON 解析（`~/.pi/agent/models.json`） | 字段映射到统一 DTO，列表 DTO 不回传明文 Key |
+| Oh-My-Pi 模型配置 | YAML 解析（`~/.omp/agent/models.yml`） | 与 Pi 共用 `pi_model_config` 后端；密钥在 provider `apiKey`；列表 DTO 不回传明文 Key |
 | 内部冒烟 server | 嗅探时混入 | 嗅探忽略 `__agentbuddy` 前缀 title |
 
 ---
@@ -454,6 +508,9 @@ if removeFromAgentConfigs:
 - Antigravity（闭源 App/IDE/CLI，非 gcli）：MCP https://antigravity.google/docs/mcp/ 、Skills https://antigravity.google/docs/skills/ 、Rules https://antigravity.google/docs/rules/
 - WorkBuddy 桌面（MCP 指南；远程格式与 skills 路径已确认可用）：https://www.workbuddy.ai/docs/zh/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/MCP-Guide
 - Pi（内置 builtin:mcp）：https://pi.dev/docs/latest/mcp 、https://pi.dev/docs/latest/configuration 、https://pi.dev/docs/latest/skills 、仓库 https://github.com/badlogic/pi-mono
+- Oh-My-Pi（`omp`，Pi 分支）：安装 `bun install -g @oh-my-pi/pi-coding-agent`；本机配置以
+  `~/.omp/agent/models.yml`（YAML `providers`）、`~/.omp/agent/config.yml`（`modelRoles`）、
+  `~/.omp/agent/mcp.json`、`~/.omp/agent/skills` 为准（随安装包源码核对，无公开文档站点）
 
 ### 工程内对照
 
@@ -461,6 +518,8 @@ if removeFromAgentConfigs:
 - 嗅探实现：[`src-tauri/src/sniff.rs`](src-tauri/src/sniff.rs)
 - MCP 写器（apply / remove / sniff）：[`src-tauri/src/mcp_config.rs`](src-tauri/src/mcp_config.rs)
 - Skills 库：[`src-tauri/src/skills.rs`](src-tauri/src/skills.rs)
+- Pi / Oh-My-Pi 模型配置：[`src-tauri/src/pi_model_config.rs`](src-tauri/src/pi_model_config.rs) +
+  [`src-tauri/src/agent_model_config.rs`](src-tauri/src/agent_model_config.rs)（`ModelConfigAgent` 分派）
 - 项目级骨架 + 项目级 MCP：[`src-tauri/src/project_config.rs`](src-tauri/src/project_config.rs) （`AGENT_SPECS`）
 - MCP UI 模型：[`src/components/pages/McpManage.tsx`](src/components/pages/McpManage.tsx)
 - 项目级 UI：[`src/components/pages/ProjectConfig.tsx`](src/components/pages/ProjectConfig.tsx) +
@@ -470,20 +529,25 @@ if removeFromAgentConfigs:
 
 ## 11. 结论（可执行摘要）
 
-1. **5 种 MCP 方言**覆盖 7 个 Agent：`TomlMcpServers` / `ClaudeJsonUser` / `JsonMcpServers` /
+1. **5 种 MCP 方言**覆盖 8 个 Agent：`TomlMcpServers` / `ClaudeJsonUser` / `JsonMcpServers` /
    `JsonMcp` / `JsonAntigravity`（其中 `ClaudeJsonUser` 为 Claude Code 独立方言，因其文件位置
    `~/.claude.json` 特殊）。
-2. **7 个 Agent**（2026-10）：`codex` / `claude-code` / `claude-desktop` / `opencode` /
-   `antigravity` / `workbuddy` / `pi`。历史下线的 agent 由启动时配置升级统一清理残留。
+2. **8 个 Agent**（2026-10）：`codex` / `claude-code` / `claude-desktop` / `opencode` /
+   `antigravity` / `workbuddy` / `pi` / `oh-my-pi`。历史下线的 agent 由启动时配置升级统一清理残留
+   （0.3.0 只清理 `codebuddy` / `codebuddy-cn`，不再清理 OMP）。
 3. **Skills** 主流是 `<root>/skills/<name>/SKILL.md`，项目优先复用通用 `.agents/skills`；
    Claude Desktop 无本地文件 skills/MCP（账户同步）；Codex 全局 skills 收敛为 `~/.codex/skills`（扫描与写入一致）。
 4. **全局应用**默认只写用户级文件；Claude Code 写 `~/.claude.json` 顶层 `mcpServers`，
    Antigravity 写 `~/.gemini/config/mcp_config.json`，**仅 stdio**，远程不建模。
-5. **项目级** MCP 由 `project_config::AGENT_SPECS` 决定落地路径；目前支持 6 个 agent
-   （claude-code / workbuddy / codex / opencode / antigravity / pi）。
+5. **项目级** MCP 由 `project_config::AGENT_SPECS` 决定落地路径；目前支持 7 个 agent
+   （claude-code / workbuddy / codex / opencode / antigravity / pi / oh-my-pi）。
 6. **OpenCode** 用 `mcp` 顶层键 + `local`/`remote`，不是 `mcpServers`；JSONC 用 `json5`。
 7. **Pi** 内置 `builtin:mcp`（不再依赖 pi-mcp-adapter），用 `JsonMcpServers` 方言，仅 stdio /
    streamable HTTP，拒绝 SSE；模型配置经通用 `agent_model_config` + 各自后端
    （`opencode_config` / `pi_model_config`）。
-8. **改动路径**：改 agents / 方言 → 先改 `agents.rs` → 同步本文件 + `AGENT_PROJECT_INFOS`
+8. **Oh-My-Pi** 配置根 `~/.omp`，全局 MCP `~/.omp/agent/mcp.json`、项目 MCP `.omp/mcp.json`、
+   Skills `~/.omp/agent/skills`；与 Pi 共用 `pi_model_config` 后端但模型文件为 YAML
+   （`~/.omp/agent/models.yml`，provider 内 `apiKey`），默认模型读 `config.yml modelRoles.default`；
+   支持 SSE。
+9. **改动路径**：改 agents / 方言 → 先改 `agents.rs` → 同步本文件 + `AGENT_PROJECT_INFOS`
    （前端 mirror）。

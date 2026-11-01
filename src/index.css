@@ -4541,13 +4541,13 @@ button.skill-tag-none:hover {
   flex-direction: column;
   gap: 10px;
 }
-/* OpenCode / Pi 配置页供应商卡片头部含多行 meta，保持顶部对齐的原有布局，
+/* OpenCode / Pi / Oh-My-Pi 配置页供应商卡片头部含多行 meta，保持顶部对齐的原有布局，
    不受 MCP 管理页 .mcp-card-header 居中改动影响 */
 .oc-provider-card .mcp-card-header {
   align-items: flex-start;
   margin-bottom: 10px;
 }
-/* OpenCode / Pi 配置页的供应商操作始终可见，便于直接发现添加/编辑/删除入口。 */
+/* OpenCode / Pi / Oh-My-Pi 配置页的供应商操作始终可见，便于直接发现添加/编辑/删除入口。 */
 .oc-provider-card .mcp-card-actions {
   opacity: 1;
 }

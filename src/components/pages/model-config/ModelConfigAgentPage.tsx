@@ -435,8 +435,10 @@ function normalizeOpenCodeNpm(npm: string | null | undefined): string {
   return npm === "@ai-sdk/anthropic" ? "@ai-sdk/anthropic" : "@ai-sdk/openai";
 }
 
-/** Pi 供应商允许配置的 HTTP API 格式。
+/** Pi 家族（Pi / Oh-My-Pi）供应商允许配置的 HTTP API 格式。
  *
+ * 取值必须是 Pi 系 schema 认识的 `openai-completions` / `openai-responses` /
+ * `anthropic-messages`；历史上误写过 `openai-chat-completions`，读取时归一。
  * 2026-08-13 决策移除 Chat Completions（外部 OpenAI client 统一走 Responses）；
  * 2026-09-22 路由聚合新增 CC→CC 同协议透传后恢复该选项。
  */
@@ -447,7 +449,7 @@ const PI_API_OPTIONS: AppSelectOption[] = [
     sub: "/v1/responses",
   },
   {
-    value: "openai-chat-completions",
+    value: "openai-completions",
     label: "OpenAI Chat Completions",
     sub: "/v1/chat/completions",
   },
@@ -463,11 +465,13 @@ function piApiLabel(api: string): string {
   return PI_API_OPTIONS.find((option) => option.value === normalized)?.label ?? normalized;
 }
 
-/** 归一化历史保存的 API 值：旧版本未保存 Chat Completions 时的默认值为
- * openai-responses；2026-09-22 起 openai-chat-completions 为合法值，保留不回退。 */
+/** 归一化历史保存的 API 值：未保存时默认 openai-responses；
+ * 兼容旧版本误写的 `openai-chat-completions`，统一写回 Pi 系合法值 `openai-completions`。 */
 function normalizePiApi(api: string | null | undefined): string {
   if (api === "anthropic-messages") return "anthropic-messages";
-  if (api === "openai-chat-completions") return "openai-chat-completions";
+  if (api === "openai-completions" || api === "openai-chat-completions") {
+    return "openai-completions";
+  }
   return "openai-responses";
 }
 
@@ -688,6 +692,12 @@ const AGENT_TABS: { id: ModelConfigAgentId; label: string; notInstalledHint: str
     notInstalledHint:
       "请先安装 Pi CLI（例如 npm install -g @earendil-works/pi-coding-agent，或 pi.dev/install.sh），安装后重新打开本页即可管理供应商与模型配置。",
   },
+  {
+    id: "oh-my-pi",
+    label: "Oh-My-Pi",
+    notInstalledHint:
+      "请先安装 Oh-My-Pi CLI（`omp` 命令，例如 bun install -g @oh-my-pi/pi-coding-agent），安装后重新打开本页即可管理供应商与模型配置。",
+  },
 ];
 
 function agentLabel(id: ModelConfigAgentId): string {
@@ -699,6 +709,8 @@ function credentialLocationHint(id: ModelConfigAgentId): string {
   switch (id) {
     case "pi":
       return "~/.pi/agent/auth.json";
+    case "oh-my-pi":
+      return "~/.omp/agent/models.yml";
     default:
       return "~/.local/share/opencode/auth.json";
   }

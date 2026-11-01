@@ -290,6 +290,8 @@ mod tests {
 
     #[test]
     fn codex_settings_collapsed_into_mcp() {
+        // 持 HOME 测试锁：home_dir 与 open_targets 都依赖 HOME 派生路径。
+        let _home_guard = crate::config::lock_home_for_test();
         let home = dirs::home_dir().expect("home");
         let targets = open_targets("codex");
         assert_eq!(
@@ -305,6 +307,36 @@ mod tests {
         assert_eq!(
             targets.config_dir.as_deref(),
             Some(home.join(".codex").to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn oh_my_pi_prompt_lives_in_agent_subdir() {
+        // 持 HOME 测试锁：home_dir 与 open_targets 都依赖 HOME 派生路径。
+        let _home_guard = crate::config::lock_home_for_test();
+        let home = dirs::home_dir().expect("home");
+        let targets = open_targets("oh-my-pi");
+        assert_eq!(
+            targets.mcp_file.as_deref(),
+            Some(
+                home.join(".omp/agent")
+                    .join("mcp.json")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            targets.prompt_file.as_deref(),
+            Some(
+                home.join(".omp/agent")
+                    .join("AGENTS.md")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            targets.config_dir.as_deref(),
+            Some(home.join(".omp").to_string_lossy().as_ref())
         );
     }
 

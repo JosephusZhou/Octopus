@@ -1,7 +1,7 @@
-/** OpenCode / Pi 配置页的共享类型。 */
+/** OpenCode / Pi / Oh-My-Pi 配置页的共享类型。 */
 
 /** 支持可视化模型配置的 agent 标识。 */
-export type ModelConfigAgentId = "opencode" | "pi";
+export type ModelConfigAgentId = "opencode" | "pi" | "oh-my-pi";
 
 export interface AgentVariantView {
   id: string;
@@ -48,7 +48,7 @@ export interface AgentProviderView {
 }
 
 export interface AgentModelConfigView {
-  /** opencode | pi */
+  /** opencode | pi | oh-my-pi */
   agent: ModelConfigAgentId;
   configPath: string;
   configExists: boolean;

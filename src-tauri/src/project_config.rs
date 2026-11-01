@@ -167,6 +167,21 @@ static AGENT_SPECS: &[AgentProjectSpec] = &[
             jsonc: false,
         }),
     },
+    AgentProjectSpec {
+        name: "oh-my-pi",
+        root_file: Some("AGENTS.md"),
+        config_dir: ".omp",
+        full_sub_dirs: &[],
+        shared_sub_dirs: &[],
+        config_files: &[],
+        skills_own_dir: false,
+        // OMP 支持 stdio / http / sse，不做 Pi 式 SSE 拦截。
+        mcp: Some(ProjectMcpSpec {
+            file: ".omp/mcp.json",
+            dialect: McpDialect::JsonMcpServers,
+            jsonc: false,
+        }),
+    },
 ];
 
 fn find_spec(name: &str) -> Option<&'static AgentProjectSpec> {
@@ -937,6 +952,40 @@ mod tests {
         );
         // 不写文件。
         assert!(!base.join(".pi/mcp.json").exists());
+        cleanup(&base);
+    }
+
+    #[test]
+    fn project_omp_accepts_sse_and_writes_mcp() {
+        let base = scratch("omp-sse");
+        let sse = McpDraft {
+            title: "sse-server".into(),
+            transport: "sse".into(),
+            command: String::new(),
+            args: vec![],
+            env: std::collections::HashMap::new(),
+            url: "https://example.com/sse".into(),
+            headers: std::collections::HashMap::new(),
+        };
+        let result = init_project_config(
+            base.to_str().unwrap(),
+            &[req("oh-my-pi")],
+            &InitMode::Full,
+            false,
+            &[sse],
+            &[],
+            SkillInstallMode::Link,
+        )
+        .unwrap();
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+
+        assert!(base.join("AGENTS.md").is_file());
+        // 项目侧单层 `.omp`，不建 agent 层或自建 skills 目录。
+        assert!(!base.join(".omp/agent").exists());
+        assert!(!base.join(".omp/skills").exists());
+        let doc: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(base.join(".omp/mcp.json")).unwrap()).unwrap();
+        assert_eq!(doc["mcpServers"]["sse-server"]["type"], "sse");
         cleanup(&base);
     }
 
