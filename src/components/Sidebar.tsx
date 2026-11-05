@@ -8,6 +8,7 @@ import {
   Braces,
   CloudCog,
   FolderCog,
+  Info,
   Layers,
   Network,
   Settings,
@@ -77,10 +78,11 @@ const MENU_GROUPS: MenuGroupDef[] = [
 const SETTINGS_MENU: { view: SettingsView; label: string; icon: LucideIcon }[] = [
   { view: "preferences", label: "常规", icon: SlidersHorizontal },
   { view: "backup", label: "备份", icon: Archive },
+  { view: "about", label: "关于", icon: Info },
 ];
 
 function isSettingsView(view: View): view is SettingsView {
-  return view === "preferences" || view === "backup";
+  return view === "preferences" || view === "backup" || view === "about";
 }
 
 export default function Sidebar({ view, onNavigate }: SidebarProps) {
@@ -107,7 +109,8 @@ export default function Sidebar({ view, onNavigate }: SidebarProps) {
       <div className="sidebar-header" data-tauri-drag-region>
         <div className="sidebar-brand" data-tauri-drag-region>
           <div className="sidebar-brand-icon">
-            <img src="/octopus-sidebar.png" alt="Octopus" />
+            <img src="/octopus-sidebar-light.png" alt="Octopus" className="theme-icon-light" />
+            <img src="/octopus-sidebar-dark.png" alt="" className="theme-icon-dark" />
           </div>
           <span className="sidebar-brand-name">Octopus</span>
         </div>

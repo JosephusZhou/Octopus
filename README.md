@@ -157,7 +157,10 @@ src/                          React 前端
 
 public/
   octopus-icon.png            App 图标（favicon）
-  octopus-sidebar.png         侧边栏品牌图标
+  octopus-sidebar-light.png   侧边栏品牌图标（浅色，透明底）
+  octopus-sidebar-dark.png    侧边栏品牌图标（深色，透明底）
+  octopus-about-light.png     关于页 Logo（浅色，透明底）
+  octopus-about-dark.png      关于页 Logo（深色，透明底）
   agent-icons/                8 个 Agent 彩色 SVG 图标
 
 src-tauri/src/                Rust 后端

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import Sidebar from "./components/Sidebar";
 import AgentSniff from "./components/pages/AgentSniff";
 import AiProviders from "./components/pages/AiProviders";
+import About from "./components/pages/About";
 import BackupManage from "./components/pages/BackupManage";
 import OpenCodeConfig from "./components/pages/OpenCodeConfig";
 import OmpConfig from "./components/pages/OmpConfig";
@@ -42,7 +43,7 @@ export type MainView =
   | "claude-env"
   | "codex-env"
   | "route-aggregation";
-export type SettingsView = "preferences" | "backup";
+export type SettingsView = "preferences" | "backup" | "about";
 /** 主视图与设置子视图统一为单一视图状态 */
 export type View = MainView | SettingsView;
 
@@ -204,6 +205,7 @@ export default function App() {
           />
         )}
         {view === "backup" && <BackupManage />}
+        {view === "about" && <About />}
       </main>
       <AutoBackupNotifier />
     </div>

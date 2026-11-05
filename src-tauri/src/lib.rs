@@ -2,6 +2,7 @@
 // (msg_send!, class! use `cfg!(feature = "cargo-clippy")` which is outdated).
 #![allow(unexpected_cfgs)]
 
+mod about;
 mod agent_model_config;
 mod agent_open;
 mod agents;
@@ -1548,6 +1549,32 @@ fn open_route_aggregation_log_file(
     crate::platform::open_path(&path)
 }
 
+/// App metadata for the About page: version / platform / arch / real config dir.
+#[tauri::command]
+async fn get_about_info() -> Result<about::AboutInfo, String> {
+    tauri::async_runtime::spawn_blocking(about::app_info)
+        .await
+        .map_err(|e| format!("读取应用信息失败: {e}"))?
+}
+
+/// Check the latest GitHub release. HTTP goes through `http_client` so the app
+/// network proxy settings apply (the renderer never calls GitHub directly).
+#[tauri::command]
+async fn check_latest_release() -> Result<about::UpdateCheckResult, String> {
+    tauri::async_runtime::spawn_blocking(about::check_latest_release)
+        .await
+        .map_err(|e| format!("检查更新任务失败: {e}"))?
+}
+
+/// Reveal the Octopus config directory in the system file manager
+/// (Finder / Explorer / Nautilus). Returns a result DTO so failures reach the UI.
+#[tauri::command]
+async fn reveal_octopus_config_dir() -> Result<about::AboutActionResult, String> {
+    tauri::async_runtime::spawn_blocking(about::reveal_config_dir)
+        .await
+        .map_err(|e| format!("打开目录任务失败: {e}"))
+}
+
 /// Get the effective model list of a provider for the route aggregation UI.
 ///
 /// 来源唯一：`ai_providers.custom_models_json`（用户在供应商编辑页手动配置的
@@ -1942,6 +1969,9 @@ pub fn run() {
             get_route_aggregation_log_file_path,
             reveal_route_aggregation_log_file,
             open_route_aggregation_log_file,
+            reveal_octopus_config_dir,
+            get_about_info,
+            check_latest_release,
         ])
         .on_menu_event(|app, event| match event.id().as_ref() {
             "tray-open" => show_main_window(app),
