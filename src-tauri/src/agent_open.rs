@@ -54,10 +54,6 @@ fn expand_tilde(path: &str) -> String {
     platform::expand_tilde_lossy(path)
 }
 
-fn display_path(abs: &str) -> String {
-    platform::display_path(abs)
-}
-
 fn path_key(path: &Path) -> String {
     // Best-effort normalize for equality: expand + canonicalize when possible.
     let s = path.to_string_lossy().to_string();
@@ -154,21 +150,14 @@ pub fn open_targets(name: &str) -> AgentOpenTargets {
 
 fn open_existing_path(path: &Path, kind_label: &str) -> Result<AgentOpenResult, String> {
     if !path.exists() {
-        return Err(format!(
-            "{kind_label}不存在: {}",
-            display_path(&path.to_string_lossy())
-        ));
+        return Err(format!("{kind_label}不存在: {}", path.to_string_lossy()));
     }
 
     platform::open_path(path).map_err(|e| format!("打开{kind_label}失败: {e}"))?;
 
     Ok(AgentOpenResult {
         ok: true,
-        message: format!(
-            "已打开 {}: {}",
-            kind_label,
-            display_path(&path.to_string_lossy())
-        ),
+        message: format!("已打开 {}: {}", kind_label, path.to_string_lossy()),
     })
 }
 
@@ -241,10 +230,7 @@ pub fn write_agent_prompt(name: &str, content: &str) -> Result<AgentOpenResult, 
 
     Ok(AgentOpenResult {
         ok: true,
-        message: format!(
-            "已保存全局提示词: {}",
-            display_path(&path.to_string_lossy())
-        ),
+        message: format!("已保存全局提示词: {}", path.to_string_lossy()),
     })
 }
 

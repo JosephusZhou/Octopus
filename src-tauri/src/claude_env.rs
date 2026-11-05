@@ -1503,10 +1503,10 @@ fn powershell_profile_path(home: &Path) -> PathBuf {
     win_ps
 }
 
-/// 供提示消息使用的 rc 路径（~ 形式）。
+/// 供提示消息使用的 rc 真实路径。
 fn rc_hint() -> String {
     match shell_rc() {
-        Ok((path, _)) => display_path_for_msg(&path.to_string_lossy()),
+        Ok((path, _)) => real_path_for_msg(&path.to_string_lossy()),
         Err(_) => {
             #[cfg(windows)]
             {
@@ -2361,7 +2361,7 @@ fn rewrite_shell_block_from_db() -> Result<ClaudeEnvShellStatus, String> {
                 String::new(),
                 format!(
                     "已清除 {} 中的 AgentBuddy 标记块（当前没有启用的别名）",
-                    display_path_for_msg(&zshrc.to_string_lossy())
+                    real_path_for_msg(&zshrc.to_string_lossy())
                 ),
             ));
         }
@@ -2390,7 +2390,7 @@ fn rewrite_shell_block_from_db() -> Result<ClaudeEnvShellStatus, String> {
         format!(
             "已同步 {} 个 alias 到 {rc}。请执行 source {rc} 或新开终端后生效。",
             aliases.len(),
-            rc = display_path_for_msg(&zshrc.to_string_lossy())
+            rc = real_path_for_msg(&zshrc.to_string_lossy())
         ),
     ))
 }
@@ -2489,7 +2489,7 @@ pub fn remove_all_aliases() -> Result<ClaudeEnvShellStatus, String> {
             String::new(),
             format!(
                 "{} 不存在，无需移除",
-                display_path_for_msg(&zshrc.to_string_lossy())
+                real_path_for_msg(&zshrc.to_string_lossy())
             ),
         ));
     }
@@ -2509,12 +2509,12 @@ pub fn remove_all_aliases() -> Result<ClaudeEnvShellStatus, String> {
         if removed {
             format!(
                 "已从 {} 移除 AgentBuddy Claude 环境标记块",
-                display_path_for_msg(&zshrc.to_string_lossy())
+                real_path_for_msg(&zshrc.to_string_lossy())
             )
         } else {
             format!(
                 "{} 中未找到 AgentBuddy 标记块",
-                display_path_for_msg(&zshrc.to_string_lossy())
+                real_path_for_msg(&zshrc.to_string_lossy())
             )
         },
     ))
@@ -2556,7 +2556,7 @@ pub fn get_shell_status() -> Result<ClaudeEnvShellStatus, String> {
         if block_present {
             format!(
                 "已在 {} 中检测到 AgentBuddy 标记块",
-                display_path_for_msg(&zshrc.to_string_lossy())
+                real_path_for_msg(&zshrc.to_string_lossy())
             )
         } else {
             "尚未写入 shell 别名".to_string()
@@ -2601,12 +2601,12 @@ pub fn open_settings(id: String) -> Result<ClaudeEnvActionResult, String> {
         message: if created {
             format!(
                 "已创建并打开 {}/settings.json",
-                display_path_for_msg(&row.config_dir)
+                real_path_for_msg(&row.config_dir)
             )
         } else {
             format!(
                 "已用系统默认应用打开 {}/settings.json",
-                display_path_for_msg(&row.config_dir)
+                real_path_for_msg(&row.config_dir)
             )
         },
         environment: None,
@@ -2840,7 +2840,7 @@ pub fn get_mcp_sync_status() -> Result<ClaudeEnvMcpStatusResult, String> {
         .count();
 
     let message = if !global_exists {
-        "未找到全局 ~/.claude.json".into()
+        format!("未找到全局 {}", global_path.to_string_lossy())
     } else if out_of_sync == 0 {
         format!(
             "全局 MCP {} 个 server；自定义环境均已对齐",
@@ -2946,8 +2946,9 @@ pub fn fetch_remote_models(
     Err(format!("拉取模型列表失败（{}）", failures.join("；")))
 }
 
-fn display_path_for_msg(abs: &str) -> String {
-    platform::display_path(abs)
+/// 用户可见提示/结果消息中的真实路径（便于用户确认具体目录）。
+fn real_path_for_msg(abs: &str) -> String {
+    abs.to_string()
 }
 
 /* ===== Tests ===== */

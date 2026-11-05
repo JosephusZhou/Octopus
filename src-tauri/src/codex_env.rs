@@ -1408,7 +1408,7 @@ fn powershell_profile_path(home: &Path) -> PathBuf {
 
 fn rc_hint() -> String {
     match shell_rc() {
-        Ok((path, _)) => display_path_for_msg(&path.to_string_lossy()),
+        Ok((path, _)) => real_path_for_msg(&path.to_string_lossy()),
         Err(_) => {
             #[cfg(windows)]
             {
@@ -1597,8 +1597,9 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn display_path_for_msg(abs: &str) -> String {
-    platform::display_path(abs)
+/// 用户可见提示/结果消息中的真实路径（便于用户确认具体目录）。
+fn real_path_for_msg(abs: &str) -> String {
+    abs.to_string()
 }
 
 /* ===== Public API ===== */
@@ -2189,7 +2190,7 @@ fn rewrite_shell_block_from_db() -> Result<CodexEnvShellStatus, String> {
                 String::new(),
                 format!(
                     "已清除 {} 中的 AgentBuddy Codex 标记块（当前没有启用的别名）",
-                    display_path_for_msg(&zshrc.to_string_lossy())
+                    real_path_for_msg(&zshrc.to_string_lossy())
                 ),
             ));
         }
@@ -2218,7 +2219,7 @@ fn rewrite_shell_block_from_db() -> Result<CodexEnvShellStatus, String> {
         format!(
             "已同步 {} 个 alias 到 {rc}。请执行 source {rc} 或新开终端后生效。",
             aliases.len(),
-            rc = display_path_for_msg(&zshrc.to_string_lossy())
+            rc = real_path_for_msg(&zshrc.to_string_lossy())
         ),
     ))
 }
@@ -2309,7 +2310,7 @@ pub fn remove_all_aliases() -> Result<CodexEnvShellStatus, String> {
             String::new(),
             format!(
                 "{} 不存在，无需移除",
-                display_path_for_msg(&zshrc.to_string_lossy())
+                real_path_for_msg(&zshrc.to_string_lossy())
             ),
         ));
     }
@@ -2329,12 +2330,12 @@ pub fn remove_all_aliases() -> Result<CodexEnvShellStatus, String> {
         if removed {
             format!(
                 "已从 {} 移除 AgentBuddy Codex 环境标记块",
-                display_path_for_msg(&zshrc.to_string_lossy())
+                real_path_for_msg(&zshrc.to_string_lossy())
             )
         } else {
             format!(
                 "{} 中未找到 AgentBuddy 标记块",
-                display_path_for_msg(&zshrc.to_string_lossy())
+                real_path_for_msg(&zshrc.to_string_lossy())
             )
         },
     ))
@@ -2376,7 +2377,7 @@ pub fn get_shell_status() -> Result<CodexEnvShellStatus, String> {
         if block_present {
             format!(
                 "已在 {} 中检测到 AgentBuddy Codex 标记块",
-                display_path_for_msg(&zshrc.to_string_lossy())
+                real_path_for_msg(&zshrc.to_string_lossy())
             )
         } else {
             "尚未写入 shell 别名".to_string()
@@ -2421,12 +2422,12 @@ pub fn open_config(id: String) -> Result<CodexEnvActionResult, String> {
         message: if created {
             format!(
                 "已创建并打开 {}/config.toml",
-                display_path_for_msg(&row.config_dir)
+                real_path_for_msg(&row.config_dir)
             )
         } else {
             format!(
                 "已用系统默认应用打开 {}/config.toml",
-                display_path_for_msg(&row.config_dir)
+                real_path_for_msg(&row.config_dir)
             )
         },
         environment: None,

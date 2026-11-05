@@ -864,7 +864,7 @@ pub fn reveal_config(agent: ModelConfigAgent) -> Result<AgentActionResult, Strin
             platform::open_path(parent).map_err(|e| format!("打开目录失败: {e}"))?;
             return Ok(AgentActionResult {
                 ok: true,
-                message: format!("已打开目录 {}", display_path(parent)),
+                message: format!("已打开目录 {}", parent.to_string_lossy()),
                 view: None,
             });
         }
@@ -873,7 +873,7 @@ pub fn reveal_config(agent: ModelConfigAgent) -> Result<AgentActionResult, Strin
     platform::reveal_path(&paths.models).map_err(|e| format!("打开文件管理器失败: {e}"))?;
     Ok(AgentActionResult {
         ok: true,
-        message: format!("已在文件管理器中显示 {}", display_path(&paths.models)),
+        message: format!("已在文件管理器中显示 {}", paths.models.to_string_lossy()),
         view: None,
     })
 }

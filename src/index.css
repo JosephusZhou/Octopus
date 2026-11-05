@@ -1688,6 +1688,10 @@ a[href]:focus-visible {
   font-size: var(--text-sm);
   color: var(--seed-muted);
   line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.confirm-subtext code {
+  overflow-wrap: anywhere;
 }
 .mcp-delete-option {
   display: flex;
@@ -3340,6 +3344,7 @@ a[href]:focus-visible {
 }
 .ui-check-label code {
   font-size: var(--text-sm);
+  overflow-wrap: anywhere;
 }
 .skill-card-main {
   flex: 1;

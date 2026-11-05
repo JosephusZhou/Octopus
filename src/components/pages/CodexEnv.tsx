@@ -1885,7 +1885,7 @@ export default function CodexEnv() {
                       <div className="claude-env-scan-info">
                         <div className="claude-env-name">{c.suggestedName}</div>
                         <div className="claude-env-meta">
-                          <code>{formatDisplayPath(c.path)}</code>
+                          <code>{c.path}</code>
                           {" · "}
                           <code>{c.suggestedAlias}</code>
                         </div>
@@ -1976,8 +1976,7 @@ export default function CodexEnv() {
               />
               <CheckGlyph />
               <span className="ui-check-label">
-                同时删除磁盘目录{" "}
-                <code>{deleteTarget ? formatDisplayPath(deleteTarget.configDir) : ""}</code>
+                同时删除磁盘目录 <code>{deleteTarget ? deleteTarget.configDir : ""}</code>
               </span>
             </label>
           </div>
@@ -2010,16 +2009,10 @@ export default function CodexEnv() {
           </div>
           <div className="modal-body">
             <div className="claude-env-form-hint">
-              已写入{" "}
-              <code>
-                {shell ? formatDisplayPath(shell.shellConfigPath || shell.zshrcPath) : "shell 配置"}
-              </code>{" "}
+              已写入 <code>{shell ? shell.shellConfigPath || shell.zshrcPath : "shell 配置"}</code>{" "}
               的 Octopus Codex 标记块。请在终端执行{" "}
               <code>
-                source{" "}
-                {shell
-                  ? formatDisplayPath(shell.shellConfigPath || shell.zshrcPath)
-                  : "对应 rc 文件"}
+                source {shell ? shell.shellConfigPath || shell.zshrcPath : "对应 rc 文件"}
               </code>{" "}
               或新开终端后生效。
             </div>
@@ -2055,9 +2048,9 @@ export default function CodexEnv() {
           <div className="confirm-body">
             <div className="confirm-text">将迁移整个 Codex 环境目录：</div>
             <div className="confirm-subtext">
-              <code>{formatDisplayPath(editOriginalConfigDirRef.current)}</code>
+              <code>{editOriginalConfigDirRef.current}</code>
               {" → "}
-              <code>{formatDisplayPath(editConfigDir.trim())}</code>
+              <code>{editConfigDir.trim()}</code>
             </div>
             <div className="confirm-subtext">
               目标目录必须不存在或为空；迁移成功后 shell

@@ -93,6 +93,20 @@ await invoke("command_name", { ... });
 - 路径和平台分支集中在 `platform.rs`、`agents.rs` 及各自的路径解析层，业务逻辑不要散落
   `cfg!(windows)`。
 
+## 路径展示口径
+
+用户可见路径按用途分三类，不要混用：
+
+- **a 类 常驻展示**（Agent 安装路径、配置目录、备份 `path_summary`、Skills 库目录等）：
+  用跨平台占位符，macOS/Linux 为 `~`，Windows 为 `%USERPROFILE%` / `%LOCALAPPDATA%` /
+  `%APPDATA%`。前端入口 `formatDisplayPath`（`src/lib/formatPath.ts`），后端入口
+  `display_path`（`src-tauri/src/platform.rs`）。
+- **b 类 操作结果与确认提示**（删除/迁移确认、扫描候选、初始化检查与执行结果、打开/保存
+  反馈等）：用真实路径，避免占位符折叠盘符与层级导致误判；长路径允许折行，不要省略截断。
+- **c 类 用户输入与选择**（表单值、占位符、复制/打开的目标）：保持真实路径，不做格式化。
+
+`formatDisplayPath` / `display_path` 只用于 a 类展示，格式化结果不得用于文件操作或 b/c 类提示。
+
 ## Agent、MCP 与 Skills
 
 `agents.rs` 是 Agent 身份、发现路径、MCP 方言/路径和 Skills 根的运行时单一数据源。当前
