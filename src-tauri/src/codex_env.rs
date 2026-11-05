@@ -54,6 +54,8 @@ pub struct CodexEnvironment {
     pub mcp_sync_status: String,
     pub mcp_server_count: u32,
     pub global_mcp_server_count: u32,
+    /// 全局 MCP 配置文件真实路径（默认环境对应 ~/.codex/config.toml）；前端展示时须脱敏。
+    pub global_config_path: String,
     /// 当前环境自己的 MCP server 名称（默认环境为全局清单），按字母排序。
     pub mcp_server_names: Vec<String>,
     /// 当前环境 skills 目录下可见的 skill 名称，按字母排序。
@@ -1014,6 +1016,9 @@ fn row_to_public(row: CodexEnvironmentRow) -> CodexEnvironment {
         mcp_sync_status: status,
         mcp_server_count: local_count,
         global_mcp_server_count: global_count,
+        global_config_path: shared_config_path()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         mcp_server_names,
         skill_names,
         model: managed.model,

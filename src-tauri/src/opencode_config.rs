@@ -28,6 +28,8 @@ pub struct AgentModelConfigView {
     /// agent 标识：opencode | pi
     pub agent: String,
     pub config_path: String,
+    /// 凭据文件真实路径；前端展示时须脱敏。
+    pub credential_path: String,
     pub config_exists: bool,
     pub is_jsonc: bool,
     /// Whether the agent App/CLI is installed (same rule as agent sniff).
@@ -571,6 +573,9 @@ pub fn get_config() -> Result<AgentModelConfigView, String> {
     let installed = crate::sniff::is_agent_installed("opencode");
 
     let (path, is_jsonc, root, exists) = load_or_empty_config()?;
+    let credential_path = auth_path()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let auth = load_auth().unwrap_or_default();
     let mut warnings = Vec::new();
     if exists && is_jsonc {
@@ -583,6 +588,7 @@ pub fn get_config() -> Result<AgentModelConfigView, String> {
         return Ok(AgentModelConfigView {
             agent: "opencode".into(),
             config_path: display_path(&path),
+            credential_path,
             config_exists: exists,
             is_jsonc,
             installed: false,
@@ -613,6 +619,7 @@ pub fn get_config() -> Result<AgentModelConfigView, String> {
     Ok(AgentModelConfigView {
         agent: "opencode".into(),
         config_path: display_path(&path),
+        credential_path,
         config_exists: exists,
         is_jsonc,
         installed: true,

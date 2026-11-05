@@ -705,18 +705,6 @@ function agentLabel(id: ModelConfigAgentId): string {
   return AGENT_TABS.find((t) => t.id === id)?.label ?? id;
 }
 
-/** API Key 写入位置提示（按 agent）。 */
-function credentialLocationHint(id: ModelConfigAgentId): string {
-  switch (id) {
-    case "pi":
-      return "~/.pi/agent/auth.json";
-    case "oh-my-pi":
-      return "~/.omp/agent/models.yml";
-    default:
-      return "~/.local/share/opencode/auth.json";
-  }
-}
-
 /* ===== Subcomponents ===== */
 
 function ModalityBadges({ input, output }: { input: string[]; output: string[] }) {
@@ -1830,7 +1818,7 @@ export function ModelConfigAgentPage({
                       type={showApiKey ? "text" : "password"}
                       placeholder={
                         providerForm.isNew
-                          ? `可选，写入 ${credentialLocationHint(agent)}`
+                          ? `可选，写入 ${formatDisplayPath(view?.credentialPath ?? "") || "Agent 配置文件"}`
                           : "留空且不改动；清空并保存可删除密钥"
                       }
                       value={providerForm.apiKey}

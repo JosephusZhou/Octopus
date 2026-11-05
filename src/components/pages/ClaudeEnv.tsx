@@ -396,6 +396,8 @@ export default function ClaudeEnv() {
     [envs, cloneSourceId],
   );
 
+  const defaultEnv = useMemo(() => envs.find((e) => e.isDefault) ?? null, [envs]);
+
   const openClone = useCallback(
     (source?: ClaudeEnvironment) => {
       const src = source ?? envs.find((e) => e.isDefault) ?? envs[0];
@@ -854,7 +856,9 @@ export default function ClaudeEnv() {
   const handleSyncMcp = useCallback(
     async (env: ClaudeEnvironment) => {
       if (env.isDefault) {
-        setStatusMsg("默认环境已直接使用全局 ~/.claude.json，无需同步");
+        setStatusMsg(
+          `默认环境已直接使用 ${formatDisplayPath(env.globalMcpPath) || "MCP 文件"}，无需同步`,
+        );
         return;
       }
       setBusy(true);
@@ -950,7 +954,7 @@ export default function ClaudeEnv() {
             {
               " 隔离多套 Claude Code 配置目录。新建环境默认复制源环境的 settings.json 和 CLAUDE.md，skills、agents、会话、记忆等配置可选软链接或者全量复制。默认环境的 MCP 在 "
             }
-            <code>~/.claude.json</code>
+            <code>{formatDisplayPath(defaultEnv?.globalMcpPath ?? "") || "全局 MCP 文件"}</code>
             {"；自定义环境在 "}
             <code>{"${自定义配置目录}/.claude.json"}</code>
             {"，默认隔离，可用「同步 MCP」功能把默认环境 MCP 同步到自定义环境中。"}
@@ -1507,7 +1511,11 @@ export default function ClaudeEnv() {
                 />
                 <CheckGlyph />
                 <span className="ui-check-label">
-                  同步全局 MCP（将 <code>~/.claude.json</code> 顶层 mcpServers 写入新环境）
+                  同步全局 MCP（将{" "}
+                  <code>
+                    {formatDisplayPath(defaultEnv?.globalMcpPath ?? "") || "全局 MCP 文件"}
+                  </code>{" "}
+                  顶层 mcpServers 写入新环境）
                 </span>
               </label>
               <label className="ui-check" htmlFor="ce-install-alias">
@@ -1782,8 +1790,8 @@ export default function ClaudeEnv() {
             </div>
             {editIsDefault && (
               <div className="claude-env-form-hint">
-                默认环境路径固定为 <code>~/.claude</code>，直接运行 <code>claude</code>{" "}
-                使用；该配置将写入默认 settings.json 的 env 节点。
+                默认环境路径固定为 <code>{formatDisplayPath(editConfigDir) || "默认环境目录"}</code>
+                ，直接运行 <code>claude</code> 使用；该配置将写入默认 settings.json 的 env 节点。
               </div>
             )}
             <div className="form-group">

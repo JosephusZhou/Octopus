@@ -19,6 +19,8 @@ export interface ClaudeEnvironment {
   mcpSyncStatus?: string;
   mcpServerCount?: number;
   globalMcpServerCount?: number;
+  // 全局 MCP 文件真实路径；展示前须 formatDisplayPath。
+  globalMcpPath?: string;
   mcpServerNames?: string[];
   skillNames?: string[];
   // settings.json → env 节点实时读取（不入库），缺失为空串。

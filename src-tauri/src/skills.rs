@@ -75,6 +75,8 @@ pub struct SkillRecord {
 #[serde(rename_all = "camelCase")]
 pub struct SkillsListResult {
     pub skills: Vec<SkillRecord>,
+    /// 技能库真实绝对路径；前端展示时须脱敏。
+    pub library_path: String,
     pub message: String,
 }
 
@@ -865,6 +867,7 @@ pub fn list_skills() -> Result<SkillsListResult, String> {
     let count = skills.len();
     Ok(SkillsListResult {
         skills,
+        library_path: lib.to_string_lossy().into_owned(),
         message: if count == 0 {
             "技能库为空，可通过「添加」或「嗅探」导入".into()
         } else {

@@ -357,12 +357,20 @@ pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, Strin
     let paths = family_paths(agent)?;
     let installed = crate::sniff::is_agent_installed(agent.id());
     let exists = paths.models.exists();
+    let credential_path = if agent == ModelConfigAgent::Pi {
+        paths.auth.clone()
+    } else {
+        paths.models.clone()
+    }
+    .to_string_lossy()
+    .into_owned();
 
     let (model, small_model) = read_defaults(&paths);
 
     let not_installed_view = || AgentModelConfigView {
         agent: agent.id().into(),
         config_path: display_path(&paths.models),
+        credential_path: credential_path.clone(),
         config_exists: exists,
         is_jsonc: false,
         installed: false,
@@ -414,6 +422,7 @@ pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, Strin
     Ok(AgentModelConfigView {
         agent: agent.id().into(),
         config_path: display_path(&paths.models),
+        credential_path,
         config_exists: exists,
         is_jsonc: false,
         installed: true,

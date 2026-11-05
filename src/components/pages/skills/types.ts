@@ -58,6 +58,7 @@ export interface AgentResult {
 
 export interface SkillsListResult {
   skills: SkillRecord[];
+  libraryPath: string;
   message: string;
 }
 

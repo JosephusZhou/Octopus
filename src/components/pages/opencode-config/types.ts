@@ -51,6 +51,8 @@ export interface AgentModelConfigView {
   /** opencode | pi | oh-my-pi */
   agent: ModelConfigAgentId;
   configPath: string;
+  /** 凭据文件真实路径；展示前须 formatDisplayPath。 */
+  credentialPath: string;
   configExists: boolean;
   isJsonc: boolean;
   /** Agent App/CLI 是否已安装（与 agent sniff 同规则；仅配置目录不算）。 */

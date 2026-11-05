@@ -83,6 +83,7 @@ const _persist = {
 
 export default function SkillsManage() {
   const [skills, setSkills] = useState<SkillRecord[]>([]);
+  const [libraryPath, setLibraryPath] = useState("");
   const [agents, setAgents] = useState<AgentResult[]>([]);
   const [statusMsg, setStatusMsg] = useStatusMessage();
   const [loading, setLoading] = useState(true);
@@ -227,6 +228,7 @@ export default function SkillsManage() {
     try {
       const res = await invokeListSkills();
       setSkills(res.skills);
+      setLibraryPath(res.libraryPath);
       if (!opts?.quiet) {
         setStatusMsg(res.message);
       }
@@ -1853,7 +1855,8 @@ export default function SkillsManage() {
             {addTab === "local" ? (
               <>
                 <p className="skill-add-hint">
-                  选择包含 <code>SKILL.md</code> 的技能目录，将复制到 <code>~/.octopus/skills</code>
+                  选择包含 <code>SKILL.md</code> 的技能目录，将复制到{" "}
+                  <code>{formatDisplayPath(libraryPath) || "技能库"}</code>
                 </p>
                 <div className="form-group">
                   <label className="form-label" htmlFor="skill-local-path">
@@ -2269,7 +2272,8 @@ export default function SkillsManage() {
             ) : sniffPreview ? (
               <>
                 <p className="skill-add-hint">
-                  从各 Agent 的 skills 目录发现的技能，将复制到 <code>~/.octopus/skills</code>
+                  从各 Agent 的 skills 目录发现的技能，将复制到{" "}
+                  <code>{formatDisplayPath(libraryPath) || "技能库"}</code>
                   ，不会修改 Agent 原文件。
                 </p>
                 <div className="skill-migrate-summary">
@@ -2878,7 +2882,8 @@ export default function SkillsManage() {
               确定删除技能{deleteTarget ? `「${deleteTarget.title}」` : ""}吗？
             </div>
             <div className="confirm-subtext">
-              将从技能库删除 <code>~/.octopus/skills</code> 下的对应目录，此操作不可撤销。
+              将从技能库删除 <code>{formatDisplayPath(libraryPath) || "技能库"}</code>{" "}
+              下的对应目录，此操作不可撤销。
             </div>
             <label className="ui-check">
               <input
@@ -2931,7 +2936,8 @@ export default function SkillsManage() {
               确定删除选中的 <strong>{validSelectedIds.size}</strong> 个技能吗？
             </div>
             <div className="confirm-subtext">
-              将从技能库删除 <code>~/.octopus/skills</code> 下的对应目录，此操作不可撤销。
+              将从技能库删除 <code>{formatDisplayPath(libraryPath) || "技能库"}</code>{" "}
+              下的对应目录，此操作不可撤销。
             </div>
             {(() => {
               const titles = skills.filter((s) => validSelectedIds.has(s.id)).map((s) => s.title);

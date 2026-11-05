@@ -22,6 +22,8 @@ export interface CodexEnvironment {
   mcpSyncStatus?: string;
   mcpServerCount?: number;
   globalMcpServerCount?: number;
+  // 全局 MCP 配置文件真实路径；展示前须 formatDisplayPath。
+  globalConfigPath?: string;
   mcpServerNames?: string[];
   skillNames?: string[];
   // config.toml 实时读取（不入库）

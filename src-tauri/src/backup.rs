@@ -422,9 +422,15 @@ fn build_claude_agent_unit(
     let default_dir = home.as_ref().map(|h| h.join(".claude"));
     let global_mcp = home.as_ref().map(|h| h.join(".claude.json"));
     let def_bytes = estimate_claude_env_bytes(default_dir.as_deref(), global_mcp.as_deref(), true);
+    let default_label = match (&default_dir, &global_mcp) {
+        (Some(dir), Some(mcp)) => {
+            format!("默认环境 ({} + {})", display_path(dir), display_path(mcp))
+        }
+        _ => "默认环境".to_string(),
+    };
     children.push(leaf_unit(
         "agent:claude-code:env:default",
-        "默认环境 (~/.claude + ~/.claude.json)",
+        &default_label,
         "agent-env",
         is_found || default_dir.as_ref().map(|p| p.exists()).unwrap_or(false),
         true,
@@ -470,7 +476,10 @@ fn build_claude_agent_unit(
         selected_by_default: available,
         contains_secrets: true,
         estimated_bytes: children.iter().map(|c| c.estimated_bytes).sum(),
-        path_summary: "~/.claude · ~/.claude.json".into(),
+        path_summary: match (&default_dir, &global_mcp) {
+            (Some(dir), Some(mcp)) => format!("{} · {}", display_path(dir), display_path(mcp)),
+            _ => String::new(),
+        },
         warnings: if is_found {
             vec![]
         } else {
@@ -488,10 +497,14 @@ fn build_codex_agent_unit(
     let mut children = Vec::new();
     let home = dirs::home_dir();
     let default_dir = home.as_ref().map(|h| h.join(".codex"));
+    let default_label = default_dir
+        .as_ref()
+        .map(|p| format!("默认环境 ({})", display_path(p)))
+        .unwrap_or_else(|| "默认环境".to_string());
 
     children.push(leaf_unit(
         "agent:codex:env:default",
-        "默认环境 (~/.codex)",
+        &default_label,
         "agent-env",
         is_found || default_dir.as_ref().map(|p| p.exists()).unwrap_or(false),
         true,
@@ -536,7 +549,10 @@ fn build_codex_agent_unit(
         selected_by_default: available,
         contains_secrets: true,
         estimated_bytes: children.iter().map(|c| c.estimated_bytes).sum(),
-        path_summary: "~/.codex".into(),
+        path_summary: default_dir
+            .as_ref()
+            .map(|p| display_path(p))
+            .unwrap_or_default(),
         warnings: vec![],
         children,
     }
@@ -2225,6 +2241,29 @@ mod tests {
         assert!(e.contains("app:octopus:config"));
         assert!(e.contains("app:octopus:db"));
         assert!(e.contains("app:octopus:skills"));
+    }
+
+    #[test]
+    fn agent_unit_path_summary_uses_display_path() {
+        let _home_guard = crate::config::lock_home_for_test();
+        let home = dirs::home_dir().expect("home dir");
+        let claude_dir = display_path(&home.join(".claude"));
+        let claude_mcp = display_path(&home.join(".claude.json"));
+        let claude = crate::agents::find("claude-code").expect("claude spec");
+        let unit = build_claude_agent_unit(claude, false, &[]);
+        assert_eq!(unit.path_summary, format!("{claude_dir} · {claude_mcp}"));
+        assert_eq!(
+            unit.children[0].label,
+            format!("默认环境 ({claude_dir} + {claude_mcp})")
+        );
+        assert!(!unit.path_summary.contains(home.to_string_lossy().as_ref()));
+
+        let codex_dir = display_path(&home.join(".codex"));
+        let codex = crate::agents::find("codex").expect("codex spec");
+        let unit = build_codex_agent_unit(codex, false, &[]);
+        assert_eq!(unit.path_summary, codex_dir);
+        assert_eq!(unit.children[0].label, format!("默认环境 ({codex_dir})"));
+        assert!(!unit.path_summary.contains(home.to_string_lossy().as_ref()));
     }
 
     #[test]

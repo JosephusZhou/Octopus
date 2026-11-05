@@ -411,6 +411,7 @@ export default function CodexEnv() {
     () => envs.find((e) => e.id === cloneSourceId) ?? null,
     [envs, cloneSourceId],
   );
+  const defaultEnv = useMemo(() => envs.find((e) => e.isDefault) ?? null, [envs]);
   const cloneUsesOfficialOAuth = cloneSelectedProvider?.id === OFFICIAL_OAUTH_PROVIDER_ID;
   const editUsesOfficialOAuth = editSelectedProvider?.id === OFFICIAL_OAUTH_PROVIDER_ID;
 
@@ -855,7 +856,9 @@ export default function CodexEnv() {
   const handleSyncMcp = useCallback(
     async (env: CodexEnvironment) => {
       if (env.isDefault) {
-        setStatusMsg("默认环境已直接使用 ~/.codex/config.toml，无需同步");
+        setStatusMsg(
+          `默认环境已直接使用 ${formatDisplayPath(env.globalConfigPath) || "全局配置文件"}，无需同步`,
+        );
         return;
       }
       setBusy(true);
@@ -948,8 +951,9 @@ export default function CodexEnv() {
           <div className="claude-env-disclaimer">
             通过 <code>CODEX_HOME</code> 隔离多套 Codex CLI 配置目录。新建环境默认复制源环境的
             config.toml 和 AGENTS.md，skills、会话、记忆等配置可选软链接或者全量复制。默认环境的 MCP
-            在 <code>~/.codex/config.toml</code>；自定义环境在{" "}
-            <code>{"${自定义配置目录}/config.toml"}</code>
+            在{" "}
+            <code>{formatDisplayPath(defaultEnv?.globalConfigPath ?? "") || "全局配置文件"}</code>
+            ；自定义环境在 <code>{"${自定义配置目录}/config.toml"}</code>
             ，默认隔离，可用「同步 MCP」功能把默认环境 MCP 同步到自定义环境中。
           </div>
         )}
@@ -1507,8 +1511,11 @@ export default function CodexEnv() {
                 />
                 <CheckGlyph />
                 <span className="ui-check-label">
-                  同步默认环境 MCP（将 <code>~/.codex/config.toml</code> 的 [mcp_servers]
-                  写入新环境）
+                  同步默认环境 MCP（将{" "}
+                  <code>
+                    {formatDisplayPath(defaultEnv?.globalConfigPath ?? "") || "全局配置文件"}
+                  </code>{" "}
+                  的 [mcp_servers] 写入新环境）
                 </span>
               </label>
               <label className="ui-check" htmlFor="xe-install-alias">
@@ -1793,8 +1800,8 @@ export default function CodexEnv() {
             )}
             {editIsDefault && (
               <div className="claude-env-form-hint">
-                默认环境路径固定为 <code>~/.codex</code>，直接运行 <code>codex</code>{" "}
-                使用；该配置将写入默认 config.toml / auth.json。
+                默认环境路径固定为 <code>{formatDisplayPath(editConfigDir) || "默认环境目录"}</code>
+                ，直接运行 <code>codex</code> 使用；该配置将写入默认 config.toml / auth.json。
               </div>
             )}
             <div className="form-group">

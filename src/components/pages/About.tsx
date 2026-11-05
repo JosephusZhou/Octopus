@@ -346,10 +346,10 @@ export default function About() {
                 <code className="about-path">{configDir || "—"}</code>
                 <button
                   className="about-copy-btn"
-                  onClick={() => handleCopy(configDir, "configDir")}
+                  onClick={() => handleCopy(info?.configDir ?? "", "configDir")}
                   title="复制路径"
                   aria-label="复制路径"
-                  disabled={!configDir}
+                  disabled={!info?.configDir}
                 >
                   {copied === "configDir" ? (
                     <CheckCircle2 size={14} strokeWidth={2} />
