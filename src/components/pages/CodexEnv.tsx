@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStatusMessage } from "@/lib/useStatusMessage";
+import { formatDisplayPath } from "@/lib/formatPath";
 import { Toast } from "@/components/Toast";
 import { CheckGlyph, useOverlayDismiss } from "../ui";
 import { ModelComboBox } from "../ModelComboBox";
@@ -233,10 +234,6 @@ function customModelOptionsOf(p: AiProvider | null): string[] {
     }
   }
   return opts;
-}
-
-function displayPath(abs: string): string {
-  return abs.replace(/^\/Users\/[^/]+/, "~").replace(/^\/home\/[^/]+/, "~");
 }
 
 function sourceLabel(source: string, isDefault: boolean): string {
@@ -1006,7 +1003,7 @@ export default function CodexEnv() {
                     )}
                   </div>
                   <div className="claude-env-meta">
-                    配置路径：<code>{displayPath(env.configDir)}</code>
+                    配置路径：<code>{formatDisplayPath(env.configDir)}</code>
                   </div>
                   <div className="claude-env-meta">
                     启动：
@@ -1014,7 +1011,7 @@ export default function CodexEnv() {
                     {!env.isDefault && (
                       <span className="claude-env-meta-dim">
                         {" （"}
-                        <code>{`CODEX_HOME=${displayPath(env.configDir)} codex`}</code>
+                        <code>{`CODEX_HOME=${formatDisplayPath(env.configDir)} codex`}</code>
                         {"）"}
                       </span>
                     )}
@@ -1201,7 +1198,7 @@ export default function CodexEnv() {
                           >
                             <span className="app-select-option-title">{e.name}</span>
                             <span className="app-select-option-sub">
-                              {displayPath(e.configDir)}
+                              {formatDisplayPath(e.configDir)}
                               {disabled ? " · 目录不存在" : ""}
                             </span>
                           </button>
@@ -1527,7 +1524,9 @@ export default function CodexEnv() {
                 <span className="ui-check-label">
                   写入 shell 别名（把 <code>{cloneAlias.trim() || "codex-<slug>"}</code> 写入{" "}
                   <code>
-                    {shell ? displayPath(shell.shellConfigPath || shell.zshrcPath) : "shell 配置"}
+                    {shell
+                      ? formatDisplayPath(shell.shellConfigPath || shell.zshrcPath)
+                      : "shell 配置"}
                   </code>
                   ）
                 </span>
@@ -1879,7 +1878,7 @@ export default function CodexEnv() {
                       <div className="claude-env-scan-info">
                         <div className="claude-env-name">{c.suggestedName}</div>
                         <div className="claude-env-meta">
-                          <code>{displayPath(c.path)}</code>
+                          <code>{formatDisplayPath(c.path)}</code>
                           {" · "}
                           <code>{c.suggestedAlias}</code>
                         </div>
@@ -1971,7 +1970,7 @@ export default function CodexEnv() {
               <CheckGlyph />
               <span className="ui-check-label">
                 同时删除磁盘目录{" "}
-                <code>{deleteTarget ? displayPath(deleteTarget.configDir) : ""}</code>
+                <code>{deleteTarget ? formatDisplayPath(deleteTarget.configDir) : ""}</code>
               </span>
             </label>
           </div>
@@ -2006,12 +2005,14 @@ export default function CodexEnv() {
             <div className="claude-env-form-hint">
               已写入{" "}
               <code>
-                {shell ? displayPath(shell.shellConfigPath || shell.zshrcPath) : "shell 配置"}
+                {shell ? formatDisplayPath(shell.shellConfigPath || shell.zshrcPath) : "shell 配置"}
               </code>{" "}
               的 Octopus Codex 标记块。请在终端执行{" "}
               <code>
                 source{" "}
-                {shell ? displayPath(shell.shellConfigPath || shell.zshrcPath) : "对应 rc 文件"}
+                {shell
+                  ? formatDisplayPath(shell.shellConfigPath || shell.zshrcPath)
+                  : "对应 rc 文件"}
               </code>{" "}
               或新开终端后生效。
             </div>
@@ -2047,9 +2048,9 @@ export default function CodexEnv() {
           <div className="confirm-body">
             <div className="confirm-text">将迁移整个 Codex 环境目录：</div>
             <div className="confirm-subtext">
-              <code>{displayPath(editOriginalConfigDirRef.current)}</code>
+              <code>{formatDisplayPath(editOriginalConfigDirRef.current)}</code>
               {" → "}
-              <code>{displayPath(editConfigDir.trim())}</code>
+              <code>{formatDisplayPath(editConfigDir.trim())}</code>
             </div>
             <div className="confirm-subtext">
               目标目录必须不存在或为空；迁移成功后 shell

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Toast } from "@/components/Toast";
 import { useStatusMessage } from "@/lib/useStatusMessage";
+import { formatDisplayPath } from "@/lib/formatPath";
 
 /* ===== Types (mirror `get_agent_detail` in lib.rs, camelCase) ===== */
 interface AgentMcpInfo {
@@ -66,15 +67,6 @@ function basename(path: string | null | undefined): string {
   if (!path) return "";
   const parts = path.split(/[/\\]/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
-}
-
-/** 展示用路径：把用户目录前缀替换为 ~（数据仍是绝对路径，供打开/定位等操作使用）。 */
-function displayPath(path: string | null | undefined): string {
-  if (!path) return "";
-  return path
-    .replace(/^\/Users\/[^/]+/, "~")
-    .replace(/^\/home\/[^/]+/, "~")
-    .replace(/^[A-Za-z]:[\\/]Users[\\/][^\\/]+/, "~");
 }
 
 export default function AgentDetail({
@@ -224,24 +216,24 @@ export default function AgentDetail({
                 {appPaths.map((p) => (
                   <div key={`app-${p}`} className="agent-path-row">
                     <span className="agent-path-label">App 路径</span>
-                    <span className="agent-path-value">{displayPath(p)}</span>
+                    <span className="agent-path-value">{formatDisplayPath(p)}</span>
                   </div>
                 ))}
                 {cliPaths.map((p) => (
                   <div key={`cli-${p}`} className="agent-path-row">
                     <span className="agent-path-label">CLI 路径</span>
-                    <span className="agent-path-value">{displayPath(p)}</span>
+                    <span className="agent-path-value">{formatDisplayPath(p)}</span>
                   </div>
                 ))}
                 {(configDirs.length > 0 ? configDirs : configDir ? [configDir] : []).map((dir) => (
                   <div key={`cfg-${dir}`} className="agent-path-row">
                     <span className="agent-path-label">配置目录</span>
-                    <span className="agent-path-value">{displayPath(dir)}</span>
+                    <span className="agent-path-value">{formatDisplayPath(dir)}</span>
                     {configDir && (
                       <button
                         type="button"
                         className="claude-env-action-btn"
-                        data-tooltip={`在 Finder 中打开 ${displayPath(configDir)}`}
+                        data-tooltip={`在 Finder 中打开 ${formatDisplayPath(configDir)}`}
                         onClick={handleRevealDir}
                         disabled={busy}
                       >
@@ -263,7 +255,7 @@ export default function AgentDetail({
                 {settingsFile && (
                   <div className="agent-path-row">
                     <span className="agent-path-label">主配置</span>
-                    <span className="agent-path-value">{displayPath(settingsFile)}</span>
+                    <span className="agent-path-value">{formatDisplayPath(settingsFile)}</span>
                     <button
                       type="button"
                       className="claude-env-action-btn"
@@ -278,7 +270,7 @@ export default function AgentDetail({
                 {mcpFile && (
                   <div className="agent-path-row">
                     <span className="agent-path-label">MCP 配置</span>
-                    <span className="agent-path-value">{displayPath(mcpFile)}</span>
+                    <span className="agent-path-value">{formatDisplayPath(mcpFile)}</span>
                     <button
                       type="button"
                       className="claude-env-action-btn"
@@ -316,7 +308,7 @@ export default function AgentDetail({
                   rows={10}
                   spellCheck={false}
                 />
-                <div className="prompt-editor-path">{displayPath(detail.promptFile)}</div>
+                <div className="prompt-editor-path">{formatDisplayPath(detail.promptFile)}</div>
               </section>
             )}
 
@@ -397,7 +389,7 @@ export default function AgentDetail({
                           <div className="agent-detail-item-sub">{skill.description}</div>
                         )}
                         <div className="agent-detail-item-sub agent-detail-item-path">
-                          {displayPath(skill.path)}
+                          {formatDisplayPath(skill.path)}
                         </div>
                       </div>
                     ))}

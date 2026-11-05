@@ -286,42 +286,79 @@ pub fn expand_tilde_lossy(path: &str) -> String {
         .unwrap_or_else(|_| path.to_string())
 }
 
-/// Display path with home replaced by `~` (forward-slash style for UI).
+/// Display path with the home directory replaced by a platform-native placeholder.
+///
+/// - macOS / Linux: `/Users/<name>/...`、`/home/<name>/...` → `~/...`
+/// - Windows: `<home>\AppData\Local\...` → `%LOCALAPPDATA%\...`，
+///   `<home>\AppData\Roaming\...` → `%APPDATA%\...`，其余用户目录 → `%USERPROFILE%\...`
+///
+/// Display-only: never feed the returned string back into file operations.
 pub fn display_path(abs: &str) -> String {
-    if let Ok(home) = home_dir() {
-        let home_s = home.to_string_lossy();
-        if abs == home_s.as_ref() {
-            return "~".to_string();
+    match home_dir() {
+        Ok(home) => {
+            let home_s = home.to_string_lossy();
+            display_path_with_home(abs, &home_s)
         }
-        // Accept both separators when stripping home prefix.
-        let candidates = [format!("{}/", home_s), format!("{}\\", home_s)];
-        for prefix in &candidates {
-            if let Some(rest) = abs.strip_prefix(prefix.as_str()) {
-                let rest = rest.replace('\\', "/");
-                return format!("~/{rest}");
-            }
-        }
-        // Case-insensitive on Windows.
-        #[cfg(windows)]
-        {
-            let abs_l = abs.to_ascii_lowercase();
-            let home_l = home_s.to_ascii_lowercase();
-            if abs_l == home_l {
-                return "~".to_string();
-            }
-            for sep in ['/', '\\'] {
-                let prefix = format!("{home_l}{sep}");
-                if let Some(rest) = abs_l.strip_prefix(&prefix) {
-                    // Preserve original casing from abs after the home prefix length.
-                    let rest_orig = &abs[prefix.len()..];
-                    let rest_norm = rest_orig.replace('\\', "/");
-                    let _ = rest;
-                    return format!("~/{rest_norm}");
-                }
-            }
+        Err(_) => abs.to_string(),
+    }
+}
+
+fn display_path_with_home(abs: &str, home: &str) -> String {
+    if cfg!(windows) {
+        windows_display_path(abs, home)
+    } else {
+        posix_display_path(abs, home)
+    }
+}
+
+/// POSIX display form: collapse the home prefix to `~`, keep forward slashes.
+fn posix_display_path(abs: &str, home: &str) -> String {
+    let home = home.trim_end_matches('/');
+    if abs == home {
+        return "~".to_string();
+    }
+    // Accept both separators when stripping the home prefix.
+    for prefix in [format!("{home}/"), format!("{home}\\")] {
+        if let Some(rest) = abs.strip_prefix(prefix.as_str()) {
+            return format!("~/{}", rest.replace('\\', "/"));
         }
     }
     abs.to_string()
+}
+
+/// Windows display form: environment-variable placeholders and backslashes.
+///
+/// Matching is case-insensitive (Windows semantics) while the tail keeps the
+/// original casing. Kept unconditional so it can be unit-tested on any OS.
+fn windows_display_path(abs: &str, home: &str) -> String {
+    let abs_norm = abs.replace('/', "\\");
+    let home_norm = home.replace('/', "\\");
+    let home_trim = home_norm.trim_end_matches('\\');
+    let abs_lower = abs_norm.to_ascii_lowercase();
+    let home_lower = home_trim.to_ascii_lowercase();
+
+    for (suffix, token) in [
+        ("AppData\\Local", "%LOCALAPPDATA%"),
+        ("AppData\\Roaming", "%APPDATA%"),
+    ] {
+        let prefix = format!("{home_lower}\\{}", suffix.to_ascii_lowercase());
+        if abs_lower == prefix {
+            return token.to_string();
+        }
+        let prefix_with_sep = format!("{prefix}\\");
+        if abs_lower.starts_with(&prefix_with_sep) {
+            return format!("{token}\\{}", &abs_norm[prefix_with_sep.len()..]);
+        }
+    }
+
+    if abs_lower == home_lower {
+        return "%USERPROFILE%".to_string();
+    }
+    let home_sep = format!("{home_lower}\\");
+    if abs_lower.starts_with(&home_sep) {
+        return format!("%USERPROFILE%\\{}", &abs_norm[home_sep.len()..]);
+    }
+    abs_norm
 }
 
 /* ===== PATH / executables ===== */
@@ -1105,8 +1142,79 @@ mod tests {
         let home = home_dir().expect("home");
         let abs = home.join("a/b").to_string_lossy().to_string();
         let d = display_path(&abs);
-        assert!(d.starts_with("~/"), "got {d}");
-        assert!(d.contains("a/b") || d.contains("a\\b"));
+        #[cfg(windows)]
+        {
+            assert_eq!(d, "%USERPROFILE%\\a\\b");
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(d.starts_with("~/"), "got {d}");
+            assert!(d.contains("a/b") || d.contains("a\\b"));
+        }
+    }
+
+    #[test]
+    fn posix_display_path_collapses_home() {
+        let home = "/Users/alice";
+        assert_eq!(
+            posix_display_path("/Users/alice/projects/Octopus", home),
+            "~/projects/Octopus"
+        );
+        assert_eq!(posix_display_path("/Users/alice", home), "~");
+        assert_eq!(posix_display_path("/Users/alice/", home), "~/");
+        assert_eq!(
+            posix_display_path("/home/alice/.config", "/home/alice"),
+            "~/.config"
+        );
+        assert_eq!(
+            posix_display_path("/opt/homebrew/bin", home),
+            "/opt/homebrew/bin"
+        );
+        assert_eq!(
+            posix_display_path("/Volumes/External/octopus", home),
+            "/Volumes/External/octopus"
+        );
+    }
+
+    #[test]
+    fn windows_display_path_uses_env_tokens() {
+        let home = r"C:\Users\alice";
+        assert_eq!(
+            windows_display_path(r"C:\Users\alice\AppData\Local\Octopus\skills", home),
+            r"%LOCALAPPDATA%\Octopus\skills"
+        );
+        assert_eq!(
+            windows_display_path("C:/Users/alice/AppData/Local/Octopus", home),
+            r"%LOCALAPPDATA%\Octopus"
+        );
+        assert_eq!(
+            windows_display_path(r"C:\Users\alice\AppData\Roaming\Claude", home),
+            r"%APPDATA%\Claude"
+        );
+        assert_eq!(
+            windows_display_path(r"C:\Users\alice\.claude\config.json", home),
+            r"%USERPROFILE%\.claude\config.json"
+        );
+        assert_eq!(
+            windows_display_path(r"c:\users\ALICE\appdata\local\Octopus", home),
+            r"%LOCALAPPDATA%\Octopus"
+        );
+        assert_eq!(
+            windows_display_path(r"C:\Users\alice", home),
+            "%USERPROFILE%"
+        );
+        assert_eq!(
+            windows_display_path(r"C:\Users\alice\AppData\Local\", home),
+            r"%LOCALAPPDATA%\"
+        );
+        assert_eq!(
+            windows_display_path(r"D:\data\project", home),
+            r"D:\data\project"
+        );
+        assert_eq!(
+            windows_display_path(r"\\server\share\dir", home),
+            r"\\server\share\dir"
+        );
     }
 
     #[test]

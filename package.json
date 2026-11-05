@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "test:format-path": "node --test src/lib/formatPath.test.mjs",
     "postinstall": "lefthook install"
   },
   "dependencies": {

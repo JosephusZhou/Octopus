@@ -3,6 +3,7 @@ import { getAgentIcon } from "../agent-icons";
 import { useOverlayDismiss } from "../ui";
 import { Toast } from "@/components/Toast";
 import { useStatusMessage } from "@/lib/useStatusMessage";
+import { formatDisplayPath } from "@/lib/formatPath";
 import AgentDetail from "./AgentDetail";
 import type { MainView } from "../../App";
 import { ChevronRight, FileCog, FileJson, Folder, FolderOpen, Plus, Radar, X } from "lucide-react";
@@ -61,15 +62,6 @@ function basename(path: string | null | undefined): string {
   if (!path) return "";
   const parts = path.split(/[/\\]/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
-}
-
-function displayHomePath(path: string | null | undefined): string {
-  if (!path) return "";
-  // 仅做展示替换：数据仍是绝对路径，供打开/定位等操作使用（与 Claude/Codex 环境页的 displayPath 一致）。
-  return path
-    .replace(/^\/Users\/[^/]+/, "~")
-    .replace(/^\/home\/[^/]+/, "~")
-    .replace(/^[A-Za-z]:[\\/]Users[\\/][^\\/]+/, "~");
 }
 
 /* ===== Component ===== */
@@ -457,7 +449,7 @@ export default function AgentSniff({ onNavigate }: AgentSniffProps) {
                           <button
                             type="button"
                             className="claude-env-action-btn"
-                            data-tooltip={`在 Finder 中打开 ${displayHomePath(configDir)}`}
+                            data-tooltip={`在 Finder 中打开 ${formatDisplayPath(configDir)}`}
                             onClick={() => handleRevealDir(agent.name)}
                             disabled={busy}
                           >
@@ -486,13 +478,13 @@ export default function AgentSniff({ onNavigate }: AgentSniffProps) {
                             <span className="agent-path-label">
                               {path.endsWith(".app") ? "App路径" : "CLI 路径"}
                             </span>
-                            <span className="agent-path-value">{displayHomePath(path)}</span>
+                            <span className="agent-path-value">{formatDisplayPath(path)}</span>
                           </div>
                         ))}
                         {agent.config_dirs.map((dir, i) => (
                           <div key={`config-${i}`} className="agent-path-row">
                             <span className="agent-path-label">配置目录</span>
-                            <span className="agent-path-value">{displayHomePath(dir)}</span>
+                            <span className="agent-path-value">{formatDisplayPath(dir)}</span>
                           </div>
                         ))}
                         {stats && (

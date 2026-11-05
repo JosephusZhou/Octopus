@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStatusMessage } from "@/lib/useStatusMessage";
+import { formatDisplayPath } from "@/lib/formatPath";
 import { Toast } from "@/components/Toast";
 import { CheckGlyph, useOverlayDismiss } from "../../ui";
 
@@ -1442,8 +1443,8 @@ export function ModelConfigAgentPage({
                   <code className="oc-defaults-value">{view.smallModel || "未设置"}</code>
                 </div>
               )}
-              <div className="oc-defaults-path" title={view.configPath}>
-                {view.configPath}
+              <div className="oc-defaults-path" title={formatDisplayPath(view.configPath)}>
+                {formatDisplayPath(view.configPath)}
                 {view.isJsonc ? " · jsonc" : ""}
                 {!view.configExists ? " · 尚未创建" : ""}
               </div>

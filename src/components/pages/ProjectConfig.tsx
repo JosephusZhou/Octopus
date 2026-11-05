@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useStatusMessage } from "@/lib/useStatusMessage";
+import { formatDisplayPath } from "@/lib/formatPath";
 import { Toast } from "@/components/Toast";
 import { useOverlayDismiss } from "../ui";
 import { getAgentIcon } from "../agent-icons";
@@ -521,7 +522,7 @@ export default function ProjectConfig() {
                 </div>
                 {initResult.created.map((p) => (
                   <div key={`c:${p}`} className="proj-init-result-line is-success">
-                    {p}
+                    {p.split(" -> ").map(formatDisplayPath).join(" -> ")}
                   </div>
                 ))}
               </div>
@@ -533,7 +534,7 @@ export default function ProjectConfig() {
                 </div>
                 {initResult.skipped.map((p) => (
                   <div key={`s:${p}`} className="proj-init-result-line is-muted">
-                    {p}
+                    {p.split(" -> ").map(formatDisplayPath).join(" -> ")}
                   </div>
                 ))}
               </div>
@@ -851,7 +852,7 @@ export default function ProjectConfig() {
             <div className="proj-confirm-list">
               {checkResult?.existing.map((item) => (
                 <div key={item.path} className="proj-confirm-item">
-                  {item.isDir ? "📁" : "📄"} {item.path}
+                  {item.isDir ? "📁" : "📄"} {formatDisplayPath(item.path)}
                 </div>
               ))}
             </div>

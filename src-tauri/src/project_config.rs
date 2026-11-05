@@ -19,6 +19,11 @@ use crate::mcp_config::McpDraft;
 use crate::platform;
 use crate::skills::SkillInstallMode;
 
+/// 展示用路径（脱敏），不得用于任何文件操作。
+fn display(path: &Path) -> String {
+    platform::display_path(&path.to_string_lossy())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum InitMode {
@@ -195,7 +200,10 @@ fn resolve_target_dir(target_dir: &str) -> Result<PathBuf, String> {
     }
     let base = PathBuf::from(trimmed);
     if !base.is_dir() {
-        return Err(format!("目标目录不存在或不是目录: {}", base.display()));
+        return Err(format!(
+            "目标目录不存在或不是目录: {}",
+            platform::display_path(&base.to_string_lossy())
+        ));
     }
     Ok(base)
 }
@@ -225,31 +233,55 @@ fn remove_entry_for_overwrite(path: &Path) -> Result<(), String> {
     if ft.is_symlink() {
         // Unix: remove_file drops any symlink. Windows dir symlinks may need remove_dir.
         if let Err(e) = fs::remove_file(path) {
-            fs::remove_dir(path)
-                .map_err(|e2| format!("删除软链接 {} 失败: {} / {}", path.display(), e, e2))?;
+            fs::remove_dir(path).map_err(|e2| {
+                format!(
+                    "删除软链接 {} 失败: {} / {}",
+                    platform::display_path(&path.to_string_lossy()),
+                    e,
+                    e2
+                )
+            })?;
         }
         return Ok(());
     }
 
     if ft.is_file() {
-        return fs::remove_file(path)
-            .map_err(|e| format!("删除文件 {} 失败: {}", path.display(), e));
+        return fs::remove_file(path).map_err(|e| {
+            format!(
+                "删除文件 {} 失败: {}",
+                platform::display_path(&path.to_string_lossy()),
+                e
+            )
+        });
     }
 
     if ft.is_dir() {
-        let mut rd =
-            fs::read_dir(path).map_err(|e| format!("读取目录 {} 失败: {}", path.display(), e))?;
+        let mut rd = fs::read_dir(path).map_err(|e| {
+            format!(
+                "读取目录 {} 失败: {}",
+                platform::display_path(&path.to_string_lossy()),
+                e
+            )
+        })?;
         if rd.next().is_some() {
             return Err(format!(
                 "拒绝删除非空目录 {}（可能含用户数据）；请手动处理后重试或选择「跳过已存在」",
-                path.display()
+                platform::display_path(&path.to_string_lossy())
             ));
         }
-        return fs::remove_dir(path)
-            .map_err(|e| format!("删除空目录 {} 失败: {}", path.display(), e));
+        return fs::remove_dir(path).map_err(|e| {
+            format!(
+                "删除空目录 {} 失败: {}",
+                platform::display_path(&path.to_string_lossy()),
+                e
+            )
+        });
     }
 
-    Err(format!("无法处理的路径类型: {}", path.display()))
+    Err(format!(
+        "无法处理的路径类型: {}",
+        platform::display_path(&path.to_string_lossy())
+    ))
 }
 
 fn write_file(
@@ -262,14 +294,14 @@ fn write_file(
 ) {
     if entry_present(path) {
         if !overwrite {
-            skipped.push(path.to_string_lossy().to_string());
+            skipped.push(display(path));
             return;
         }
         // Refuse to clobber a directory (empty or not) with a file write.
         if let Ok(meta) = fs::symlink_metadata(path) {
             let ft = meta.file_type();
             if ft.is_dir() && !ft.is_symlink() {
-                errors.push(format!("路径 {} 是目录，无法覆盖为文件", path.display()));
+                errors.push(format!("路径 {} 是目录，无法覆盖为文件", display(path)));
                 return;
             }
             if let Err(e) = remove_entry_for_overwrite(path) {
@@ -280,13 +312,13 @@ fn write_file(
     }
     if let Some(parent) = path.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
-            errors.push(format!("创建目录 {} 失败: {}", parent.display(), e));
+            errors.push(format!("创建目录 {} 失败: {}", display(parent), e));
             return;
         }
     }
     match fs::write(path, content) {
-        Ok(_) => created.push(path.to_string_lossy().to_string()),
-        Err(e) => errors.push(format!("写入 {} 失败: {}", path.display(), e)),
+        Ok(_) => created.push(display(path)),
+        Err(e) => errors.push(format!("写入 {} 失败: {}", display(path), e)),
     }
 }
 
@@ -297,12 +329,12 @@ fn create_dir(
     errors: &mut Vec<String>,
 ) {
     if entry_present(path) {
-        skipped.push(path.to_string_lossy().to_string());
+        skipped.push(display(path));
         return;
     }
     match fs::create_dir_all(path) {
-        Ok(_) => created.push(path.to_string_lossy().to_string()),
-        Err(e) => errors.push(format!("创建目录 {} 失败: {}", path.display(), e)),
+        Ok(_) => created.push(display(path)),
+        Err(e) => errors.push(format!("创建目录 {} 失败: {}", display(path), e)),
     }
 }
 
@@ -316,7 +348,7 @@ fn create_dir_symlink(
 ) {
     if entry_present(dest) {
         if !overwrite {
-            skipped.push(dest.to_string_lossy().to_string());
+            skipped.push(display(dest));
             return;
         }
         if let Err(e) = remove_entry_for_overwrite(dest) {
@@ -325,10 +357,10 @@ fn create_dir_symlink(
         }
     }
     match platform::symlink_dir(source, dest) {
-        Ok(_) => created.push(format!("{} -> {}", dest.display(), source.display())),
+        Ok(_) => created.push(format!("{} -> {}", display(dest), display(source))),
         Err(e) => errors.push(format!(
             "创建软链接 {} 失败（Windows 需在「设置→开发者选项」中开启开发者模式）: {}",
-            dest.display(),
+            display(dest),
             e
         )),
     }
@@ -642,7 +674,7 @@ fn run_init(
                 }
             }
             if ok_count > 0 && written_files.insert(path.clone()) {
-                created.push(format!("{} (MCP {} 项)", path.display(), ok_count));
+                created.push(format!("{} (MCP {} 项)", display(path), ok_count));
             }
         }
     }
@@ -715,7 +747,7 @@ fn install_project_skill(
 ) {
     if entry_present(dest) {
         if !overwrite {
-            skipped.push(dest.to_string_lossy().to_string());
+            skipped.push(display(dest));
             return;
         }
         if let Err(e) = remove_entry_for_overwrite(dest) {
@@ -725,7 +757,7 @@ fn install_project_skill(
     }
     if let Some(parent) = dest.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
-            errors.push(format!("创建目录 {} 失败: {}", parent.display(), e));
+            errors.push(format!("创建目录 {} 失败: {}", display(parent), e));
             return;
         }
     }
@@ -736,13 +768,13 @@ fn install_project_skill(
     match result {
         Ok(_) => match mode {
             SkillInstallMode::Link => {
-                created.push(format!("{} -> {}", dest.display(), src.display()))
+                created.push(format!("{} -> {}", display(dest), display(src)))
             }
-            SkillInstallMode::Copy => created.push(dest.to_string_lossy().to_string()),
+            SkillInstallMode::Copy => created.push(display(dest)),
         },
         Err(e) => errors.push(format!(
             "安装技能到 {} 失败（Windows 软链接需开启开发者模式）: {}",
-            dest.display(),
+            display(dest),
             e
         )),
     }

@@ -8,6 +8,7 @@ use crate::config::{self, BackupSettings};
 use crate::crypto;
 use crate::db;
 use crate::mcp_config;
+use crate::platform;
 use crate::sniff;
 use crate::webdav;
 use chrono::Local;
@@ -677,12 +678,7 @@ fn expand_home(path: &str) -> Option<PathBuf> {
 }
 
 fn display_path(path: &Path) -> String {
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(stripped) = path.strip_prefix(&home) {
-            return format!("~/{}", stripped.display());
-        }
-    }
-    path.display().to_string()
+    platform::display_path(&path.to_string_lossy())
 }
 
 /// 配置目录之外的 auth.json：OpenCode 存于 `~/.local/share/opencode`；
@@ -1648,7 +1644,7 @@ fn extract_backup_zip(zip_path: &Path) -> Result<(u32, u32, Vec<String>), String
             warnings.push(format!(
                 "跳过 {}：目标路径不在允许范围内（{}）",
                 name,
-                dest.display()
+                display_path(&dest)
             ));
             continue;
         }

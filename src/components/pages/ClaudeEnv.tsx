@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStatusMessage } from "@/lib/useStatusMessage";
+import { formatDisplayPath } from "@/lib/formatPath";
 import { Toast } from "@/components/Toast";
 import { CheckGlyph, useOverlayDismiss } from "../ui";
 import { ModelComboBox } from "../ModelComboBox";
@@ -200,10 +201,6 @@ const ProviderSelect = ({
 };
 
 /* ===== Helpers ===== */
-
-function displayPath(abs: string): string {
-  return abs.replace(/^\/Users\/[^/]+/, "~").replace(/^\/home\/[^/]+/, "~");
-}
 
 /** 供应商的自定义模型列表 → 模型下拉选项（别名 ID 与原始模型 ID 均可选）；未配置时返回空。 */
 function customModelOptionsOf(p: AiProvider | null): string[] {
@@ -1009,7 +1006,7 @@ export default function ClaudeEnv() {
                     )}
                   </div>
                   <div className="claude-env-meta">
-                    配置路径：<code>{displayPath(env.configDir)}</code>
+                    配置路径：<code>{formatDisplayPath(env.configDir)}</code>
                   </div>
                   <div className="claude-env-meta">
                     启动：
@@ -1017,7 +1014,7 @@ export default function ClaudeEnv() {
                     {!env.isDefault && (
                       <span className="claude-env-meta-dim">
                         {" （"}
-                        <code>{`CLAUDE_CONFIG_DIR=${displayPath(env.configDir)} claude`}</code>
+                        <code>{`CLAUDE_CONFIG_DIR=${formatDisplayPath(env.configDir)} claude`}</code>
                         {"）"}
                       </span>
                     )}
@@ -1204,7 +1201,7 @@ export default function ClaudeEnv() {
                           >
                             <span className="app-select-option-title">{e.name}</span>
                             <span className="app-select-option-sub">
-                              {displayPath(e.configDir)}
+                              {formatDisplayPath(e.configDir)}
                               {disabled ? " · 目录不存在" : ""}
                             </span>
                           </button>
@@ -1526,7 +1523,9 @@ export default function ClaudeEnv() {
                 <span className="ui-check-label">
                   写入 shell 别名（把 <code>{cloneAlias.trim() || "claude-<slug>"}</code> 写入{" "}
                   <code>
-                    {shell ? displayPath(shell.shellConfigPath || shell.zshrcPath) : "shell 配置"}
+                    {shell
+                      ? formatDisplayPath(shell.shellConfigPath || shell.zshrcPath)
+                      : "shell 配置"}
                   </code>
                   ）
                 </span>
@@ -1868,7 +1867,7 @@ export default function ClaudeEnv() {
                       <div className="claude-env-scan-info">
                         <div className="claude-env-name">{c.suggestedName}</div>
                         <div className="claude-env-meta">
-                          <code>{displayPath(c.path)}</code>
+                          <code>{formatDisplayPath(c.path)}</code>
                           {" · "}
                           <code>{c.suggestedAlias}</code>
                         </div>
@@ -1960,7 +1959,7 @@ export default function ClaudeEnv() {
               <CheckGlyph />
               <span className="ui-check-label">
                 同时删除磁盘目录{" "}
-                <code>{deleteTarget ? displayPath(deleteTarget.configDir) : ""}</code>
+                <code>{deleteTarget ? formatDisplayPath(deleteTarget.configDir) : ""}</code>
               </span>
             </label>
           </div>
@@ -1995,12 +1994,14 @@ export default function ClaudeEnv() {
             <div className="claude-env-form-hint">
               已写入{" "}
               <code>
-                {shell ? displayPath(shell.shellConfigPath || shell.zshrcPath) : "shell 配置"}
+                {shell ? formatDisplayPath(shell.shellConfigPath || shell.zshrcPath) : "shell 配置"}
               </code>{" "}
               的 Octopus 标记块。请在终端执行{" "}
               <code>
                 source{" "}
-                {shell ? displayPath(shell.shellConfigPath || shell.zshrcPath) : "对应 rc 文件"}
+                {shell
+                  ? formatDisplayPath(shell.shellConfigPath || shell.zshrcPath)
+                  : "对应 rc 文件"}
               </code>{" "}
               或新开终端后生效。
             </div>
@@ -2036,9 +2037,9 @@ export default function ClaudeEnv() {
           <div className="confirm-body">
             <div className="confirm-text">将迁移整个 Claude 环境目录：</div>
             <div className="confirm-subtext">
-              <code>{displayPath(editOriginalConfigDirRef.current)}</code>
+              <code>{formatDisplayPath(editOriginalConfigDirRef.current)}</code>
               {" → "}
-              <code>{displayPath(editConfigDir.trim())}</code>
+              <code>{formatDisplayPath(editConfigDir.trim())}</code>
             </div>
             <div className="confirm-subtext">
               目标目录必须不存在或为空；迁移成功后 shell

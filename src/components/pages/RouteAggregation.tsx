@@ -19,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import * as api from "./route-aggregation/api";
+import { formatDisplayPath } from "@/lib/formatPath";
 import {
   DEFAULT_CONFIG,
   UNSUPPORTED_ROUTE_PROVIDER_HINT,
@@ -63,14 +64,6 @@ function getSelectedProviderModelIds(
   }
 
   return [...modelIds];
-}
-
-/** 展示用路径：把用户目录前缀替换为 ~（数据仍是绝对路径，供打开/定位等操作使用）。 */
-function displayPath(path: string): string {
-  return path
-    .replace(/^\/Users\/[^/]+/, "~")
-    .replace(/^\/home\/[^/]+/, "~")
-    .replace(/^[A-Za-z]:[\\/]Users[\\/][^\\/]+/, "~");
 }
 
 export default function RouteAggregation() {
@@ -1338,9 +1331,9 @@ function LogsSection({
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
               }}
-              title={logFilePath}
+              title={formatDisplayPath(logFilePath)}
             >
-              {displayPath(logFilePath)}
+              {formatDisplayPath(logFilePath)}
             </code>
             <button
               className="btn-icon-action"

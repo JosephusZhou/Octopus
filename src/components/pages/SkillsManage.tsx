@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStatusMessage } from "@/lib/useStatusMessage";
+import { formatDisplayPath } from "@/lib/formatPath";
 import { Toast } from "@/components/Toast";
 import { AgentBadge, getAgentIcon } from "../agent-icons";
 import { Tooltip } from "../Tooltip";
@@ -2530,7 +2531,9 @@ export default function SkillsManage() {
                                         <span className="skill-repo-install-mode">
                                           {inst.link ? "软链接" : "复制"}
                                         </span>
-                                        <span className="skill-repo-install-path">{inst.path}</span>
+                                        <span className="skill-repo-install-path">
+                                          {formatDisplayPath(inst.path)}
+                                        </span>
                                       </div>
                                     ))}
                                     {r.appliedAgents.length === 0 &&
