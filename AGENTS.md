@@ -95,17 +95,26 @@ await invoke("command_name", { ... });
 
 ## 路径展示口径
 
-用户可见路径按用途分三类，不要混用：
+用户可见路径按用途分三类；判定看该路径在页面上是否常驻、是否随操作消失：
 
-- **a 类 常驻展示**（Agent 安装路径、配置目录、备份 `path_summary`、Skills 库目录等）：
-  用跨平台占位符，macOS/Linux 为 `~`，Windows 为 `%USERPROFILE%` / `%LOCALAPPDATA%` /
-  `%APPDATA%`。前端入口 `formatDisplayPath`（`src/lib/formatPath.ts`），后端入口
-  `display_path`（`src-tauri/src/platform.rs`）。
-- **b 类 操作结果与确认提示**（删除/迁移确认、扫描候选、初始化检查与执行结果、打开/保存
-  反馈等）：用真实路径，避免占位符折叠盘符与层级导致误判；长路径允许折行，不要省略截断。
-- **c 类 用户输入与选择**（表单值、占位符、复制/打开的目标）：保持真实路径，不做格式化。
+- **a 类 常驻展示**（Agent 安装路径、配置目录、主配置文件、Skills 库目录、备份单元摘要等
+  一直出现在页面上的路径）：用跨平台占位符，隐藏真实用户路径。macOS/Linux 用 `~`；Windows
+  按目录语义选 `%USERPROFILE%` / `%LOCALAPPDATA%` / `%APPDATA%`，展示态分隔符统一反斜杠。
+- **b 类 操作结果与确认提示**（成功/失败 toast、弹窗内联错误、结果列表、删除/迁移确认）：
+  用真实源路径，便于用户确认影响范围与排查问题；长路径允许折行，不要截断成 ellipsis。
+- **c 类 用户输入或选择**（输入框、占位符、目录选择器回填）：保持真实路径，保证可编辑与功能
+  正确。
 
-`formatDisplayPath` / `display_path` 只用于 a 类展示，格式化结果不得用于文件操作或 b/c 类提示。
+唯一格式化入口：前端 `formatDisplayPath()`（`src/lib/formatPath.ts`）；后端
+`platform::display_path()`（内部 `display_path_with_home` 供固定 home 的测试）。页面和内联代码
+不得写平台分支或自行拼占位符。格式化幂等：已是 `~` / `%VAR%` 的串原样返回，不会二次替换。
+
+真实路径与展示值必须分开：打开目录、reveal、迁移、初始化、选择目录、读写文件一律传真实路径，
+禁止把格式化结果回传后端；同一变量不要一处当展示、一处当功能用。后端 DTO 若返回展示串，字段
+注释须标明“前端展示须脱敏”。
+
+例外：复制路径类动作复制真实路径（例如 About 页复制配置目录），界面展示仍用占位符。不在用户
+目录下的路径（`/Volumes`、`/opt`、`D:\data`、UNC）不要强行折叠成 `~`，按平台原样或统一分隔符。
 
 ## Agent、MCP 与 Skills
 
