@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - "scripts/check_upstream_sync.py"
-      - "docs/cli_proxy_api_sync_state.json"
+      - "sync/scripts/check_upstream_sync.py"
+      - "sync/cli_proxy_api_sync_state.json"
       - ".github/workflows/upstream-sync-check.yml"
 
 jobs:
@@ -25,13 +25,13 @@ jobs:
       - name: Run upstream sync check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python3 scripts/check_upstream_sync.py
+        run: python3 sync/scripts/check_upstream_sync.py
 
       - name: Upload sync state report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: sync-state-report
-          path: docs/cli_proxy_api_sync_state.json.new
+          path: sync/cli_proxy_api_sync_state.json.new
           if-no-source-found: ignore
           retention-days: 30

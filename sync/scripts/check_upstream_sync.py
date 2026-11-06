@@ -18,8 +18,10 @@ from pathlib import Path
 from typing import Any
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-SYNC_STATE_PATH = REPO_ROOT / "docs" / "cli_proxy_api_sync_state.json"
+# 由脚本自身位置推导仓库根（sync/scripts/check_upstream_sync.py → 仓库根），
+# 不依赖调用时的当前工作目录。
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SYNC_STATE_PATH = REPO_ROOT / "sync" / "cli_proxy_api_sync_state.json"
 CLIPROXYAPI_REPO = "router-for-me/CLIProxyAPI"
 GITHUB_API = f"https://api.github.com/repos/{CLIPROXYAPI_REPO}"
 SLA_DAYS = 14

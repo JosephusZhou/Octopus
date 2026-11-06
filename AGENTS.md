@@ -66,9 +66,9 @@ src-tauri/src/
   backup_schedule.rs               自动备份调度（30s tick、interval/daily、互斥）
   route_aggregation/               同协议路由聚合、故障转移和 cloaking
 
-docs/SYNC_PLAYBOOK.md              CLIProxyAPI 行为同步手册
-docs/cli_proxy_api_sync_state.json CLIProxyAPI 同步状态
-scripts/check_upstream_sync.py     上游漂移检查
+sync/SYNC_PLAYBOOK.md               CLIProxyAPI 行为同步手册
+sync/cli_proxy_api_sync_state.json  CLIProxyAPI 同步状态
+sync/scripts/check_upstream_sync.py 上游漂移检查
 docs/AGENT_MCP_SKILLS_MAP.md        MCP/Skills 路径、方言和字段规范
 ```
 
@@ -218,8 +218,8 @@ cloaking 模块按客户端行为维护：
   不是 CLIProxyAPI 文件镜像。
 
 CLIProxyAPI 只提供行为同步参考，不是运行时依赖。上游变更按
-[`docs/SYNC_PLAYBOOK.md`](docs/SYNC_PLAYBOOK.md) 和
-[`docs/cli_proxy_api_sync_state.json`](docs/cli_proxy_api_sync_state.json) 处理；客户端指纹
+[`sync/SYNC_PLAYBOOK.md`](sync/SYNC_PLAYBOOK.md) 和
+[`sync/cli_proxy_api_sync_state.json`](sync/cli_proxy_api_sync_state.json) 处理；客户端指纹
 漂移超过 14 天时同步检查脚本返回失败。
 
 ## 前端视图
@@ -248,5 +248,5 @@ OMP配置、供应商、路由聚合、项目配置和备份管理；设置界�
 4. `src-tauri/src/project_config.rs`：项目级骨架、MCP 和 Skills
 5. `src-tauri/src/ai_provider.rs` + `agent_model_config.rs`：供应商和模型
 6. `src-tauri/src/claude_env.rs` + `codex_env.rs`：多环境及同步
-7. `src-tauri/src/route_aggregation/` + `docs/SYNC_PLAYBOOK.md`：本地路由和 cloaking
+7. `src-tauri/src/route_aggregation/` + `sync/SYNC_PLAYBOOK.md`：本地路由和 cloaking
 8. `src/App.tsx` + 对应页面：前端视图与交互

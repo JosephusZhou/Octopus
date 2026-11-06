@@ -80,9 +80,9 @@ worktree-*/
 *.tmp
 .cache/
 
-# Python sync scripts (e.g. scripts/check_upstream_sync.py)
+# Python sync scripts (e.g. sync/scripts/check_upstream_sync.py)
 __pycache__/
 *.pyc
 
-# Sync script atomic-write sidecar (e.g. cli_proxy_api_sync_state.json.new)
+# Sync script atomic-write sidecar (e.g. sync/cli_proxy_api_sync_state.json.new)
 *.json.new

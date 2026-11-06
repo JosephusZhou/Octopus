@@ -14,7 +14,7 @@
 //! - `circuit_breaker` — Three-state circuit breaker (Closed/Open/HalfOpen)
 //! - `cloaking` — Claude Code rectifier + Codex client simulation
 //!   （仿照 CLIProxyAPI `internal/runtime/executor/`，由 check_upstream_sync.py 的
-//!   client_fingerprint_anchors 跟踪同步状态；详见 docs/SYNC_PLAYBOOK.md §2）
+//!   client_fingerprint_anchors 跟踪同步状态；详见 sync/SYNC_PLAYBOOK.md §2）
 //! - `config` — RouteAggregationConfig load/save (stored in config.json)
 //! - `types` — Data structures (DTOs for Tauri commands)
 //! - `log` / `logfile` — In-memory ring buffer + on-disk tail-friendly log

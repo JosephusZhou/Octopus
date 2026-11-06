@@ -18,8 +18,8 @@
 
 ## 0. 架构决策（2026-08-15）
 
-当前路由聚合维护两种协议、三个同协议转发入口：Claude Messages、Claude
-`count_tokens` 和 OpenAI Responses。
+当前路由聚合维护三种协议、四个同协议转发入口：Claude Messages、Claude
+`count_tokens`、OpenAI Responses 和 OpenAI Chat Completions。
 
 | # | 决策 | 理由 |
 |---|------|------|
@@ -38,7 +38,7 @@
 ```bash
 # 需要 GITHUB_TOKEN 环境变量避免 API 限流（公网匿名 60 req/h）
 export GITHUB_TOKEN=<your_token>
-python3 scripts/check_upstream_sync.py
+python3 sync/scripts/check_upstream_sync.py
 ```
 
 退出码：
@@ -46,13 +46,14 @@ python3 scripts/check_upstream_sync.py
 - `1` — 至少一个 Cloaking file 超 14 天未同步（CI 阻断）
 - `2` — sync state 文件缺失（首次运行）
 
-输出示例（v6 schema、2 种协议 / 3 个入口）：
+输出示例（v6 schema、3 种协议 / 4 个入口）：
 
 ```
-=== Passthrough 链路覆盖 (3 paths) ===
+=== Passthrough 链路覆盖 (4 paths) ===
   • Anthropic Messages → Anthropic Messages (A → A)
   • Anthropic count_tokens → Anthropic count_tokens (A → A)
   • OpenAI Responses → OpenAI Responses (OR → OR)
+  • OpenAI Chat Completions → OpenAI Chat Completions (CC → CC)
 
 === Cloaking 客户端指纹 (2 clients) ===
     📦 Claude Code 客户端指纹 (config: claude_code_version = 2.1.258, 11 files)
@@ -63,7 +64,7 @@ python3 scripts/check_upstream_sync.py
     ⚠ cloaking/codex_cloaking.rs (上游 12d 内有新 commit)
     ...
 
-新 sync state 已写到 docs/cli_proxy_api_sync_state.json.new
+新 sync state 已写到 sync/cli_proxy_api_sync_state.json.new
 ```
 
 ### 1.2 CI 集成
@@ -72,12 +73,16 @@ python3 scripts/check_upstream_sync.py
 
 - 每周一 9:00 UTC（定时）
 - 手动 `workflow_dispatch`（按需）
-- cloaking/ 或 sync state 改动时（path filter）
+- `sync/scripts/check_upstream_sync.py`、`sync/cli_proxy_api_sync_state.json` 或
+  `.github/workflows/upstream-sync-check.yml` 改动时（path filter）
+
+注意：path filter 不包含 `cloaking/` 目录，只改 cloaking 代码不会触发该 workflow；
+这类改动需要手动 `workflow_dispatch` 或等下一次定时检查。
 
 CI 行为：
-- 跑 `python3 scripts/check_upstream_sync.py`
+- 跑 `python3 sync/scripts/check_upstream_sync.py`
 - 退出码 1 → 失败（红 ✗）；0 → 成功（绿 ✓）
-- artifacts 上传 `docs/cli_proxy_api_sync_state.json.new` 供 review
+- artifacts 上传 `sync/cli_proxy_api_sync_state.json.new` 供 review
 
 ---
 
@@ -108,7 +113,8 @@ CI 行为：
    下表的 local 路径均相对于 `src-tauri/src/route_aggregation/`：
    | upstream | local |
    |-----------|-------|
-   | `internal/runtime/executor/claude_executor_cloaking.go` | `cloaking/claude_cloaking.rs` / `claude_headers.rs` / `tool_remap.rs` |
+   | `internal/runtime/executor/claude_executor_cloaking.go` | `cloaking/claude_cloaking.rs` / `claude_headers.rs` |
+   | `internal/runtime/executor/claude_executor_request.go` | `cloaking/tool_remap.rs` |
    | `internal/runtime/executor/claude_executor_cloaking.go` | `cloaking/claude_cache.rs` / `claude_context.rs` / `claude_identity.rs` |
    | `internal/runtime/executor/claude_signing.go` | `cloaking/claude_billing.rs` |
    | `internal/runtime/executor/helps/claude_system_prompt.go` | `cloaking/claude_system_prompt.rs` |
@@ -116,6 +122,9 @@ CI 行为：
    | `internal/runtime/executor/helps/cloak_obfuscate.go` | `cloaking/obfuscate.rs` |
    | `internal/runtime/executor/codex_executor_request.go` | `cloaking/codex_cloaking.rs` / `codex_headers.rs` |
    | `internal/runtime/executor/claude_executor_cloaking.go` | `cloaking/header_scrub.rs` |
+
+   `tool_remap.rs` 的上游 remap/恢复逻辑实际位于 `claude_executor_request.go`；旧映射到
+   `claude_executor_cloaking.go` 会漏检 remap 相关 commit，更新锚点时以 state 为准。
 
    `forwarder.rs` 中的 SSE 分帧、非流式响应工具名恢复和供应商重试是本地集成逻辑，
    不作为 CLIProxyAPI 文件镜像；但上游工具名协议变化时必须回归验证。
@@ -212,15 +221,15 @@ P0 立即同步（< 1 周）；P1/P2 < 2 周；P3 攒到一定量同步一次。
 
 ### 4.4 sync state 文件冲突
 
-多人同时改 `docs/cli_proxy_api_sync_state.json` 时 git 合并可能冲突。
+多人同时改 `sync/cli_proxy_api_sync_state.json` 时 git 合并可能冲突。
 解决：按时间排序覆盖，CI 输出的 `.json.new` 文件是参考。
 
 ---
 
 ## 5. 工具
 
-- `scripts/check_upstream_sync.py` — 客户端指纹上游同步检查
-- `docs/cli_proxy_api_sync_state.json` — passthrough 链路与客户端指纹状态
+- `sync/scripts/check_upstream_sync.py` — 客户端指纹上游同步检查
+- `sync/cli_proxy_api_sync_state.json` — passthrough 链路与客户端指纹状态
 - `.github/workflows/upstream-sync-check.yml` — CI 工作流
 - `gh api` — GitHub CLI（本地查 upstream）
 
