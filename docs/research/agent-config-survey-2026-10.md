@@ -303,6 +303,7 @@
 | D15 | antigravity | 一个 agent 同时写 gcli 路径（settings.json/httpUrl）与 Antigravity skills | 两套产品约定不同（见 §6/§7） | 先明确目标产品；若面向 Antigravity App：全局 `~/.gemini/config/mcp_config.json`、项目 `.agents/mcp_config.json`、`serverUrl`、skills `.agents/skills/`、AGENTS.md+GEMINI.md；若面向 gcli：维持现状并补别名 | 官方明确（需产品决策） |
 | D16 | workbuddy | 全局 `~/.workbuddy/.mcp.json` | 桌面 `~/.workbuddy/mcp.json`（无点）；CodeBuddy CLI `~/.codebuddy/.mcp.json` | 修正桌面文件名；评估是否拆分出 CodeBuddy CLI；远程格式与 skills/AGENTS.md 待官方复核 | 桌面路径官方明确 / 其余待核实 |
 | D17 | 通用 | 项目 skills 统一 `.agents/skills` 链接到各目录 | 各 agent 原生项目 skills 位不同（`.claude/skills`、`.pi/skills`、`.agents/skills` 兼容位） | 链接策略按 agent 原生位落，`.agents/skills` 作为通用兼容源 | 官方明确（逐家） |
+| D20 | opencode | 全局目录硬编码为 `~/.config/opencode`（`agents.rs`、`opencode_config.rs`、`mcp_config.rs` 共四处） | 支持 `OPENCODE_CONFIG_DIR`；未设置时取 `$XDG_CONFIG_HOME/opencode`，再回退 `~/.config/opencode` | 暂只记录限制，不改代码；适配时按该顺序统一全局路径解析 | 官方明确（源码） |
 
 ---
 

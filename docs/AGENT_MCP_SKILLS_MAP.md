@@ -218,8 +218,15 @@
 | 项 | 值 |
 |----|-----|
 | 全局 | `~/.config/opencode/skills/<name>/SKILL.md` |
+| 全局兼容 | `~/.claude/skills/`、`~/.agents/skills/` |
 | 项目 | `.opencode/skills/` 等 |
-| 权限 | 可在 `opencode.json` 的 `skill` 字段做 allow/deny |
+| `~/.opencode/skills` | 非官方全局路径，见下方说明 |
+| 权限 | `permissions` 数组，`action: "skill"`，`resource` 为 skill ID，`effect` 取 `allow` / `ask` / `deny` |
+
+`~/.opencode` 是 curl 安装目录（二进制在 `~/.opencode/bin`），不是全局配置根。
+`~/.opencode/skills` 仅在 cwd 位于 `$HOME` 之下时，被配置发现当作 home 层级的
+project `.opencode` 目录扫描；同名 skill 会覆盖 `~/.config/opencode/skills` 的版本。
+这是项目级覆盖，不是第二个全局路径；存量技能建议迁移到全局主路径，不要双写。
 
 **模型配置**：`opencode_config.rs` 提供 `get_agent_model_config` / `upsert_agent_model` /
 `upsert_agent_provider` 等命令；`~/.config/opencode/opencode.json` 的 `provider` / `model`
@@ -490,6 +497,7 @@ if removeFromAgentConfigs:
 | SSE 方言差异 | 各产品支持不一 | Pi 直接拒绝 SSE；Oh-My-Pi 支持；其余能映射则映射，否则提示跳过 |
 | 密钥 | 配置中常含 token | AgentBuddy 永不日志打印 env/headers 值；API Key 经 `crypto::encrypt` 落 SQLite |
 | OpenCode JSONC | 注释 / 尾逗号 | `json5` 解析；重写 pretty JSON（注释不保留，会抛 warn 给用户） |
+| OpenCode 全局目录 | 硬编码 `~/.config/opencode`（`agents.rs`、`opencode_config.rs`、`mcp_config.rs` 共四处），不解析 `OPENCODE_CONFIG_DIR` / `XDG_CONFIG_HOME` | 设置了变量的用户，OpenCode 实际读取的全局目录与 App 写入/扫描的目录不一致，可能出现「App 显示已安装但 agent 读不到」或反向误判；默认用户不受影响。后续按 `OPENCODE_CONFIG_DIR` → `$XDG_CONFIG_HOME/opencode` → `~/.config/opencode` 适配 |
 | partial failure | apply 批次中部分 agent 失败 | UI 只把 ok=true 的 agent 写进 `appliedAgents` |
 | Pi 模型配置 | JSON 解析（`~/.pi/agent/models.json`） | 字段映射到统一 DTO，列表 DTO 不回传明文 Key |
 | Oh-My-Pi 模型配置 | YAML 解析（`~/.omp/agent/models.yml`） | 与 Pi 共用 `pi_model_config` 后端；密钥在 provider `apiKey`；列表 DTO 不回传明文 Key |
