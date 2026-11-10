@@ -1,7 +1,7 @@
 /** OpenCode / Pi / Oh-My-Pi 配置页的共享类型。 */
 
 /** 支持可视化模型配置的 agent 标识。 */
-export type ModelConfigAgentId = "opencode" | "pi" | "oh-my-pi";
+export type ModelConfigAgentId = "opencode" | "pi" | "oh-my-pi" | "omo";
 
 export interface AgentVariantView {
   id: string;
@@ -48,7 +48,7 @@ export interface AgentProviderView {
 }
 
 export interface AgentModelConfigView {
-  /** opencode | pi | oh-my-pi */
+  /** opencode | pi | oh-my-pi | omo */
   agent: ModelConfigAgentId;
   configPath: string;
   /** 凭据文件真实路径；展示前须 formatDisplayPath。 */
@@ -63,6 +63,10 @@ export interface AgentModelConfigView {
   smallModelSupported: boolean;
   model?: string | null;
   smallModel?: string | null;
+  /** OMO 专用：omo.jsonc 中固定 model_profile 的当前值。 */
+  omoModelProfile?: string | null;
+  /** OMO 专用：omo.jsonc 的真实路径（确认提示展示用）。 */
+  omoProfilePath?: string | null;
   enabledProviders?: string[] | null;
   disabledProviders?: string[] | null;
   providers: AgentProviderView[];
@@ -121,6 +125,8 @@ export interface SetDefaultsPayload {
   smallModel?: string | null;
   enabledProviders?: string[] | null | undefined;
   disabledProviders?: string[] | null | undefined;
+  /** OMO 专用：是否同步默认模型到 omo.jsonc 的 model_profile。 */
+  syncOmoModelProfile?: boolean | null;
 }
 
 export interface UpsertProviderPayload {

@@ -9,7 +9,7 @@
 pub enum McpDialect {
     /// Codex: `config.toml` → `[mcp_servers.*]`
     TomlMcpServers,
-    /// Claude Desktop / WorkBuddy / Pi / Oh-My-Pi: 顶层 `mcpServers`
+    /// Claude Desktop / WorkBuddy / Pi / Oh-My-Pi / OMO: 顶层 `mcpServers`
     JsonMcpServers,
     /// OpenCode: 顶层 `mcp`（JSON/JSONC）
     JsonMcp,
@@ -154,6 +154,20 @@ pub fn windows_bin_candidates(spec: &AgentSpec) -> Vec<std::path::PathBuf> {
                 &mut out,
                 windows_env_path("LOCALAPPDATA", "Programs/WorkBuddy/WorkBuddy.exe"),
             );
+        }
+        "omo" => {
+            // Native installer writes into %USERPROFILE%\.local\bin; npm and
+            // bun shims live in their own global bin dirs.
+            push(
+                &mut out,
+                windows_env_path("USERPROFILE", ".local/bin/omo.exe"),
+            );
+            push(&mut out, windows_env_path("APPDATA", "npm/omo.cmd"));
+            push(
+                &mut out,
+                windows_env_path("USERPROFILE", ".bun/bin/omo.exe"),
+            );
+            push(&mut out, windows_env_path("LOCALAPPDATA", "pnpm/omo.cmd"));
         }
         // CLI-only agents rely on PATH + PATHEXT; no extra App paths.
         _ => {}
@@ -350,6 +364,35 @@ static AGENTS: &[AgentSpec] = &[
         skills_roots: &["~/.omp/agent/skills"],
         skills_supported: true,
         // OMP 的用户级提示词位于 agent 子目录（`~/.omp/agent/AGENTS.md`）。
+        prompt_file: Some("agent/AGENTS.md"),
+        shared_root: None,
+    },
+    // 9. OMO Native（oh-my-openagent 独立 `omo` 命令，内置 senpi 引擎）
+    // 注册身份、安装发现、主配置打开，全局 MCP / Skills / 提示词写入，以及项目级骨架与
+    // 模型配置（`agent_model_config` → `pi_model_config`）。
+    AgentSpec {
+        name: "omo",
+        display_name: "OMO",
+        icon: "OM",
+        bin_paths: &[
+            "~/.local/bin/omo",
+            "~/.bun/bin/omo",
+            "/usr/local/bin/omo",
+            "/opt/homebrew/bin/omo",
+            "/usr/bin/omo",
+        ],
+        search_names: &["omo"],
+        config_paths: &["~/.omo"],
+        scan_app_support: false,
+        mcp: McpSpec {
+            dialect: McpDialect::JsonMcpServers,
+            path: McpPath::Fixed(".omo/agent/mcp.json"),
+            jsonc: false,
+        },
+        mcp_managed: true,
+        skills_roots: &["~/.omo/agent/skills"],
+        skills_supported: true,
+        // OMO 的用户级提示词位于 agent 子目录（`~/.omo/agent/AGENTS.md`）。
         prompt_file: Some("agent/AGENTS.md"),
         shared_root: None,
     },

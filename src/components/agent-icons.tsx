@@ -17,6 +17,7 @@ const KNOWN_AGENTS = new Set([
   "workbuddy",
   "pi",
   "oh-my-pi",
+  "omo",
 ]);
 
 /** 渲染指定 agent 的彩色图标；无匹配返回 null，由调用方回退到名称缩写。 */

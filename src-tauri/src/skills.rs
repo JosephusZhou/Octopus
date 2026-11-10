@@ -4668,4 +4668,135 @@ body
 
         let _ = fs::remove_dir_all(&base);
     }
+
+    /// Test-only HOME swap. Must hold `TEST_HOME_LOCK` so parallel tests don't
+    /// see a mutated HOME while deriving agent paths. Windows home resolution
+    /// bypasses env vars, so write tests using this helper are Unix-only.
+    #[cfg(not(windows))]
+    struct TempHome {
+        path: PathBuf,
+        prev_home: Option<std::ffi::OsString>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    #[cfg(not(windows))]
+    impl TempHome {
+        fn new(name: &str) -> Self {
+            let guard = crate::config::lock_home_for_test();
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("octopus-{name}-{nonce}"));
+            fs::create_dir_all(&path).unwrap();
+            let prev_home = std::env::var_os("HOME");
+            std::env::set_var("HOME", &path);
+            Self {
+                path,
+                prev_home,
+                _guard: guard,
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match self.prev_home.take() {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn omo_skills_target_is_supported_under_agent_root() {
+        let targets = agent_skills_targets();
+        let target = targets
+            .iter()
+            .find(|target| target.agent == "omo")
+            .expect("OMO skills target missing");
+        assert!(target.supported);
+        assert_eq!(
+            target.roots,
+            vec![crate::platform::expand_home("~/.omo/agent/skills").unwrap()]
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn omo_skills_link_copy_scan_count_list() {
+        let home = TempHome::new("omo-skills-install");
+        let lib_skill = home.path.join(".octopus/skills/demo");
+        fs::create_dir_all(&lib_skill).unwrap();
+        fs::write(
+            lib_skill.join("SKILL.md"),
+            "---\nname: demo\ndescription: omo test\n---\n# Demo\n",
+        )
+        .unwrap();
+
+        let desired: BTreeSet<String> = ["omo".to_string()].into_iter().collect();
+        let link = sync_skill_installations(
+            "demo",
+            &lib_skill,
+            &desired,
+            &desired,
+            SkillInstallMode::Link,
+        );
+        assert!(link.errors.is_empty(), "{:?}", link.errors);
+
+        let dest = home.path.join(".omo/agent/skills/demo");
+        assert!(
+            fs::symlink_metadata(&dest)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "Link mode must create a symlink"
+        );
+        assert_eq!(count_agent_skills("omo"), 1);
+        assert!(list_agent_skills("omo")
+            .iter()
+            .any(|skill| skill.id == "demo"));
+        assert!(scan_applied_agents()
+            .get("demo")
+            .is_some_and(|agents| agents.contains("omo")));
+
+        let copy = sync_skill_installations(
+            "demo",
+            &lib_skill,
+            &desired,
+            &desired,
+            SkillInstallMode::Copy,
+        );
+        assert!(copy.errors.is_empty(), "{:?}", copy.errors);
+        let meta = fs::symlink_metadata(&dest).unwrap();
+        assert!(meta.is_dir() && !meta.file_type().is_symlink());
+        assert!(dest.join("SKILL.md").is_file());
+        assert_eq!(count_agent_skills("omo"), 1);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unsupported_agent_behavior_is_unchanged() {
+        let home = TempHome::new("omo-skills-unsupported");
+        let lib_skill = home.path.join(".octopus/skills/demo");
+        fs::create_dir_all(&lib_skill).unwrap();
+        fs::write(lib_skill.join("SKILL.md"), "---\nname: demo\n---\n# Demo\n").unwrap();
+
+        let desired: BTreeSet<String> = ["claude-desktop".to_string()].into_iter().collect();
+        let outcome = sync_skill_installations(
+            "demo",
+            &lib_skill,
+            &desired,
+            &desired,
+            SkillInstallMode::Copy,
+        );
+        assert!(
+            outcome.errors.iter().any(|e| e.contains("暂不支持")),
+            "{:?}",
+            outcome.errors
+        );
+        assert!(!home.path.join(".omo/agent/skills/demo").exists());
+    }
 }

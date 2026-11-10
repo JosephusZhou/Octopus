@@ -1,7 +1,8 @@
 //! 通用模型配置入口：按 agent 标识分派到各自后端。
 //!
 //! - `opencode` → `opencode_config`（`~/.config/opencode/opencode.json(c)`）
-//! - `pi` / `oh-my-pi` → `pi_model_config`（`~/.pi/agent/models.json` / `~/.omp/agent/models.yml`）
+//! - `pi` / `oh-my-pi` / `omo` → `pi_model_config`（`~/.pi/agent/models.json` /
+//!   `~/.omp/agent/models.yml` / `~/.omo/agent/models.json`）
 //!
 //! DTO 与 models.dev 目录能力统一放在 `opencode_config`，供各后端共享。
 
@@ -11,6 +12,7 @@ pub enum ModelConfigAgent {
     Opencode,
     Pi,
     OhMyPi,
+    Omo,
 }
 
 impl ModelConfigAgent {
@@ -20,6 +22,7 @@ impl ModelConfigAgent {
             "opencode" => Ok(Self::Opencode),
             "pi" => Ok(Self::Pi),
             "oh-my-pi" | "omp" => Ok(Self::OhMyPi),
+            "omo" => Ok(Self::Omo),
             other => Err(format!("未知的模型配置 Agent: {other}")),
         }
     }
@@ -30,6 +33,7 @@ impl ModelConfigAgent {
             Self::Opencode => "opencode",
             Self::Pi => "pi",
             Self::OhMyPi => "oh-my-pi",
+            Self::Omo => "omo",
         }
     }
 }
@@ -52,6 +56,10 @@ mod tests {
         assert_eq!(
             ModelConfigAgent::parse("omp").unwrap(),
             ModelConfigAgent::OhMyPi
+        );
+        assert_eq!(
+            ModelConfigAgent::parse("omo").unwrap(),
+            ModelConfigAgent::Omo
         );
         assert!(ModelConfigAgent::parse("codex").is_err());
     }

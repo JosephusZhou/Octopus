@@ -6,6 +6,7 @@ import About from "./components/pages/About";
 import BackupManage from "./components/pages/BackupManage";
 import OpenCodeConfig from "./components/pages/OpenCodeConfig";
 import OmpConfig from "./components/pages/OmpConfig";
+import OmoConfig from "./components/pages/OmoConfig";
 import PiConfig from "./components/pages/PiConfig";
 import ProjectConfig from "./components/pages/ProjectConfig";
 import SkillsManage from "./components/pages/SkillsManage";
@@ -37,6 +38,7 @@ export type MainView =
   | "opencode-config"
   | "pi-config"
   | "omp-config"
+  | "omo-config"
   | "project-config"
   | "skills-manage"
   | "mcp-manage"
@@ -190,6 +192,7 @@ export default function App() {
         {view === "opencode-config" && <OpenCodeConfig />}
         {view === "pi-config" && <PiConfig />}
         {view === "omp-config" && <OmpConfig />}
+        {view === "omo-config" && <OmoConfig />}
         {view === "project-config" && <ProjectConfig />}
         {view === "skills-manage" && <SkillsManage />}
         {view === "mcp-manage" && <McpManage />}

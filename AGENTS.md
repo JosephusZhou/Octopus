@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Octopus 是一个 Tauri 2 桌面应用，用于发现本机 AI coding agent，并管理 MCP、Skills、
-多环境、OpenCode配置、Pi配置、OMP配置、供应商、项目配置和备份。
+多环境、OpenCode配置、Pi配置、OMP配置、OMO配置、供应商、项目配置和备份。
 
 ## 技术栈与命令
 
@@ -123,7 +123,7 @@ await invoke("command_name", { ... });
 
 ```text
 codex, claude-code, claude-desktop, opencode, antigravity,
-workbuddy, pi, oh-my-pi
+workbuddy, pi, oh-my-pi, omo
 ```
 
 历史上下线的 agent 由启动时的版本适配升级统一清理：`config::run_startup_config_upgrade`
@@ -148,7 +148,7 @@ OpenCode JSONC 用 json5 读取后写为标准 JSON；扫描以磁盘状态更�
   的 MCP 同步到 `$CLAUDE_CONFIG_DIR/.claude.json`。
 - Codex 使用 `CODEX_HOME`；默认 MCP 在 `~/.codex/config.toml` 的 `[mcp_servers]`，自定义
   环境同步时只替换该表并保留其它配置。
-- 项目级配置由 `project_config.rs` 的 8 个 `AGENT_SPECS` 决定；全局 MCP 应用不会默认写项目。
+- 项目级配置由 `project_config.rs` 的 8 个 `AGENT_SPECS` 决定（OMO 项目 MCP 写 `.omo/mcp.json`）；全局 MCP 应用不会默认写项目。
 - Skills 库位于 `~/.octopus/skills/<id>/SKILL.md`，项目级统一安装到 `.agents/skills`，
   再按 Full/Symlink 模式供选中的 Agent 使用。Claude Desktop 当前不支持本地 Skills。
 
@@ -225,7 +225,7 @@ CLIProxyAPI 只提供行为同步参考，不是运行时依赖。上游变更�
 ## 前端视图
 
 主界面包含 Agent、MCP、Skills、Claude 环境、Codex 环境、OpenCode配置、Pi配置、
-OMP配置、供应商、路由聚合、项目配置和备份管理；设置界面包含偏好、网络代理和 WebDAV。
+OMP配置、OMO配置、供应商、路由聚合、项目配置和备份管理；设置界面包含偏好、网络代理和 WebDAV。
 
 ## 修改规则
 

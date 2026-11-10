@@ -699,6 +699,12 @@ const AGENT_TABS: { id: ModelConfigAgentId; label: string; notInstalledHint: str
     notInstalledHint:
       "请先安装 Oh-My-Pi CLI（`omp` 命令，例如 bun install -g @oh-my-pi/pi-coding-agent），安装后重新打开本页即可管理供应商与模型配置。",
   },
+  {
+    id: "omo",
+    label: "OMO",
+    notInstalledHint:
+      "请先安装 OMO CLI（`omo` 命令，例如 npm i -g omo-ai，或 curl -fsSL https://get.omo.dev/install.sh | bash），安装后重新打开本页即可管理供应商与模型配置。",
+  },
 ];
 
 function agentLabel(id: ModelConfigAgentId): string {
@@ -822,6 +828,8 @@ export function ModelConfigAgentPage({
   const [defaultsOpen, setDefaultsOpen] = useState(false);
   const [draftModel, setDraftModel] = useState("");
   const [draftSmallModel, setDraftSmallModel] = useState("");
+  // OMO 专用：是否把本次默认模型同步到 omo.jsonc 的 model_profile（默认不勾选）。
+  const [syncOmoProfile, setSyncOmoProfile] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
 
   // 模型弹窗内的「从供应商模型列表选择」：拉取当前供应商端点的模型列表
@@ -1309,6 +1317,7 @@ export function ModelConfigAgentPage({
   const openDefaults = () => {
     setDraftModel(view?.model ?? "");
     setDraftSmallModel(view?.smallModel ?? "");
+    setSyncOmoProfile(false);
     setModelSearch("");
     setDefaultsOpen(true);
   };
@@ -1320,6 +1329,8 @@ export function ModelConfigAgentPage({
         model: draftModel.trim(),
         // Pi 家族不支持 small model：不传即不改动
         smallModel: view?.smallModelSupported ? draftSmallModel.trim() : undefined,
+        // OMO 专用：仅在用户勾选时同步 omo.jsonc 的 model_profile
+        syncOmoModelProfile: agent === "omo" ? syncOmoProfile : undefined,
       });
       if (res.view) applyView(res.view);
       else await loadConfig(true);
@@ -1722,7 +1733,7 @@ export function ModelConfigAgentPage({
                       disabled={busy}
                       placeholder="请选择 API 格式"
                     />
-                    <p className="oc-form-hint">选择后会写入 Pi 的供应商配置。</p>
+                    <p className="oc-form-hint">选择后会写入 {agentLabel(agent)} 的供应商配置。</p>
                   </div>
                 )}
                 <div className="form-group">
@@ -2419,6 +2430,35 @@ export function ModelConfigAgentPage({
                 spellCheck={false}
               />
             </div>
+            {agent === "omo" && view?.omoModelProfile ? (
+              <div className="oc-warning">
+                <div>
+                  OMO 另有一个固定的 model_profile，位于{" "}
+                  <code style={{ wordBreak: "break-all" }}>
+                    {view.omoProfilePath || "~/.omo/omo.jsonc"}
+                  </code>
+                  （当前值：<code>{view.omoModelProfile}</code>）。
+                </div>
+                <div>
+                  它会在 headless / desktop
+                  会话中覆盖上面的默认模型。是否同步本次保存的默认模型到该配置？
+                </div>
+                <label className="ui-check" style={{ marginTop: 8 }}>
+                  <input
+                    type="checkbox"
+                    className="ui-check-input"
+                    checked={syncOmoProfile}
+                    onChange={(e) => setSyncOmoProfile(e.target.checked)}
+                    disabled={busy}
+                  />
+                  <CheckGlyph />
+                  <span className="ui-check-label">同步默认模型到 omo.jsonc 的 model_profile</span>
+                </label>
+                <div className="oc-form-hint">
+                  同步会以标准 JSON 重写 omo.jsonc，原有注释可能丢失。
+                </div>
+              </div>
+            ) : null}
             <datalist id="oc-model-options">
               {filteredModelOptions.map((opt) => (
                 <option key={opt} value={opt} />

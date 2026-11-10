@@ -65,4 +65,5 @@ export const AGENT_PROJECT_INFOS: AgentProjectInfo[] = [
   { name: "workbuddy", displayName: "WorkBuddy", rootFile: "AGENTS.md", configDir: ".workbuddy" },
   { name: "pi", displayName: "Pi", rootFile: "AGENTS.md", configDir: ".pi" },
   { name: "oh-my-pi", displayName: "Oh-My-Pi", rootFile: "AGENTS.md", configDir: ".omp" },
+  { name: "omo", displayName: "OMO", rootFile: "AGENTS.md", configDir: ".omo" },
 ];

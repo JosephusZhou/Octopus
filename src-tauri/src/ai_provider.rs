@@ -490,7 +490,7 @@ pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderAct
             }
         }
 
-        // 同步到绑定的 opencode / pi / oh-my-pi provider
+        // 同步到绑定的 opencode / pi / oh-my-pi / omo provider
         match db::load_agent_provider_bindings(&row.id) {
             Err(e) => {
                 sync_parts.push(format!("加载 Agent 绑定失败: {}", e));
@@ -503,6 +503,7 @@ pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderAct
                 let mut opencode_view: Option<Result<AgentModelConfigView, String>> = None;
                 let mut pi_view: Option<Result<AgentModelConfigView, String>> = None;
                 let mut omp_view: Option<Result<AgentModelConfigView, String>> = None;
+                let mut omo_view: Option<Result<AgentModelConfigView, String>> = None;
 
                 for binding in &bindings {
                     // 步骤 1：从缓存里找目标 provider，确定它的 api 格式
@@ -542,6 +543,20 @@ pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderAct
                                 ));
                             }
                             match omp_view.as_ref().unwrap() {
+                                Ok(view) => view
+                                    .providers
+                                    .iter()
+                                    .find(|p| p.id == binding.agent_provider_id)
+                                    .and_then(|p| p.api.clone()),
+                                Err(_) => continue,
+                            }
+                        }
+                        "omo" => {
+                            if omo_view.is_none() {
+                                omo_view =
+                                    Some(crate::pi_model_config::get_config(ModelConfigAgent::Omo));
+                            }
+                            match omo_view.as_ref().unwrap() {
                                 Ok(view) => view
                                     .providers
                                     .iter()
@@ -611,6 +626,10 @@ pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderAct
                             payload,
                         )
                         .map(|_| "Oh-My-Pi".to_string()),
+                        "omo" => {
+                            crate::pi_model_config::upsert_provider(ModelConfigAgent::Omo, payload)
+                                .map(|_| "OMO".to_string())
+                        }
                         _ => unreachable!(),
                     };
                     match result {

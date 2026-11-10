@@ -99,12 +99,27 @@ fn resolve_config_dir(name: &str) -> Option<PathBuf> {
 }
 
 /// Main settings path when it is intentionally separate from the MCP file.
-/// Only Claude Code today: MCP lives at `~/.claude.json`, settings at `~/.claude/settings.json`.
+/// Claude Code: MCP at `~/.claude.json`, settings at `~/.claude/settings.json`.
+/// OMO: MCP at `~/.omo/agent/mcp.json`, user config at `~/.omo/omo.jsonc`
+/// (`omo.json` when only that file exists).
 fn resolve_settings_file(name: &str) -> Option<PathBuf> {
     if name == "claude-code" {
         return home_dir()
             .ok()
             .map(|h| h.join(".claude").join("settings.json"));
+    }
+    if name == "omo" {
+        // Native user config: omo.jsonc preferred, omo.json fallback.
+        let dir = home_dir().ok()?.join(".omo");
+        let jsonc = dir.join("omo.jsonc");
+        if jsonc.exists() {
+            return Some(jsonc);
+        }
+        let json = dir.join("omo.json");
+        if json.exists() {
+            return Some(json);
+        }
+        return Some(jsonc);
     }
     None
 }
@@ -327,9 +342,100 @@ mod tests {
     }
 
     #[test]
+    fn omo_prompt_lives_in_agent_subdir() {
+        // 持 HOME 测试锁：home_dir 与 open_targets 都依赖 HOME 派生路径。
+        let _home_guard = crate::config::lock_home_for_test();
+        let home = dirs::home_dir().expect("home");
+        let targets = open_targets("omo");
+        assert_eq!(
+            targets.mcp_file.as_deref(),
+            Some(
+                home.join(".omo/agent")
+                    .join("mcp.json")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            targets.prompt_file.as_deref(),
+            Some(
+                home.join(".omo/agent")
+                    .join("AGENTS.md")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            targets.config_dir.as_deref(),
+            Some(home.join(".omo").to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
     fn unknown_manual_agent_has_no_mcp() {
         let targets = open_targets("my-custom-agent-xyz");
         assert!(targets.mcp_file.is_none());
         assert!(targets.settings_file.is_none());
+        assert!(targets.prompt_file.is_none());
+    }
+
+    /// 与其它模块同款：临时 HOME + 测试锁，隔离真实 HOME，Drop 时恢复并清理。
+    /// `dirs::home_dir()` 在 Windows 不走 HOME 环境变量，写入型用例只在非 Windows 跑。
+    #[cfg(not(windows))]
+    struct TempHome {
+        path: std::path::PathBuf,
+        prev_home: Option<std::ffi::OsString>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    #[cfg(not(windows))]
+    impl TempHome {
+        fn new() -> Self {
+            let guard = crate::config::lock_home_for_test();
+            let path = std::env::temp_dir().join(format!(
+                "octopus-open-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            let prev_home = std::env::var_os("HOME");
+            std::env::set_var("HOME", &path);
+            Self {
+                path,
+                prev_home,
+                _guard: guard,
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match self.prev_home.take() {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    /// 文件缺失可读为空、首次保存自动创建 `~/.omo/agent/AGENTS.md`，
+    /// 且不触碰同目录外的 `~/.omo/omo.jsonc`。
+    #[cfg(not(windows))]
+    #[test]
+    fn omo_prompt_read_empty_then_write_creates_file() {
+        let home = TempHome::new();
+        assert_eq!(read_agent_prompt("omo").unwrap(), "");
+
+        write_agent_prompt("omo", "# OMO 全局提示词\n").unwrap();
+        let prompt = home.path.join(".omo/agent/AGENTS.md");
+        assert!(prompt.exists());
+        assert_eq!(read_agent_prompt("omo").unwrap(), "# OMO 全局提示词\n");
+        // 原子写的临时文件不残留。
+        assert!(!home.path.join(".omo/agent/AGENTS.md.tmp").exists());
+        assert!(!home.path.join(".omo/omo.jsonc").exists());
     }
 }

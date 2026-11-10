@@ -7,6 +7,10 @@
 //!   - 密钥：自定义 provider 的 `apiKey`（可为环境变量名或字面密钥）；旧版
 //!     `auth.json` 仅在首次读取时迁移，不再作为运行时来源
 //!   - 默认模型：`~/.omp/agent/config.yml` 的 `modelRoles.default`
+//! - OMO Native：`~/.omo/agent/models.json`（JSONC；与 Pi 同一 senpi 引擎 schema）
+//!   - 密钥：`~/.omo/agent/auth.json`（`{ providerId: { type: "api_key", key } }`）
+//!   - 默认模型：`~/.omo/agent/settings.json` 的 `defaultProvider` / `defaultModel`
+//!   - 上游以 0600 权限写 models.json（provider headers 可能携带 token）
 //!
 //! 字段映射到通用 DTO：`contextWindow`→limitContext、`maxTokens`→limitOutput、
 //! `input`→modalitiesInput；未建模字段经 extraOptions 原样往返。
@@ -53,8 +57,10 @@ struct FamilyPaths {
     models: PathBuf,
     /// models 文件是否按 YAML 读写。
     yaml: bool,
-    /// OMP 的模型配置可能包含明文 apiKey，写入后必须限制为当前用户可读写。
+    /// 模型配置可能包含明文 apiKey / token，写入后必须限制为当前用户可读写。
     private_models: bool,
+    /// 密钥以 `auth.json` 为运行时来源（Pi / OMO）；否则以 provider `apiKey` 为准（OMP）。
+    auth_primary: bool,
     auth: PathBuf,
     /// 默认模型 settings（Pi: settings.json；OMP: config.yml）。
     settings: Option<PathBuf>,
@@ -81,8 +87,22 @@ fn family_paths(agent: ModelConfigAgent) -> Result<FamilyPaths, String> {
             models: home.join(".pi/agent/models.json"),
             yaml: false,
             private_models: false,
+            auth_primary: true,
             auth: home.join(".pi/agent/auth.json"),
             settings: Some(home.join(".pi/agent/settings.json")),
+            settings_yaml: false,
+        }),
+        ModelConfigAgent::Omo => Ok(FamilyPaths {
+            models: home.join(".omo/agent/models.json"),
+            yaml: false,
+            private_models: true,
+            auth_primary: true,
+            auth: home.join(".omo/agent/auth.json"),
+            // 上游 settings.jsonc 优先于 settings.json。
+            settings: Some(pick_existing(
+                &home.join(".omo/agent"),
+                &["settings.jsonc", "settings.json"],
+            )),
             settings_yaml: false,
         }),
         ModelConfigAgent::OhMyPi => {
@@ -96,6 +116,7 @@ fn family_paths(agent: ModelConfigAgent) -> Result<FamilyPaths, String> {
                 models,
                 yaml,
                 private_models: true,
+                auth_primary: false,
                 auth: base.join("auth.json"),
                 settings: Some(pick_existing(&base, &["config.yml", "config.yaml"])),
                 settings_yaml: true,
@@ -282,7 +303,7 @@ fn read_defaults(paths: &FamilyPaths) -> (Option<String>, Option<String>) {
             .filter(|s| !s.is_empty());
         return (model, None);
     }
-    let Ok(v) = serde_json::from_str::<Value>(&raw) else {
+    let Ok(v) = json5::from_str::<Value>(&raw) else {
         return (None, None);
     };
     let provider = str_opt(&v, "defaultProvider");
@@ -293,6 +314,79 @@ fn read_defaults(paths: &FamilyPaths) -> (Option<String>, Option<String>) {
         _ => None,
     };
     (combined, None)
+}
+
+/* ===== OMO model_profile ===== */
+
+/// OMO 固定模型配置文件：`~/.omo/omo.jsonc`，旧版 `omo.json` 兜底；都不存在时返回 `None`。
+fn omo_profile_file() -> Option<PathBuf> {
+    let home = home_dir().ok()?;
+    let base = home.join(".omo");
+    ["omo.jsonc", "omo.json"]
+        .iter()
+        .map(|name| base.join(name))
+        .find(|path| path.is_file())
+}
+
+/// `model_profile` 所在容器键：上游当前写 `"[native]"`，部分版本写 `native`。
+const OMO_PROFILE_CONTAINERS: &[&str] = &["[native]", "native"];
+
+fn omo_profile_container_key(root: &Value) -> Option<&'static str> {
+    OMO_PROFILE_CONTAINERS
+        .iter()
+        .copied()
+        .find(|key| root.get(*key).map(Value::is_object).unwrap_or(false))
+}
+
+/// 读取 OMO 固定 `model_profile`；兼容容器键与顶层键。
+fn read_omo_model_profile() -> Option<(PathBuf, String)> {
+    let path = omo_profile_file()?;
+    let raw = fs::read_to_string(&path).ok()?;
+    let root: Value = json5::from_str(&raw).ok()?;
+    let value = omo_profile_container_key(&root)
+        .and_then(|key| root.get(key))
+        .and_then(|container| container.get("model_profile"))
+        .and_then(Value::as_str)
+        .or_else(|| root.get("model_profile").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    Some((path, value))
+}
+
+/// 写入或移除 OMO 固定 `model_profile`。
+///
+/// `omo.jsonc` 以 JSON5 读取后按标准 JSON 写回（与 OpenCode JSONC 写回策略一致，
+/// 注释会被丢弃）；`None` / 空串表示移除该键。
+fn write_omo_model_profile(model: Option<&str>) -> Result<PathBuf, String> {
+    let path =
+        omo_profile_file().ok_or_else(|| "未找到 ~/.omo/omo.jsonc 或 omo.json".to_string())?;
+    let raw =
+        fs::read_to_string(&path).map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+    let mut root: Value =
+        json5::from_str(&raw).map_err(|e| format!("解析 {} 失败: {e}", path.display()))?;
+    if !root.is_object() {
+        return Err(format!("{} 根节点必须是对象", path.display()));
+    }
+    let key = omo_profile_container_key(&root).unwrap_or("[native]");
+    {
+        let obj = root.as_object_mut().unwrap();
+        if !obj.get(key).map(Value::is_object).unwrap_or(false) {
+            obj.insert(key.to_string(), json!({}));
+        }
+    }
+    let container = root.get_mut(key).and_then(Value::as_object_mut).unwrap();
+    match model {
+        Some(value) if !value.is_empty() => {
+            container.insert("model_profile".into(), Value::String(value.to_string()));
+        }
+        _ => {
+            container.remove("model_profile");
+        }
+    }
+    let text = serde_json::to_string_pretty(&root).map_err(|e| format!("序列化失败: {e}"))?;
+    atomic_write(&path, &format!("{text}\n"))?;
+    Ok(path)
 }
 
 /// OMP 旧版 `auth.json` 一次性迁移：把密钥写入 `providers.<id>.apiKey`。
@@ -357,7 +451,7 @@ pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, Strin
     let paths = family_paths(agent)?;
     let installed = crate::sniff::is_agent_installed(agent.id());
     let exists = paths.models.exists();
-    let credential_path = if agent == ModelConfigAgent::Pi {
+    let credential_path = if paths.auth_primary {
         paths.auth.clone()
     } else {
         paths.models.clone()
@@ -366,6 +460,21 @@ pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, Strin
     .into_owned();
 
     let (model, small_model) = read_defaults(&paths);
+
+    // OMO 另有一个固定 model_profile（headless / desktop 会话会覆盖默认模型），
+    // 由前端在保存默认模型时提示是否同步。
+    let omo_profile = if agent == ModelConfigAgent::Omo {
+        read_omo_model_profile()
+    } else {
+        None
+    };
+    let (omo_model_profile, omo_profile_path) = match &omo_profile {
+        Some((path, value)) => (
+            Some(value.clone()),
+            Some(path.to_string_lossy().into_owned()),
+        ),
+        None => (None, None),
+    };
 
     let not_installed_view = || AgentModelConfigView {
         agent: agent.id().into(),
@@ -378,6 +487,8 @@ pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, Strin
         small_model_supported: false,
         model: None,
         small_model: None,
+        omo_model_profile: omo_model_profile.clone(),
+        omo_profile_path: omo_profile_path.clone(),
         enabled_providers: None,
         disabled_providers: None,
         providers: Vec::new(),
@@ -430,6 +541,8 @@ pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, Strin
         small_model_supported: false,
         model,
         small_model,
+        omo_model_profile,
+        omo_profile_path,
         enabled_providers: None,
         disabled_providers: None,
         providers,
@@ -487,7 +600,7 @@ pub fn upsert_provider(
         // OpenCode 特有字段（npm/setCacheKey/timeout/whitelist/blacklist）在 Pi 家族中忽略。
     }
 
-    // Pi 的 config 内 apiKey 多为环境变量名，保持原样不动；密钥写入 auth.json。
+    // Pi / OMO 的 config 内 apiKey 多为环境变量名，保持原样不动；密钥写入 auth.json。
     // OMP 的密钥归属 provider 的 apiKey（可为环境变量名或字面密钥），同时清理旧 auth 条目。
     if let Some(ref key) = payload.api_key {
         if agent == ModelConfigAgent::OhMyPi {
@@ -726,7 +839,7 @@ pub fn get_provider_secret(agent: ModelConfigAgent, provider_id: String) -> Resu
     let id = provider_id.trim().to_string();
     let paths = family_paths(agent)?;
     let auth = load_auth_file(&paths.auth)?;
-    // OMP 以 provider `apiKey` 为准，旧 auth.json 只是兼容来源；Pi 反之。
+    // OMP 以 provider `apiKey` 为准，旧 auth.json 只是兼容来源；Pi / OMO 以 auth.json 为准。
     let (root, _) = load_models_root(&paths)?;
     let config_key = root
         .pointer(&format!("/providers/{id}/apiKey"))
@@ -734,10 +847,10 @@ pub fn get_provider_secret(agent: ModelConfigAgent, provider_id: String) -> Resu
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
     let auth_key = auth_get_key(&auth, &id);
-    let key = if paths.private_models {
-        config_key.or(auth_key)
-    } else {
+    let key = if paths.auth_primary {
         auth_key.or(config_key)
+    } else {
+        config_key.or(auth_key)
     };
     Ok(key.unwrap_or_default())
 }
@@ -771,12 +884,12 @@ pub fn set_defaults(
     payload: SetDefaultsPayload,
 ) -> Result<AgentActionResult, String> {
     match agent {
-        ModelConfigAgent::Pi => {
+        ModelConfigAgent::Pi | ModelConfigAgent::Omo => {
             let paths = family_paths(agent)?;
             let sp = paths
                 .settings
                 .as_ref()
-                .ok_or_else(|| "Pi settings 路径缺失".to_string())?;
+                .ok_or_else(|| "settings.json 路径缺失".to_string())?;
             let mut root = if sp.exists() {
                 crate::opencode_config::read_json_value(sp)?
             } else {
@@ -802,9 +915,40 @@ pub fn set_defaults(
             let text =
                 serde_json::to_string_pretty(&root).map_err(|e| format!("序列化失败: {e}"))?;
             atomic_write(sp, &format!("{text}\n"))?;
+
+            let mut message = "默认模型已更新".to_string();
+            if agent == ModelConfigAgent::Omo && payload.sync_omo_model_profile == Some(true) {
+                match payload.model.as_deref() {
+                    Some(m) if m.is_empty() => match write_omo_model_profile(None) {
+                        Ok(path) => {
+                            message = format!(
+                                "默认模型已更新，并已移除 {} 的 model_profile",
+                                path.display()
+                            );
+                        }
+                        Err(e) => {
+                            message = format!("默认模型已更新；同步 model_profile 失败：{e}");
+                        }
+                    },
+                    Some(m) if m.contains('/') => match write_omo_model_profile(Some(m)) {
+                        Ok(path) => {
+                            message = format!("默认模型已更新，并已同步 {}", path.display());
+                        }
+                        Err(e) => {
+                            message = format!("默认模型已更新；同步 model_profile 失败：{e}");
+                        }
+                    },
+                    Some(_) => {
+                        message =
+                            "默认模型已更新；未同步 model_profile：模型需为 provider/model 形式"
+                                .into();
+                    }
+                    None => {}
+                }
+            }
             Ok(AgentActionResult {
                 ok: true,
-                message: "默认模型已更新".into(),
+                message,
                 view: Some(get_config(agent)?),
             })
         }
@@ -1060,6 +1204,7 @@ mod tests {
                 small_model: None,
                 enabled_providers: None,
                 disabled_providers: None,
+                sync_omo_model_profile: None,
             },
         )
         .unwrap();
@@ -1292,6 +1437,7 @@ providers:
                 small_model: None,
                 enabled_providers: None,
                 disabled_providers: None,
+                sync_omo_model_profile: None,
             },
         )
         .unwrap();
@@ -1313,6 +1459,7 @@ providers:
                 small_model: None,
                 enabled_providers: None,
                 disabled_providers: None,
+                sync_omo_model_profile: None,
             },
         )
         .unwrap();

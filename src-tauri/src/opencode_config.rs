@@ -41,6 +41,12 @@ pub struct AgentModelConfigView {
     pub small_model_supported: bool,
     pub model: Option<String>,
     pub small_model: Option<String>,
+    /// OMO 专用：`omo.jsonc` 中固定 `model_profile` 的当前值（headless / desktop 会话会覆盖默认模型）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omo_model_profile: Option<String>,
+    /// OMO 专用：`omo.jsonc` 的真实路径（确认提示展示用，属 b 类真实路径）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omo_profile_path: Option<String>,
     pub enabled_providers: Option<Vec<String>>,
     pub disabled_providers: Option<Vec<String>>,
     pub providers: Vec<AgentProviderView>,
@@ -158,6 +164,10 @@ pub struct SetDefaultsPayload {
     pub small_model: Option<String>,
     pub enabled_providers: Option<Option<Vec<String>>>,
     pub disabled_providers: Option<Option<Vec<String>>>,
+    /// OMO 专用：是否把本次默认模型同步到 `~/.omo/omo.jsonc` 的 `model_profile`；
+    /// 其它 agent 忽略该字段。
+    #[serde(default)]
+    pub sync_omo_model_profile: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -596,6 +606,8 @@ pub fn get_config() -> Result<AgentModelConfigView, String> {
             small_model_supported: true,
             model: None,
             small_model: None,
+            omo_model_profile: None,
+            omo_profile_path: None,
             enabled_providers: None,
             disabled_providers: None,
             providers: Vec::new(),
@@ -633,6 +645,8 @@ pub fn get_config() -> Result<AgentModelConfigView, String> {
             .get("small_model")
             .and_then(|m| m.as_str())
             .map(|s| s.to_string()),
+        omo_model_profile: None,
+        omo_profile_path: None,
         enabled_providers: top_string_list(&root, "enabled_providers"),
         disabled_providers: top_string_list(&root, "disabled_providers"),
         providers,
@@ -1768,6 +1782,7 @@ mod tests {
             small_model: Some("local/tiny".into()),
             enabled_providers: None,
             disabled_providers: None,
+            sync_omo_model_profile: None,
         })
         .unwrap();
         let view = get_config().unwrap();

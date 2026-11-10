@@ -187,6 +187,22 @@ static AGENT_SPECS: &[AgentProjectSpec] = &[
             jsonc: false,
         }),
     },
+    AgentProjectSpec {
+        name: "omo",
+        root_file: Some("AGENTS.md"),
+        config_dir: ".omo",
+        full_sub_dirs: &[],
+        shared_sub_dirs: &[],
+        config_files: &[],
+        // OMO 原生项目 skills 位为 `.agents/skills`，与共享目录一致，无需自建/软链。
+        skills_own_dir: false,
+        // 项目级 MCP 落在 `.omo/mcp.json`（与全局 `~/.omo/agent/mcp.json` 同族方言）。
+        mcp: Some(ProjectMcpSpec {
+            file: ".omo/mcp.json",
+            dialect: McpDialect::JsonMcpServers,
+            jsonc: false,
+        }),
+    },
 ];
 
 fn find_spec(name: &str) -> Option<&'static AgentProjectSpec> {
@@ -632,11 +648,11 @@ fn run_init(
         for (spec, path, dialect, jsonc) in &targets {
             let mut ok_count = 0usize;
             for draft in mcp_servers {
-                // Pi 内置 MCP 仅支持 stdio 与 streamable HTTP，拒绝 legacy SSE；
-                // JsonMcpServers 方言被 claude-desktop/workbuddy/pi 共用，按 agent 名拦截。
-                if spec.name == "pi" && draft.transport == "sse" {
+                // Pi 及其衍生 OMO 内置 MCP 仅支持 stdio 与 streamable HTTP，拒绝 legacy SSE；
+                // JsonMcpServers 方言被 claude-desktop/workbuddy/pi/omo 共用，按 agent 名拦截。
+                if matches!(spec.name, "pi" | "omo") && draft.transport == "sse" {
                     errors.push(format!(
-                        "写入 MCP「{}」失败: Pi 内置 MCP 仅支持 stdio 与 streamable HTTP，不支持 SSE",
+                        "写入 MCP「{}」失败: Pi / OMO 内置 MCP 仅支持 stdio 与 streamable HTTP，不支持 SSE",
                         draft.title
                     ));
                     continue;
@@ -961,6 +977,38 @@ mod tests {
     }
 
     #[test]
+    fn project_omo_rejects_sse_mcp() {
+        let base = scratch("omo-sse-reject");
+        let sse = McpDraft {
+            title: "sse-server".into(),
+            transport: "sse".into(),
+            command: String::new(),
+            args: vec![],
+            env: std::collections::HashMap::new(),
+            url: "https://example.com/sse".into(),
+            headers: std::collections::HashMap::new(),
+        };
+        let result = init_project_config(
+            base.to_str().unwrap(),
+            &[req("omo")],
+            &InitMode::Full,
+            false,
+            &[sse],
+            &[],
+            SkillInstallMode::Link,
+        )
+        .unwrap();
+        assert!(
+            result.errors.iter().any(|e| e.contains("SSE")),
+            "{:?}",
+            result.errors
+        );
+        // 不写文件。
+        assert!(!base.join(".omo/mcp.json").exists());
+        cleanup(&base);
+    }
+
+    #[test]
     fn project_omp_accepts_sse_and_writes_mcp() {
         let base = scratch("omp-sse");
         let sse = McpDraft {
@@ -991,6 +1039,41 @@ mod tests {
         let doc: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(base.join(".omp/mcp.json")).unwrap()).unwrap();
         assert_eq!(doc["mcpServers"]["sse-server"]["type"], "sse");
+        cleanup(&base);
+    }
+
+    #[test]
+    fn project_omo_writes_omo_mcp_json() {
+        let base = scratch("omo-mcp");
+        let draft = McpDraft {
+            title: "demo-server".into(),
+            transport: "stdio".into(),
+            command: "node".into(),
+            args: vec!["server.js".into()],
+            env: std::collections::HashMap::new(),
+            url: String::new(),
+            headers: std::collections::HashMap::new(),
+        };
+        let result = init_project_config(
+            base.to_str().unwrap(),
+            &[req("omo")],
+            &InitMode::Full,
+            false,
+            &[draft],
+            &[],
+            SkillInstallMode::Link,
+        )
+        .unwrap();
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+
+        assert!(base.join("AGENTS.md").is_file());
+        // 项目级 MCP 落在 `.omo/mcp.json`，不建自建 skills 目录。
+        assert!(!base.join(".omo/skills").exists());
+        assert!(!base.join(".mcp.json").exists());
+        assert!(!base.join("opencode.json").exists());
+        let doc: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(base.join(".omo/mcp.json")).unwrap()).unwrap();
+        assert_eq!(doc["mcpServers"]["demo-server"]["command"], "node");
         cleanup(&base);
     }
 

@@ -829,12 +829,12 @@ fn claude_desktop_config_roots(home: &Path) -> Vec<PathBuf> {
 }
 
 fn apply_one(agent: &str, title: &str, draft: &McpDraft) -> Result<PathBuf, OpError> {
-    // Pi 内置 MCP 仅支持 stdio 与 streamable HTTP，拒绝 legacy SSE。JsonMcpServers
-    // 方言被 claude-desktop / workbuddy / pi 共用，必须按 agent 名拦截而不是按方言。
-    if agent == "pi" && draft.transport == "sse" {
+    // Pi 及其衍生 OMO 内置 MCP 仅支持 stdio 与 streamable HTTP，拒绝 legacy SSE。
+    // JsonMcpServers 方言被 claude-desktop / workbuddy / pi / omo 共用，必须按 agent 名拦截。
+    if matches!(agent, "pi" | "omo") && draft.transport == "sse" {
         return Err(err(
             None,
-            "Pi 内置 MCP 仅支持 stdio 与 streamable HTTP，不支持 SSE",
+            "Pi / OMO 内置 MCP 仅支持 stdio 与 streamable HTTP，不支持 SSE",
         ));
     }
 
@@ -1864,7 +1864,7 @@ mod tests {
         .unwrap();
         assert!(pi["mcpServers"][title]["command"].is_string());
 
-        // Pi 拒绝 SSE：不写文件，返回明确错误。
+        // Pi 及其衍生 OMO 拒绝 SSE：不写文件，返回明确错误。
         let sse_draft = McpDraft {
             title: "__agentbuddy_sse_smoke__".into(),
             transport: "sse".into(),
@@ -1874,10 +1874,10 @@ mod tests {
             url: "https://example.com/sse".into(),
             headers: Default::default(),
         };
-        let r_sse = apply_mcp_to_agents(&sse_draft, &["pi".into()]);
+        let r_sse = apply_mcp_to_agents(&sse_draft, &["pi".into(), "omo".into()]);
         assert!(!r_sse.all_ok, "{:?}", r_sse.results);
         assert!(
-            r_sse.results[0].message.contains("SSE"),
+            r_sse.results.iter().all(|r| r.message.contains("SSE")),
             "{:?}",
             r_sse.results
         );
@@ -1947,6 +1947,141 @@ mod tests {
                 .and_then(|m| m.get(title))
                 .is_none(),
             "test MCP leftover still present"
+        );
+    }
+
+    /// Test-only HOME swap. Must hold `TEST_HOME_LOCK` so parallel tests don't
+    /// see a mutated HOME while deriving agent paths. Windows home resolution
+    /// bypasses env vars, so write tests using this helper are Unix-only.
+    #[cfg(not(windows))]
+    struct TempHome {
+        path: PathBuf,
+        prev_home: Option<std::ffi::OsString>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    #[cfg(not(windows))]
+    impl TempHome {
+        fn new(name: &str) -> Self {
+            let guard = crate::config::lock_home_for_test();
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("octopus-{name}-{nonce}"));
+            fs::create_dir_all(&path).unwrap();
+            let prev_home = std::env::var_os("HOME");
+            std::env::set_var("HOME", &path);
+            Self {
+                path,
+                prev_home,
+                _guard: guard,
+            }
+        }
+
+        fn omo_mcp(&self) -> PathBuf {
+            self.path.join(".omo/agent/mcp.json")
+        }
+
+        fn omo_dir(&self) -> PathBuf {
+            self.path.join(".omo/agent")
+        }
+    }
+
+    #[cfg(not(windows))]
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match self.prev_home.take() {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn omo_resolve_target_uses_global_agent_mcp_json() {
+        let _home_guard = crate::config::lock_home_for_test();
+        let target = resolve_target("omo").unwrap();
+        assert_eq!(
+            target.path,
+            dirs::home_dir().unwrap().join(".omo/agent/mcp.json")
+        );
+        assert!(matches!(target.dialect, Dialect::JsonMcpServers));
+        assert!(!target.jsonc);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn omo_mcp_apply_merge_preserves_and_removes() {
+        let home = TempHome::new("omo-mcp-merge");
+        fs::create_dir_all(home.omo_dir()).unwrap();
+        let seed = json!({
+            "mcpServers": {
+                "existing": {
+                    "type": "stdio",
+                    "command": "echo",
+                    "args": ["keep"]
+                }
+            },
+            "unrelated": { "keep": true }
+        });
+        fs::write(home.omo_mcp(), serde_json::to_string_pretty(&seed).unwrap()).unwrap();
+
+        let title = "__omo_smoke__";
+        let r = apply_mcp_to_agents(&draft_stdio(title), &["omo".into()]);
+        assert!(r.all_ok, "{:?}", r.results);
+        assert!(
+            r.results[0].path.ends_with(".omo/agent/mcp.json"),
+            "{}",
+            r.results[0].path
+        );
+
+        let doc: Value =
+            serde_json::from_str(&fs::read_to_string(home.omo_mcp()).unwrap()).unwrap();
+        assert_eq!(doc["mcpServers"]["existing"]["command"], "echo");
+        assert_eq!(doc["mcpServers"]["existing"]["args"][0], "keep");
+        assert_eq!(doc["unrelated"]["keep"], true);
+        assert_eq!(doc["mcpServers"][title]["type"], "stdio");
+        assert_eq!(doc["mcpServers"][title]["command"], "echo");
+
+        let leftovers: Vec<String> = fs::read_dir(home.omo_dir())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+
+        let r2 = remove_mcp_from_agents(title, &["omo".into()]);
+        assert!(r2.all_ok, "{:?}", r2.results);
+        let doc2: Value =
+            serde_json::from_str(&fs::read_to_string(home.omo_mcp()).unwrap()).unwrap();
+        assert!(doc2["mcpServers"].get(title).is_none());
+        assert_eq!(doc2["mcpServers"]["existing"]["command"], "echo");
+        assert_eq!(doc2["unrelated"]["keep"], true);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn omo_mcp_sniff_reports_applied_agent() {
+        let home = TempHome::new("omo-mcp-sniff");
+        fs::create_dir_all(home.omo_dir()).unwrap();
+        let title = "__omo_scanned__";
+        let seed =
+            format!(r#"{{"mcpServers": {{"{title}": {{"type": "stdio", "command": "echo"}}}}}}"#);
+        fs::write(home.omo_mcp(), seed).unwrap();
+
+        let sniffed = sniff_mcp_servers();
+        let record = sniffed
+            .servers
+            .iter()
+            .find(|server| server.title == title)
+            .expect("scanned OMO server missing");
+        assert!(
+            record.applied_agents.iter().any(|agent| agent == "omo"),
+            "{:?}",
+            record.applied_agents
         );
     }
 }
