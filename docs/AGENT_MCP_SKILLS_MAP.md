@@ -51,7 +51,7 @@
 | 6 | `workbuddy` | WorkBuddy | `~/.workbuddy` | false |
 | 7 | `pi` | Pi | `~/.pi` | false |
 | 8 | `oh-my-pi` | Oh-My-Pi | `~/.omp` | false |
-| 9 | `omo` | OMO | `~/.omo` | false |
+| 9 | `omo` | OmO | `~/.omo` | false |
 
 规则（与 `sniff.rs` / `agents.rs` 一致）：
 
@@ -367,7 +367,7 @@ AgentBuddy 只维护 AGENTS.md，不生成 GEMINI.md 指针。
 `input`→`modalitiesInput`；未建模字段进 `extraOptions` 原样往返。列表 DTO **永不**回传明文 API Key。
 `modelRoles.default` 由 OMP配置页可读写，其它角色与顶层键保留。
 
-### 5.9 OMO (`omo`)
+### 5.9 OmO (`omo`)
 
 **性质**：Oh My OpenAgent（OmO）**Native** 版，独立 CLI `omo`，内置 `senpi` 引擎（Pi 的 fork）。
 与 Pi（`~/.pi`）、Oh-My-Pi（`~/.omp`）是三个独立发行版，运行时配置根互不共享
@@ -420,7 +420,7 @@ AgentBuddy 只维护 AGENTS.md，不生成 GEMINI.md 指针。
 | 项目主位 | `<repo>/.agents/skills`（Agent Skills 约定；引擎同时兼容 `.senpi/skills`、`.pi/skills`） |
 | 应用状态 | `skills_supported: true`，支持 Link / Copy 安装、扫描、计数与列表 |
 
-**指令文件（全局提示词已支持查看/编辑）**：OMO 的 Native 用户级提示词固定为
+**指令文件（全局提示词已支持查看/编辑）**：OmO 的 Native 用户级提示词固定为
 `~/.omo/agent/AGENTS.md`（已确认，不再是推测）。注册表 `prompt_file: Some("agent/AGENTS.md")`，
 `agent_open::open_targets` 将其解析为 `config_dir`（`~/.omo`）+ `agent/AGENTS.md`；详情页复用通用
 `read_agent_prompt` / `write_agent_prompt`：文件不存在时读取返回空串，首次保存自动创建父目录与
@@ -431,7 +431,7 @@ AgentBuddy 只维护 AGENTS.md，不生成 GEMINI.md 指针。
 全局 MCP / Skills 读写，以及项目级骨架（`AGENT_SPECS`：`.omo` + 根 `AGENTS.md` + 共享
 `.agents/skills`）与模型配置（`agent_model_config` → `pi_model_config`，读写
 `~/.omo/agent/models.json` / `auth.json` / `settings.json`）。项目级 MCP 写 `.omo/mcp.json`。
-与 Pi / OMP 一致，复用通用 Agent 详情页（bin 路径、MCP 条目、状态卡），无 OMO 专属探测逻辑；
+与 Pi / OMP 一致，复用通用 Agent 详情页（bin 路径、MCP 条目、状态卡），无 OmO 专属探测逻辑；
 版本探测/门槛、安装方式识别与升级指引对全部 Agent 均未实现。
 
 **与 Pi / OMP 的差异**：
@@ -461,13 +461,13 @@ UI 模型（`McpManage.tsx`）：
 | sse | `type: "sse"` + `url` + `headers` | 映射为 `remote`（或文档等价） | 若官方仅 http，降级为 http 或跳过并提示 | 不支持；不写 |
 | enabled | 可选 | 常写 `enabled: true` | `enabled = true` | 无统一字段时省略 |
 
-> Pi 及其衍生 OMO 的 SSE 在应用与项目两条路径都按 agent 名拦截：
+> Pi 及其衍生 OmO 的 SSE 在应用与项目两条路径都按 agent 名拦截：
 > `matches!(agent, "pi" | "omo") && transport == "sse"` 直接报错
-> 「Pi / OMO 内置 MCP 仅支持 stdio 与 streamable HTTP，不支持 SSE」，不写文件。
+> 「Pi / OmO 内置 MCP 仅支持 stdio 与 streamable HTTP，不支持 SSE」，不写文件。
 > `JsonMcpServers` 方言被 claude-desktop / workbuddy / pi / oh-my-pi / omo 共用，拦截依据是 agent 名而非方言；
 > Oh-My-Pi 实际支持 SSE，故不拦截。
 > `omo` 在注册表中使用 `JsonMcpServers` + `~/.omo/agent/mcp.json`，与 Pi / OMP 走同一套
-> apply / remove / sniff 流程；本表字段映射同样适用于 OMO（标准 JSON，可按需写 `type`）。
+> apply / remove / sniff 流程；本表字段映射同样适用于 OmO（标准 JSON，可按需写 `type`）。
 
 ---
 
@@ -579,12 +579,12 @@ if removeFromAgentConfigs:
 | Oh-My-Pi 模型配置 | YAML（`~/.omp/agent/models.yml`），密钥在 provider 内 `apiKey` | `serde_yaml` 读写，写入后 0600；YAML 注释保存后丢失，前端给 warning |
 | Oh-My-Pi 旧版 auth | `~/.omp/agent/auth.json` 为历史密钥文件 | 读取时一次性迁移到 `providers.<id>.apiKey` 并移除对应条目；迁移失败时列表为空并 warning |
 | Oh-My-Pi 默认模型 | `~/.omp/agent/config.yml` 的 `modelRoles.default` | 可读写该字段，保留其它角色与顶层键 |
-| OMO 支持范围 | 全局 MCP / Skills / 提示词、项目级骨架与模型配置已支持；项目 MCP 写 `.omo/mcp.json` | `mcp_managed: true`、`skills_supported: true`、`prompt_file: Some("agent/AGENTS.md")`；`~/.omo/agent/mcp.json` 按 title 合并 + 原子写，Skills 写 `~/.omo/agent/skills`，提示词查看/编辑写 `~/.omo/agent/AGENTS.md`；`AGENT_SPECS` 建 `.omo/` + 根 `AGENTS.md`、复用 `.agents/skills`，项目 MCP 写 `.omo/mcp.json`（`JsonMcpServers`）；模型配置经 `pi_model_config` 读写 `~/.omo/agent/models.json` / `auth.json` / `settings.json`；无版本探测/门槛、安装方式识别或升级指引 |
-| OMO 上游路径 | `~/.omo/omo.jsonc` / `~/.omo/agent/mcp.json` / `~/.omo/agent/skills` / `~/.omo/agent/AGENTS.md` | 全局 MCP 与模型配置已真机验证读写正常；stdio 条目为 `{ type: "stdio", command, args, env }`，远程为 `{ type: "http", url, headers }`。项目级 MCP 已真机验证为 `<项目>/.omo/mcp.json` 顶层 `mcpServers` |
+| OmO 支持范围 | 全局 MCP / Skills / 提示词、项目级骨架与模型配置已支持；项目 MCP 写 `.omo/mcp.json` | `mcp_managed: true`、`skills_supported: true`、`prompt_file: Some("agent/AGENTS.md")`；`~/.omo/agent/mcp.json` 按 title 合并 + 原子写，Skills 写 `~/.omo/agent/skills`，提示词查看/编辑写 `~/.omo/agent/AGENTS.md`；`AGENT_SPECS` 建 `.omo/` + 根 `AGENTS.md`、复用 `.agents/skills`，项目 MCP 写 `.omo/mcp.json`（`JsonMcpServers`）；模型配置经 `pi_model_config` 读写 `~/.omo/agent/models.json` / `auth.json` / `settings.json`；无版本探测/门槛、安装方式识别或升级指引 |
+| OmO 上游路径 | `~/.omo/omo.jsonc` / `~/.omo/agent/mcp.json` / `~/.omo/agent/skills` / `~/.omo/agent/AGENTS.md` | 全局 MCP 与模型配置已真机验证读写正常；stdio 条目为 `{ type: "stdio", command, args, env }`，远程为 `{ type: "http", url, headers }`。项目级 MCP 已真机验证为 `<项目>/.omo/mcp.json` 顶层 `mcpServers` |
 | 0.3.0 启动升级 | 曾清理 OMP 相关残留 | 现仅清理 `codebuddy` / `codebuddy-cn`；OMP 数据（`omp` / `ohMyPi` 键）保留 |
 | Claude Code 大文件 | `~/.claude.json` 含大量状态字段 | 只改 `mcpServers` 键，独立方言 `ClaudeJsonUser` |
 | 项目级 MCP | 写项目会进 git / 需信任 | 全局应用默认不写项目；项目级写入由用户在「项目配置」页显式勾选触发 |
-| SSE 方言差异 | 各产品支持不一 | Pi / OMO 直接拒绝 SSE；Oh-My-Pi 支持；其余能映射则映射，否则提示跳过 |
+| SSE 方言差异 | 各产品支持不一 | Pi / OmO 直接拒绝 SSE；Oh-My-Pi 支持；其余能映射则映射，否则提示跳过 |
 | 密钥 | 配置中常含 token | AgentBuddy 永不日志打印 env/headers 值；API Key 经 `crypto::encrypt` 落 SQLite |
 | OpenCode JSONC | 注释 / 尾逗号 | `json5` 解析；重写 pretty JSON（注释不保留，会抛 warn 给用户） |
 | OpenCode 全局目录 | 硬编码 `~/.config/opencode`（`agents.rs`、`opencode_config.rs`、`mcp_config.rs` 共四处），不解析 `OPENCODE_CONFIG_DIR` / `XDG_CONFIG_HOME` | 设置了变量的用户，OpenCode 实际读取的全局目录与 App 写入/扫描的目录不一致，可能出现「App 显示已安装但 agent 读不到」或反向误判；默认用户不受影响。后续按 `OPENCODE_CONFIG_DIR` → `$XDG_CONFIG_HOME/opencode` → `~/.config/opencode` 适配 |
@@ -650,16 +650,16 @@ if removeFromAgentConfigs:
    Antigravity 写 `~/.gemini/config/mcp_config.json`，**仅 stdio**，远程不建模。
 5. **项目级** MCP 由 `project_config::AGENT_SPECS` 决定落地路径；目前注册 8 个 agent，均有项目级
    MCP 落点（claude-code / workbuddy / codex / opencode / antigravity / pi / oh-my-pi / omo）；
-   OMO 项目级 MCP 写 `.omo/mcp.json`。
+   OmO 项目级 MCP 写 `.omo/mcp.json`。
 6. **OpenCode** 用 `mcp` 顶层键 + `local`/`remote`，不是 `mcpServers`；JSONC 用 `json5`。
 7. **Pi** 内置 `builtin:mcp`（不再依赖 pi-mcp-adapter），用 `JsonMcpServers` 方言，仅 stdio /
-   streamable HTTP，拒绝 SSE（OMO 作为 Pi 衍生同样拦截）；模型配置经通用 `agent_model_config` + 各自后端
+   streamable HTTP，拒绝 SSE（OmO 作为 Pi 衍生同样拦截）；模型配置经通用 `agent_model_config` + 各自后端
    （`opencode_config` / `pi_model_config`）。
 8. **Oh-My-Pi** 配置根 `~/.omp`，全局 MCP `~/.omp/agent/mcp.json`、项目 MCP `.omp/mcp.json`、
    Skills `~/.omp/agent/skills`；与 Pi 共用 `pi_model_config` 后端但模型文件为 YAML
    （`~/.omp/agent/models.yml`，provider 内 `apiKey`），默认模型读 `config.yml modelRoles.default`；
    支持 SSE。
-9. **OMO**（Oh My OpenAgent Native）配置根 `~/.omo`，全局配置 `~/.omo/omo.jsonc`，全局 MCP
+9. **OmO**（Oh My OpenAgent Native）配置根 `~/.omo`，全局配置 `~/.omo/omo.jsonc`，全局 MCP
    `~/.omo/agent/mcp.json`、全局 Skills `~/.omo/agent/skills`、全局提示词
    `~/.omo/agent/AGENTS.md`；应用已支持全局 MCP / Skills 写入与提示词查看/编辑，
    项目级骨架（`.omo/` + 根 `AGENTS.md` + 共享 `.agents/skills`）与模型配置（`pi_model_config`

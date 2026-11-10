@@ -100,7 +100,7 @@ fn resolve_config_dir(name: &str) -> Option<PathBuf> {
 
 /// Main settings path when it is intentionally separate from the MCP file.
 /// Claude Code: MCP at `~/.claude.json`, settings at `~/.claude/settings.json`.
-/// OMO: MCP at `~/.omo/agent/mcp.json`, user config at `~/.omo/omo.jsonc`
+/// OmO: MCP at `~/.omo/agent/mcp.json`, user config at `~/.omo/omo.jsonc`
 /// (`omo.json` when only that file exists).
 fn resolve_settings_file(name: &str) -> Option<PathBuf> {
     if name == "claude-code" {
@@ -430,10 +430,10 @@ mod tests {
         let home = TempHome::new();
         assert_eq!(read_agent_prompt("omo").unwrap(), "");
 
-        write_agent_prompt("omo", "# OMO 全局提示词\n").unwrap();
+        write_agent_prompt("omo", "# OmO 全局提示词\n").unwrap();
         let prompt = home.path.join(".omo/agent/AGENTS.md");
         assert!(prompt.exists());
-        assert_eq!(read_agent_prompt("omo").unwrap(), "# OMO 全局提示词\n");
+        assert_eq!(read_agent_prompt("omo").unwrap(), "# OmO 全局提示词\n");
         // 原子写的临时文件不残留。
         assert!(!home.path.join(".omo/agent/AGENTS.md.tmp").exists());
         assert!(!home.path.join(".omo/omo.jsonc").exists());

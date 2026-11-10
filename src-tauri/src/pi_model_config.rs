@@ -7,7 +7,7 @@
 //!   - 密钥：自定义 provider 的 `apiKey`（可为环境变量名或字面密钥）；旧版
 //!     `auth.json` 仅在首次读取时迁移，不再作为运行时来源
 //!   - 默认模型：`~/.omp/agent/config.yml` 的 `modelRoles.default`
-//! - OMO Native：`~/.omo/agent/models.json`（JSONC；与 Pi 同一 senpi 引擎 schema）
+//! - OmO Native：`~/.omo/agent/models.json`（JSONC；与 Pi 同一 senpi 引擎 schema）
 //!   - 密钥：`~/.omo/agent/auth.json`（`{ providerId: { type: "api_key", key } }`）
 //!   - 默认模型：`~/.omo/agent/settings.json` 的 `defaultProvider` / `defaultModel`
 //!   - 上游以 0600 权限写 models.json（provider headers 可能携带 token）
@@ -59,7 +59,7 @@ struct FamilyPaths {
     yaml: bool,
     /// 模型配置可能包含明文 apiKey / token，写入后必须限制为当前用户可读写。
     private_models: bool,
-    /// 密钥以 `auth.json` 为运行时来源（Pi / OMO）；否则以 provider `apiKey` 为准（OMP）。
+    /// 密钥以 `auth.json` 为运行时来源（Pi / OmO）；否则以 provider `apiKey` 为准（OMP）。
     auth_primary: bool,
     auth: PathBuf,
     /// 默认模型 settings（Pi: settings.json；OMP: config.yml）。
@@ -316,9 +316,9 @@ fn read_defaults(paths: &FamilyPaths) -> (Option<String>, Option<String>) {
     (combined, None)
 }
 
-/* ===== OMO model_profile ===== */
+/* ===== OmO model_profile ===== */
 
-/// OMO 固定模型配置文件：`~/.omo/omo.jsonc`，旧版 `omo.json` 兜底；都不存在时返回 `None`。
+/// OmO 固定模型配置文件：`~/.omo/omo.jsonc`，旧版 `omo.json` 兜底；都不存在时返回 `None`。
 fn omo_profile_file() -> Option<PathBuf> {
     let home = home_dir().ok()?;
     let base = home.join(".omo");
@@ -329,6 +329,7 @@ fn omo_profile_file() -> Option<PathBuf> {
 }
 
 /// `model_profile` 所在容器键：上游当前写 `"[native]"`，部分版本写 `native`。
+/// 全大写是 Rust 常量命名约定，勿跟随品牌展示名（OmO）改名。
 const OMO_PROFILE_CONTAINERS: &[&str] = &["[native]", "native"];
 
 fn omo_profile_container_key(root: &Value) -> Option<&'static str> {
@@ -338,7 +339,7 @@ fn omo_profile_container_key(root: &Value) -> Option<&'static str> {
         .find(|key| root.get(*key).map(Value::is_object).unwrap_or(false))
 }
 
-/// 读取 OMO 固定 `model_profile`；兼容容器键与顶层键。
+/// 读取 OmO 固定 `model_profile`；兼容容器键与顶层键。
 fn read_omo_model_profile() -> Option<(PathBuf, String)> {
     let path = omo_profile_file()?;
     let raw = fs::read_to_string(&path).ok()?;
@@ -354,7 +355,7 @@ fn read_omo_model_profile() -> Option<(PathBuf, String)> {
     Some((path, value))
 }
 
-/// 写入或移除 OMO 固定 `model_profile`。
+/// 写入或移除 OmO 固定 `model_profile`。
 ///
 /// `omo.jsonc` 以 JSON5 读取后按标准 JSON 写回（与 OpenCode JSONC 写回策略一致，
 /// 注释会被丢弃）；`None` / 空串表示移除该键。
@@ -461,7 +462,7 @@ pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, Strin
 
     let (model, small_model) = read_defaults(&paths);
 
-    // OMO 另有一个固定 model_profile（headless / desktop 会话会覆盖默认模型），
+    // OmO 另有一个固定 model_profile（headless / desktop 会话会覆盖默认模型），
     // 由前端在保存默认模型时提示是否同步。
     let omo_profile = if agent == ModelConfigAgent::Omo {
         read_omo_model_profile()
@@ -600,7 +601,7 @@ pub fn upsert_provider(
         // OpenCode 特有字段（npm/setCacheKey/timeout/whitelist/blacklist）在 Pi 家族中忽略。
     }
 
-    // Pi / OMO 的 config 内 apiKey 多为环境变量名，保持原样不动；密钥写入 auth.json。
+    // Pi / OmO 的 config 内 apiKey 多为环境变量名，保持原样不动；密钥写入 auth.json。
     // OMP 的密钥归属 provider 的 apiKey（可为环境变量名或字面密钥），同时清理旧 auth 条目。
     if let Some(ref key) = payload.api_key {
         if agent == ModelConfigAgent::OhMyPi {
@@ -839,7 +840,7 @@ pub fn get_provider_secret(agent: ModelConfigAgent, provider_id: String) -> Resu
     let id = provider_id.trim().to_string();
     let paths = family_paths(agent)?;
     let auth = load_auth_file(&paths.auth)?;
-    // OMP 以 provider `apiKey` 为准，旧 auth.json 只是兼容来源；Pi / OMO 以 auth.json 为准。
+    // OMP 以 provider `apiKey` 为准，旧 auth.json 只是兼容来源；Pi / OmO 以 auth.json 为准。
     let (root, _) = load_models_root(&paths)?;
     let config_key = root
         .pointer(&format!("/providers/{id}/apiKey"))

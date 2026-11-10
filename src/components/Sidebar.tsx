@@ -72,7 +72,7 @@ const MENU_GROUPS: MenuGroupDef[] = [
       { view: "opencode-config", label: "OpenCode配置", icon: SquareCode },
       { view: "pi-config", label: "Pi配置", icon: Cpu },
       { view: "omp-config", label: "OMP配置", icon: PackagePlus },
-      { view: "omo-config", label: "OMO配置", icon: BrainCircuit },
+      { view: "omo-config", label: "OmO配置", icon: BrainCircuit },
       { view: "project-config", label: "项目配置", icon: FolderCog },
     ],
   },

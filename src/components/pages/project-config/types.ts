@@ -65,5 +65,5 @@ export const AGENT_PROJECT_INFOS: AgentProjectInfo[] = [
   { name: "opencode", displayName: "OpenCode", rootFile: "AGENTS.md", configDir: ".opencode" },
   { name: "pi", displayName: "Pi", rootFile: "AGENTS.md", configDir: ".pi" },
   { name: "oh-my-pi", displayName: "Oh-My-Pi", rootFile: "AGENTS.md", configDir: ".omp" },
-  { name: "omo", displayName: "OMO", rootFile: "AGENTS.md", configDir: ".omo" },
+  { name: "omo", displayName: "OmO", rootFile: "AGENTS.md", configDir: ".omo" },
 ];

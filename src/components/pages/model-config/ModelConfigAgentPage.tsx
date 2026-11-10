@@ -701,9 +701,9 @@ const AGENT_TABS: { id: ModelConfigAgentId; label: string; notInstalledHint: str
   },
   {
     id: "omo",
-    label: "OMO",
+    label: "OmO",
     notInstalledHint:
-      "请先安装 OMO CLI（`omo` 命令，例如 npm i -g omo-ai，或 curl -fsSL https://get.omo.dev/install.sh | bash），安装后重新打开本页即可管理供应商与模型配置。",
+      "请先安装 OmO CLI（`omo` 命令，例如 npm i -g omo-ai，或 curl -fsSL https://get.omo.dev/install.sh | bash），安装后重新打开本页即可管理供应商与模型配置。",
   },
 ];
 
@@ -828,7 +828,7 @@ export function ModelConfigAgentPage({
   const [defaultsOpen, setDefaultsOpen] = useState(false);
   const [draftModel, setDraftModel] = useState("");
   const [draftSmallModel, setDraftSmallModel] = useState("");
-  // OMO 专用：是否把本次默认模型同步到 omo.jsonc 的 model_profile（默认不勾选）。
+  // OmO 专用：是否把本次默认模型同步到 omo.jsonc 的 model_profile（默认不勾选）。
   const [syncOmoProfile, setSyncOmoProfile] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
 
@@ -1329,7 +1329,7 @@ export function ModelConfigAgentPage({
         model: draftModel.trim(),
         // Pi 家族不支持 small model：不传即不改动
         smallModel: view?.smallModelSupported ? draftSmallModel.trim() : undefined,
-        // OMO 专用：仅在用户勾选时同步 omo.jsonc 的 model_profile
+        // OmO 专用：仅在用户勾选时同步 omo.jsonc 的 model_profile
         syncOmoModelProfile: agent === "omo" ? syncOmoProfile : undefined,
       });
       if (res.view) applyView(res.view);
@@ -2432,7 +2432,7 @@ export function ModelConfigAgentPage({
             {agent === "omo" && view?.omoModelProfile ? (
               <div className="oc-warning">
                 <div>
-                  OMO 另有一个固定的 model_profile，位于{" "}
+                  OmO 另有一个固定的 model_profile，位于{" "}
                   <code style={{ wordBreak: "break-all" }}>
                     {view.omoProfilePath || "~/.omo/omo.jsonc"}
                   </code>

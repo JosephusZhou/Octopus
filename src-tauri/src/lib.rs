@@ -212,7 +212,19 @@ async fn get_agent_detail(name: String) -> Result<AgentDetail, String> {
                 a.install_paths,
                 a.config_dirs,
             ),
-            None => (name.clone(), "?".to_string(), false, Vec::new(), Vec::new()),
+            // 缓存缺失时也以注册表为准，避免详情页标题回退成内部 id（如 `omo`）。
+            None => {
+                let spec = crate::agents::find(&name);
+                (
+                    spec.map(|s| s.display_name.to_string())
+                        .unwrap_or_else(|| name.clone()),
+                    spec.map(|s| s.icon.to_string())
+                        .unwrap_or_else(|| "?".to_string()),
+                    false,
+                    Vec::new(),
+                    Vec::new(),
+                )
+            }
         };
         install_paths.retain(|p| !sniff::is_shim_path(p));
 

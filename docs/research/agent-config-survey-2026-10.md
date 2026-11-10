@@ -254,7 +254,7 @@
 
 ---
 
-## 9. 总对照表：当前实现 vs 官方现状（2026-11-06 补充 OMP / OMO）
+## 9. 总对照表：当前实现 vs 官方现状（2026-11-06 补充 OMP / OmO）
 
 > 「应用」列来自 `agents.rs`（全局）与 `project_config.rs`（项目）；「官方」列来自上文各节。✅ 一致 / ⚠️ 部分差异 / ❌ 不符。
 
@@ -377,7 +377,7 @@
 ### 11.4 MCP【官方明确 + 真机验证】
 
 - 用户级：**`~/.omo/agent/mcp.json`**；安装流程把 OpenCode 用户级 MCP 转为引擎 schema 后合并到此。
-  传输上限支持 stdio / http / sse（5.1.62 CHANGELOG 明确修复 SSE 解析）；但 OMO 是 Pi 衍生，
+  传输上限支持 stdio / http / sse（5.1.62 CHANGELOG 明确修复 SSE 解析）；但 OmO 是 Pi 衍生，
   应用按 Pi 规则拦截 SSE（不写文件并报错）。
 - 组成：内置 MCP（如 `websearch` / `context7` / `grep_app` / `lsp` 等）+ Claude Code `.mcp.json`
   兼容加载 + `SKILL.md` frontmatter 内嵌 MCP；可用 `disabled_mcps` 关闭。

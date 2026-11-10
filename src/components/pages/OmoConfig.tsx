@@ -1,6 +1,6 @@
 import { ModelConfigAgentPage } from "./model-config/ModelConfigAgentPage";
 
-/** OMO 模型配置页。 */
+/** OmO 模型配置页。 */
 export default function OmoConfig() {
-  return <ModelConfigAgentPage agent="omo" pageTitle="OMO配置" />;
+  return <ModelConfigAgentPage agent="omo" pageTitle="OmO配置" />;
 }

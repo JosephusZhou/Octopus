@@ -4716,7 +4716,7 @@ body
         let target = targets
             .iter()
             .find(|target| target.agent == "omo")
-            .expect("OMO skills target missing");
+            .expect("OmO skills target missing");
         assert!(target.supported);
         assert_eq!(
             target.roots,

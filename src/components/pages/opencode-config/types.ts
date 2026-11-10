@@ -63,9 +63,9 @@ export interface AgentModelConfigView {
   smallModelSupported: boolean;
   model?: string | null;
   smallModel?: string | null;
-  /** OMO 专用：omo.jsonc 中固定 model_profile 的当前值。 */
+  /** OmO 专用：omo.jsonc 中固定 model_profile 的当前值。 */
   omoModelProfile?: string | null;
-  /** OMO 专用：omo.jsonc 的真实路径（确认提示展示用）。 */
+  /** OmO 专用：omo.jsonc 的真实路径（确认提示展示用）。 */
   omoProfilePath?: string | null;
   enabledProviders?: string[] | null;
   disabledProviders?: string[] | null;
@@ -125,7 +125,7 @@ export interface SetDefaultsPayload {
   smallModel?: string | null;
   enabledProviders?: string[] | null | undefined;
   disabledProviders?: string[] | null | undefined;
-  /** OMO 专用：是否同步默认模型到 omo.jsonc 的 model_profile。 */
+  /** OmO 专用：是否同步默认模型到 omo.jsonc 的 model_profile。 */
   syncOmoModelProfile?: boolean | null;
 }
 

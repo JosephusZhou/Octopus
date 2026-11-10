@@ -9,7 +9,7 @@
 pub enum McpDialect {
     /// Codex: `config.toml` → `[mcp_servers.*]`
     TomlMcpServers,
-    /// Claude Desktop / WorkBuddy / Pi / Oh-My-Pi / OMO: 顶层 `mcpServers`
+    /// Claude Desktop / WorkBuddy / Pi / Oh-My-Pi / OmO: 顶层 `mcpServers`
     JsonMcpServers,
     /// OpenCode: 顶层 `mcp`（JSON/JSONC）
     JsonMcp,
@@ -375,12 +375,12 @@ static AGENTS: &[AgentSpec] = &[
         prompt_file: Some("agent/AGENTS.md"),
         shared_root: None,
     },
-    // 9. OMO Native（oh-my-openagent 独立 `omo` 命令，内置 senpi 引擎）
+    // 9. OmO Native（oh-my-openagent 独立 `omo` 命令，内置 senpi 引擎）
     // 注册身份、安装发现、主配置打开，全局 MCP / Skills / 提示词写入，以及项目级骨架与
     // 模型配置（`agent_model_config` → `pi_model_config`）。
     AgentSpec {
         name: "omo",
-        display_name: "OMO",
+        display_name: "OmO",
         icon: "OM",
         bin_paths: &[
             "~/.local/bin/omo",
@@ -400,7 +400,7 @@ static AGENTS: &[AgentSpec] = &[
         mcp_managed: true,
         skills_roots: &["~/.omo/agent/skills"],
         skills_supported: true,
-        // OMO 的用户级提示词位于 agent 子目录（`~/.omo/agent/AGENTS.md`）。
+        // OmO 的用户级提示词位于 agent 子目录（`~/.omo/agent/AGENTS.md`）。
         prompt_file: Some("agent/AGENTS.md"),
         shared_root: None,
     },

@@ -831,12 +831,12 @@ fn claude_desktop_config_roots(home: &Path) -> Vec<PathBuf> {
 }
 
 fn apply_one(agent: &str, title: &str, draft: &McpDraft) -> Result<PathBuf, OpError> {
-    // Pi 及其衍生 OMO 内置 MCP 仅支持 stdio 与 streamable HTTP，拒绝 legacy SSE。
+    // Pi 及其衍生 OmO 内置 MCP 仅支持 stdio 与 streamable HTTP，拒绝 legacy SSE。
     // JsonMcpServers 方言被 claude-desktop / workbuddy / pi / omo 共用，必须按 agent 名拦截。
     if matches!(agent, "pi" | "omo") && draft.transport == "sse" {
         return Err(err(
             None,
-            "Pi / OMO 内置 MCP 仅支持 stdio 与 streamable HTTP，不支持 SSE",
+            "Pi / OmO 内置 MCP 仅支持 stdio 与 streamable HTTP，不支持 SSE",
         ));
     }
 
@@ -1866,7 +1866,7 @@ mod tests {
         .unwrap();
         assert!(pi["mcpServers"][title]["command"].is_string());
 
-        // Pi 及其衍生 OMO 拒绝 SSE：不写文件，返回明确错误。
+        // Pi 及其衍生 OmO 拒绝 SSE：不写文件，返回明确错误。
         let sse_draft = McpDraft {
             title: "__agentbuddy_sse_smoke__".into(),
             transport: "sse".into(),
@@ -2079,7 +2079,7 @@ mod tests {
             .servers
             .iter()
             .find(|server| server.title == title)
-            .expect("scanned OMO server missing");
+            .expect("scanned OmO server missing");
         assert!(
             record.applied_agents.iter().any(|agent| agent == "omo"),
             "{:?}",

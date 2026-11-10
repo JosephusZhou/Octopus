@@ -9,7 +9,7 @@
 - **当前范围（2026-10-22 起）**：项目配置骨架只聚焦 **AGENTS.md / skills / MCP** 三类，**不创建** `commands` / `rules` / `agents`（含 opencode 的 `plugins` / `tools`）等骨架目录；后续按需再扩展其它配置。
 - 确定性标记：**✅ 官方明确**（官方文档/仓库直接记载）；**⚠️ 待核实**（官方未披露，暂采用通用位/通用格式，后续实测修正）。
 
-## 版本快照（2026-10-21 官方文档 / npm registry；2026-11-06 复核 OMP / OMO）
+## 版本快照（2026-10-21 官方文档 / npm registry；2026-11-06 复核 OMP / OmO）
 
 | Agent | 版本基线 | 备注 |
 |---|---|---|
@@ -18,7 +18,7 @@
 | OpenCode | `opencode-ai` 1.19.3 | |
 | Pi | `@earendil-works/pi-coding-agent` 1.3.0 | 0.99.0 起内置 `builtin:mcp`，1.x 默认开 |
 | Oh-My-Pi | `@oh-my-pi/pi-coding-agent` **18.17.0**（2026-11-06 npm registry，仓库 can1357/oh-my-pi） | 与 Pi 独立配置根 `~/.omp` |
-| OMO | `omo-ai` **5.1.62**（2026-11-06 npm registry） | Native 版，独立 `omo` 命令；全局 MCP / Skills / 提示词、项目级骨架与模型配置已支持，项目级 MCP 写 `.omo/mcp.json` |
+| OmO | `omo-ai` **5.1.62**（2026-11-06 npm registry） | Native 版，独立 `omo` 命令；全局 MCP / Skills / 提示词、项目级骨架与模型配置已支持，项目级 MCP 写 `.omo/mcp.json` |
 | Antigravity | 闭源 App/IDE/CLI，无公开版本号 ⚠️ | 不是开源 Gemini CLI(gcli) |
 | WorkBuddy | 桌面办公版，版本待核实 ⚠️ | 不含 CodeBuddy Code CLI |
 | Claude Desktop | legacy `claude_desktop_config.json` 机制仍存，官方主推 .mcpb | 无项目级、无本地文件 skills |
@@ -64,9 +64,9 @@
 
 1. **Antigravity**：`authProviderType` / oauth / `disabled` / `disabledTools` 扩展字段未建模（本应用只做本地 stdio）。
 2. OpenCode `opencode.local.json` 是否被 loader 识别；Pi 内置是否回退扫描 `~/.pi/agent/skills`；Claude Desktop 现行精确落盘路径。
-3. **OMO**：全局 MCP `~/.omo/agent/mcp.json` 与模型配置（`models.json` / `auth.json` / `settings.json`）
+3. **OmO**：全局 MCP `~/.omo/agent/mcp.json` 与模型配置（`models.json` / `auth.json` / `settings.json`）
    已真机验证读写正常；Native 全局指令文件为 `~/.omo/agent/AGENTS.md`，应用详情页已支持查看与编辑。
-4. **OMO 项目级 MCP**：已真机验证，落点为项目根 `.omo/mcp.json`（`mcpServers`），`AGENT_SPECS`
+4. **OmO 项目级 MCP**：已真机验证，落点为项目根 `.omo/mcp.json`（`mcpServers`），`AGENT_SPECS`
    使用 `McpDialect::JsonMcpServers`。
 
 > 已确认关闭：WorkBuddy 桌面远程 MCP 条目默认可加载、`~/.workbuddy/skills` 为用户级路径、项目级读 `AGENTS.md`；Claude Code 项目 `.mcp.json` 条目可带 `type: "stdio"`。
@@ -76,10 +76,10 @@
 逐项官方出处与调研过程见 [`research/agent-config-survey-2026-10.md`](research/agent-config-survey-2026-10.md)；
 方言/写器/合并策略的工程规格见 [`AGENT_MCP_SKILLS_MAP.md`](AGENT_MCP_SKILLS_MAP.md)。
 
-OMP / OMO 本轮补充来源（2026-11-06）：
+OMP / OmO 本轮补充来源（2026-11-06）：
 
 - OMP：仓库 https://github.com/can1357/oh-my-pi ；MCP 配置 https://github.com/can1357/oh-my-pi/blob/main/docs/mcp-config.md ；
   Skills https://github.com/can1357/oh-my-pi/blob/main/docs/skills.md ；Context files https://github.com/can1357/oh-my-pi/blob/main/docs/context-files.md
-- OMO：仓库 https://github.com/code-yeongyu/oh-my-openagent ；文档 https://omo.dev/docs ；
+- OmO：仓库 https://github.com/code-yeongyu/oh-my-openagent ；文档 https://omo.dev/docs ；
   安装指南 https://github.com/code-yeongyu/oh-my-openagent/blob/dev/docs/guide/installation.md ；
   配置参考 https://github.com/code-yeongyu/oh-my-openagent/blob/dev/docs/reference/configuration.md

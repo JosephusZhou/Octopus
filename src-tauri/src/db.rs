@@ -292,6 +292,14 @@ pub fn purge_removed_agents(names: &[&str]) -> Result<usize, String> {
         .map_err(|e| format!("Failed to purge removed agents: {e}"))
 }
 
+/// 用注册表覆盖缓存行的展示名与图标；手动添加的 agent 不在注册表内，保持原值。
+fn apply_registry_identity(agent: &mut SniffResult) {
+    if let Some(spec) = crate::agents::find(&agent.name) {
+        agent.display_name = spec.display_name.to_string();
+        agent.icon = spec.icon.to_string();
+    }
+}
+
 pub fn load_agents() -> Result<Vec<SniffResult>, String> {
     let conn = get_connection()?;
     let mut stmt = conn
@@ -322,6 +330,13 @@ pub fn load_agents() -> Result<Vec<SniffResult>, String> {
         .map_err(|e| format!("Failed to query agents: {}", e))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to read agents: {}", e))?;
+
+    // 注册表是 Agent 身份的运行时单一数据源；缓存行可能来自旧版本扫描，
+    // 展示名/图标读取时以注册表覆盖，避免改版后必须重新扫描才生效。
+    // 手动添加的 agent 不在注册表内，保留缓存值。
+    for agent in &mut agents {
+        apply_registry_identity(agent);
+    }
 
     // id 是首次插入序，upsert 不会重排；展示顺序以注册表为准，
     // 手动添加的 agent（不在注册表）保持 id 序排在最后。
@@ -1720,5 +1735,33 @@ mod tests {
 
         delete_skill_meta(&id).expect("delete");
         assert!(get_skill_meta(&id).expect("get3").is_none());
+    }
+
+    fn sniff_row(name: &str, display_name: &str, icon: &str) -> SniffResult {
+        SniffResult {
+            name: name.into(),
+            display_name: display_name.into(),
+            icon: icon.into(),
+            found: true,
+            install_paths: Vec::new(),
+            config_dirs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn cached_agent_identity_follows_registry() {
+        // 旧版本扫描缓存里的展示名不应继续生效。
+        let mut cached = sniff_row("omo", "OMO", "??");
+        apply_registry_identity(&mut cached);
+        assert_eq!(cached.display_name, "OmO");
+        assert_eq!(cached.icon, "OM");
+    }
+
+    #[test]
+    fn manual_agent_identity_is_preserved() {
+        let mut manual = sniff_row("my-private-agent", "My Private Agent", "MP");
+        apply_registry_identity(&mut manual);
+        assert_eq!(manual.display_name, "My Private Agent");
+        assert_eq!(manual.icon, "MP");
     }
 }

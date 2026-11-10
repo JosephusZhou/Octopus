@@ -628,7 +628,7 @@ pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderAct
                         .map(|_| "Oh-My-Pi".to_string()),
                         "omo" => {
                             crate::pi_model_config::upsert_provider(ModelConfigAgent::Omo, payload)
-                                .map(|_| "OMO".to_string())
+                                .map(|_| "OmO".to_string())
                         }
                         _ => unreachable!(),
                     };

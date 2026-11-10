@@ -699,7 +699,7 @@ fn display_path(path: &Path) -> String {
 }
 
 /// 配置目录之外的 auth.json：OpenCode 存于 `~/.local/share/opencode`；
-/// Pi / Oh-My-Pi / OMO 的 auth 在 agent 目录内，但仍统一登记以便清单与打包。
+/// Pi / Oh-My-Pi / OmO 的 auth 在 agent 目录内，但仍统一登记以便清单与打包。
 fn agent_auth_path(agent_name: &str) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     Some(match agent_name {
@@ -730,7 +730,7 @@ fn agent_model_files(agent_name: &str) -> Vec<PathBuf> {
             home.join(".omp/agent/config.yml"),
             home.join(".omp/agent/config.yaml"),
         ],
-        // OMO Native 与 Pi 同一 senpi 引擎 schema；另含主配置 omo.jsonc（旧版 omo.json 兜底）。
+        // OmO Native 与 Pi 同一 senpi 引擎 schema；另含主配置 omo.jsonc（旧版 omo.json 兜底）。
         "omo" => vec![
             home.join(".omo/agent/models.json"),
             home.join(".omo/agent/settings.jsonc"),
@@ -2030,7 +2030,7 @@ fn collect_generic_agent(name: &str, out: &mut Vec<FileEntry>, warnings: &mut Ve
         }
         for f in agent_model_files(spec.name) {
             let fname = f.file_name().and_then(|n| n.to_str()).unwrap_or("models");
-            // Oh-My-Pi / OMO 的模型配置可能含明文 apiKey 或 provider headers，按敏感文件登记。
+            // Oh-My-Pi / OmO 的模型配置可能含明文 apiKey 或 provider headers，按敏感文件登记。
             let secret = matches!(spec.name, "oh-my-pi" | "omo");
             push_file(
                 out,

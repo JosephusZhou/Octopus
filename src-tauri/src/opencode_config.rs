@@ -41,10 +41,10 @@ pub struct AgentModelConfigView {
     pub small_model_supported: bool,
     pub model: Option<String>,
     pub small_model: Option<String>,
-    /// OMO 专用：`omo.jsonc` 中固定 `model_profile` 的当前值（headless / desktop 会话会覆盖默认模型）。
+    /// OmO 专用：`omo.jsonc` 中固定 `model_profile` 的当前值（headless / desktop 会话会覆盖默认模型）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub omo_model_profile: Option<String>,
-    /// OMO 专用：`omo.jsonc` 的真实路径（确认提示展示用，属 b 类真实路径）。
+    /// OmO 专用：`omo.jsonc` 的真实路径（确认提示展示用，属 b 类真实路径）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub omo_profile_path: Option<String>,
     pub enabled_providers: Option<Vec<String>>,
@@ -164,7 +164,7 @@ pub struct SetDefaultsPayload {
     pub small_model: Option<String>,
     pub enabled_providers: Option<Option<Vec<String>>>,
     pub disabled_providers: Option<Option<Vec<String>>>,
-    /// OMO 专用：是否把本次默认模型同步到 `~/.omo/omo.jsonc` 的 `model_profile`；
+    /// OmO 专用：是否把本次默认模型同步到 `~/.omo/omo.jsonc` 的 `model_profile`；
     /// 其它 agent 忽略该字段。
     #[serde(default)]
     pub sync_omo_model_profile: Option<bool>,

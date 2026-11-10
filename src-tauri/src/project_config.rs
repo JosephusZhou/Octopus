@@ -194,7 +194,7 @@ static AGENT_SPECS: &[AgentProjectSpec] = &[
         full_sub_dirs: &[],
         shared_sub_dirs: &[],
         config_files: &[],
-        // OMO 原生项目 skills 位为 `.agents/skills`，与共享目录一致，无需自建/软链。
+        // OmO 原生项目 skills 位为 `.agents/skills`，与共享目录一致，无需自建/软链。
         skills_own_dir: false,
         // 项目级 MCP 落在 `.omo/mcp.json`（与全局 `~/.omo/agent/mcp.json` 同族方言）。
         mcp: Some(ProjectMcpSpec {
@@ -648,11 +648,11 @@ fn run_init(
         for (spec, path, dialect, jsonc) in &targets {
             let mut ok_count = 0usize;
             for draft in mcp_servers {
-                // Pi 及其衍生 OMO 内置 MCP 仅支持 stdio 与 streamable HTTP，拒绝 legacy SSE；
+                // Pi 及其衍生 OmO 内置 MCP 仅支持 stdio 与 streamable HTTP，拒绝 legacy SSE；
                 // JsonMcpServers 方言被 claude-desktop/workbuddy/pi/omo 共用，按 agent 名拦截。
                 if matches!(spec.name, "pi" | "omo") && draft.transport == "sse" {
                     errors.push(format!(
-                        "写入 MCP「{}」失败: Pi / OMO 内置 MCP 仅支持 stdio 与 streamable HTTP，不支持 SSE",
+                        "写入 MCP「{}」失败: Pi / OmO 内置 MCP 仅支持 stdio 与 streamable HTTP，不支持 SSE",
                         draft.title
                     ));
                     continue;
