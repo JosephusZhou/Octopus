@@ -59,10 +59,13 @@ export interface AgentModelConfigView {
   installed: boolean;
   /** 是否支持可视化编辑默认模型。 */
   defaultsSupported: boolean;
-  /** 是否支持 small model（如 OpenCode 的 small_model）。 */
+  /** 是否支持可视化编辑第二模型槽位。 */
   smallModelSupported: boolean;
   model?: string | null;
+  /** 第二模型槽位的当前值；按 agent 映射到各自配置键。 */
   smallModel?: string | null;
+  /** 第二模型槽位对应的配置键（small_model / modelRoles.fast / categories.quick.model）。 */
+  smallModelKey?: string | null;
   /** OmO 专用：omo.jsonc 中固定 model_profile 的当前值。 */
   omoModelProfile?: string | null;
   /** OmO 专用：omo.jsonc 的真实路径（确认提示展示用）。 */

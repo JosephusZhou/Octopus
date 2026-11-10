@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStatusMessage } from "@/lib/useStatusMessage";
 import { formatDisplayPath } from "@/lib/formatPath";
 import { Toast } from "@/components/Toast";
+import { ModelComboBox } from "../../ModelComboBox";
 import { CheckGlyph, useOverlayDismiss } from "../../ui";
 
 import type {
@@ -711,6 +712,33 @@ function agentLabel(id: ModelConfigAgentId): string {
   return AGENT_TABS.find((t) => t.id === id)?.label ?? id;
 }
 
+/** 第二模型槽位：同一套 DTO 字段按 agent 映射到各自配置键。 */
+const SECONDARY_SLOT: Record<
+  ModelConfigAgentId,
+  { label: string; badge: string; hint: string } | null
+> = {
+  opencode: {
+    label: "small_model",
+    badge: "small",
+    hint: "写入 OpenCode 配置顶层的 small_model。",
+  },
+  pi: null,
+  "oh-my-pi": {
+    label: "fast 模型",
+    badge: "fast",
+    hint: "写入 ~/.omp/agent/config.yml 的 modelRoles.fast。",
+  },
+  omo: {
+    label: "quick 模型",
+    badge: "quick",
+    hint: "写入 ~/.omo/omo.jsonc 的 [native].categories.quick.model；保存会以标准 JSON 重写该文件，注释可能丢失。",
+  },
+};
+
+function secondarySlot(agent: ModelConfigAgentId) {
+  return SECONDARY_SLOT[agent] ?? null;
+}
+
 /* ===== Subcomponents ===== */
 
 function ModalityBadges({ input, output }: { input: string[]; output: string[] }) {
@@ -737,6 +765,7 @@ function ModelChip({
   model,
   isDefault,
   isSmall,
+  smallLabel,
   onEdit,
   onDelete,
 }: {
@@ -744,6 +773,7 @@ function ModelChip({
   model: AgentModelView;
   isDefault: boolean;
   isSmall: boolean;
+  smallLabel?: string;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -764,7 +794,7 @@ function ModelChip({
             <span className="oc-model-chip-sub">{model.id}</span>
           ) : null}
           {isDefault ? <span className="oc-pill oc-pill-primary">默认</span> : null}
-          {isSmall ? <span className="oc-pill">small</span> : null}
+          {isSmall ? <span className="oc-pill">{smallLabel || "small"}</span> : null}
           {model.reasoning ? <span className="oc-pill oc-pill-think">思考</span> : null}
         </div>
         <div className="oc-limit">
@@ -825,12 +855,15 @@ export function ModelConfigAgentPage({
     model: AgentModelView;
   } | null>(null);
 
+  // 供应商卡片模型列表的收起状态（按 provider id；默认全部展开）。
+  const [collapsedProviders, setCollapsedProviders] = useState<Set<string>>(() => new Set());
+  // 收起态模型 ID chip 的「已复制」提示（按 providerId/modelId 区分）。
+  const [copiedModelRef, setCopiedModelRef] = useState<string | null>(null);
   const [defaultsOpen, setDefaultsOpen] = useState(false);
   const [draftModel, setDraftModel] = useState("");
   const [draftSmallModel, setDraftSmallModel] = useState("");
   // OmO 专用：是否把本次默认模型同步到 omo.jsonc 的 model_profile（默认不勾选）。
   const [syncOmoProfile, setSyncOmoProfile] = useState(false);
-  const [modelSearch, setModelSearch] = useState("");
 
   // 模型弹窗内的「从供应商模型列表选择」：拉取当前供应商端点的模型列表
   // **临时配置专用**：当 OpenCode / Pi provider **不**关联供应商库、
@@ -871,11 +904,6 @@ export function ModelConfigAgentPage({
       try {
         const next = await invokeGetConfig(agent);
         applyView(next);
-        if (!quiet) {
-          if (next.installed && next.warnings.length > 0) {
-            setStatusMsg(next.warnings[0]);
-          }
-        }
         return next;
       } catch (e) {
         setStatusMsg(`加载失败: ${e}`);
@@ -936,12 +964,6 @@ export function ModelConfigAgentPage({
     }
     return opts;
   }, [view]);
-
-  const filteredModelOptions = useMemo(() => {
-    const q = modelSearch.trim().toLowerCase();
-    if (!q) return configuredModelOptions;
-    return configuredModelOptions.filter((x) => x.toLowerCase().includes(q));
-  }, [configuredModelOptions, modelSearch]);
 
   const providerPickHits = useMemo(() => {
     const q = providerPickQuery.trim().toLowerCase();
@@ -1069,6 +1091,24 @@ export function ModelConfigAgentPage({
     setProviderPickQuery("");
     setProviderPickModels([]);
     setProviderPickMsg("");
+  };
+
+  const toggleProviderCollapsed = (providerId: string) => {
+    setCollapsedProviders((prev) => {
+      const next = new Set(prev);
+      if (next.has(providerId)) next.delete(providerId);
+      else next.add(providerId);
+      return next;
+    });
+  };
+
+  const expandProvider = (providerId: string) => {
+    setCollapsedProviders((prev) => {
+      if (!prev.has(providerId)) return prev;
+      const next = new Set(prev);
+      next.delete(providerId);
+      return next;
+    });
   };
 
   const openAddModel = (providerId: string) => {
@@ -1269,6 +1309,8 @@ export function ModelConfigAgentPage({
       });
       if (res.view) applyView(res.view);
       else await loadConfig(true);
+      // 保存成功后再展开该供应商，取消弹窗不会改变列表状态。
+      expandProvider(modelForm.providerId);
       setModelForm(null);
       setStatusMsg(res.message || "模型已保存");
     } catch (e) {
@@ -1318,17 +1360,19 @@ export function ModelConfigAgentPage({
     setDraftModel(view?.model ?? "");
     setDraftSmallModel(view?.smallModel ?? "");
     setSyncOmoProfile(false);
-    setModelSearch("");
     setDefaultsOpen(true);
   };
 
   const saveDefaults = async () => {
     setBusy(true);
     try {
+      const secondaryValue = draftSmallModel.trim();
+      // 未改动时不传第二槽位，避免无谓重写 OmO 的 omo.jsonc（会丢注释）。
+      const secondaryChanged =
+        view?.smallModelSupported === true && secondaryValue !== (view.smallModel ?? "").trim();
       const res = await invokeSetDefaults(agent, {
         model: draftModel.trim(),
-        // Pi 家族不支持 small model：不传即不改动
-        smallModel: view?.smallModelSupported ? draftSmallModel.trim() : undefined,
+        smallModel: secondaryChanged ? secondaryValue : undefined,
         // OmO 专用：仅在用户勾选时同步 omo.jsonc 的 model_profile
         syncOmoModelProfile: agent === "omo" ? syncOmoProfile : undefined,
       });
@@ -1477,8 +1521,13 @@ export function ModelConfigAgentPage({
               </div>
               {view.smallModelSupported && (
                 <div className="oc-defaults-row">
-                  <span className="oc-defaults-label">small_model</span>
+                  <span className="oc-defaults-label">
+                    {secondarySlot(agent)?.label ?? "small_model"}
+                  </span>
                   <code className="oc-defaults-value">{view.smallModel || "未设置"}</code>
+                  {view.smallModelKey && view.smallModelKey !== secondarySlot(agent)?.label ? (
+                    <span className="oc-defaults-key">{view.smallModelKey}</span>
+                  ) : null}
                 </div>
               )}
               <div className="oc-defaults-path" title={formatDisplayPath(view.configPath)}>
@@ -1522,92 +1571,144 @@ export function ModelConfigAgentPage({
           </div>
         ) : (
           <div className="oc-provider-list">
-            {view.providers.map((p) => (
-              <div key={p.id} className="mcp-card oc-provider-card">
-                <div className="mcp-card-header">
-                  <div className="mcp-card-icon">{(p.name || p.id).slice(0, 2).toUpperCase()}</div>
-                  <div className="mcp-card-main">
-                    <div className="mcp-card-title-row">
-                      <span className="mcp-card-title">{p.name || p.id}</span>
-                      <span className="mcp-type-badge">{p.id}</span>
-                      {p.hasApiKey ? (
-                        <span
-                          className="oc-pill oc-pill-key"
-                          title={apiKeySourceLabel(p.apiKeySource)}
+            {view.providers.map((p) => {
+              const collapsed = collapsedProviders.has(p.id);
+              return (
+                <div
+                  key={p.id}
+                  className={`mcp-card oc-provider-card ${collapsed ? "is-collapsed" : ""}`}
+                >
+                  <div className="mcp-card-header">
+                    <div className="mcp-card-icon">
+                      {(p.name || p.id).slice(0, 2).toUpperCase()}
+                    </div>
+                    <div className="mcp-card-main">
+                      <div className="mcp-card-title-row">
+                        <span className="mcp-card-title">{p.name || p.id}</span>
+                        <span className="mcp-type-badge">{p.id}</span>
+                        {p.hasApiKey ? (
+                          <span
+                            className="oc-pill oc-pill-key"
+                            title={apiKeySourceLabel(p.apiKeySource)}
+                          >
+                            <IconKey /> 已配置密钥
+                          </span>
+                        ) : (
+                          <span className="oc-pill">无密钥</span>
+                        )}
+                      </div>
+                      <div className="oc-provider-meta">
+                        {p.npm ? <span>npm: {p.npm}</span> : null}
+                        {p.baseUrl ? (
+                          <span className="oc-provider-url" title={p.baseUrl}>
+                            {p.baseUrl}
+                          </span>
+                        ) : null}
+                        {p.api ? (
+                          <span className="oc-provider-url" title={p.api}>
+                            {!isOpenCode ? piApiLabel(p.api) : p.api}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="mcp-card-actions">
+                      {p.models.length > 0 && (
+                        <button
+                          type="button"
+                          className="btn-icon-action mcp-card-action"
+                          data-tooltip={collapsed ? "展开模型列表" : "收起模型列表"}
+                          aria-expanded={!collapsed}
+                          aria-label={collapsed ? "展开模型列表" : "收起模型列表"}
+                          onClick={() => toggleProviderCollapsed(p.id)}
                         >
-                          <IconKey /> 已配置密钥
-                        </span>
-                      ) : (
-                        <span className="oc-pill">无密钥</span>
+                          <IconChevron open={!collapsed} />
+                        </button>
                       )}
-                    </div>
-                    <div className="oc-provider-meta">
-                      {p.npm ? <span>npm: {p.npm}</span> : null}
-                      {p.baseUrl ? (
-                        <span className="oc-provider-url" title={p.baseUrl}>
-                          {p.baseUrl}
-                        </span>
-                      ) : null}
-                      {p.api ? (
-                        <span className="oc-provider-url" title={p.api}>
-                          {!isOpenCode ? piApiLabel(p.api) : p.api}
-                        </span>
-                      ) : null}
+                      <button
+                        type="button"
+                        className="btn-icon-action mcp-card-action"
+                        data-tooltip="添加模型"
+                        onClick={() => openAddModel(p.id)}
+                      >
+                        <IconPlus />
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-icon-action mcp-card-action"
+                        data-tooltip="编辑"
+                        onClick={() => void openEditProvider(p)}
+                      >
+                        <IconEdit />
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-delete mcp-card-action"
+                        data-tooltip="删除"
+                        onClick={() => {
+                          setDeleteAuthToo(true);
+                          setDeleteProvider(p);
+                        }}
+                      >
+                        <IconTrash />
+                      </button>
                     </div>
                   </div>
-                  <div className="mcp-card-actions">
-                    <button
-                      type="button"
-                      className="btn-icon-action mcp-card-action"
-                      data-tooltip="添加模型"
-                      onClick={() => openAddModel(p.id)}
-                    >
-                      <IconPlus />
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-icon-action mcp-card-action"
-                      data-tooltip="编辑"
-                      onClick={() => void openEditProvider(p)}
-                    >
-                      <IconEdit />
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-delete mcp-card-action"
-                      data-tooltip="删除"
-                      onClick={() => {
-                        setDeleteAuthToo(true);
-                        setDeleteProvider(p);
-                      }}
-                    >
-                      <IconTrash />
-                    </button>
-                  </div>
-                </div>
 
-                {p.models.length === 0 ? (
-                  <div className="oc-models-empty">尚无模型，点击 + 添加</div>
-                ) : (
-                  <div className="oc-model-list">
-                    {p.models.map((m) => {
-                      const ref = modelRef(p.id, m.id);
-                      return (
-                        <ModelChip
-                          key={m.id}
-                          providerId={p.id}
-                          model={m}
-                          isDefault={view.model === ref}
-                          isSmall={view.smallModel === ref}
-                          onEdit={() => openEditModel(p.id, m)}
-                          onDelete={() => setDeleteModelTarget({ providerId: p.id, model: m })}
-                        />
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            ))}
+                  {p.models.length === 0 ? (
+                    <div className="oc-models-empty">尚无模型，点击 + 添加</div>
+                  ) : collapsed ? (
+                    <div className="oc-models-collapsed">
+                      {p.models.map((m) => {
+                        const ref = modelRef(p.id, m.id);
+                        return (
+                          <button
+                            type="button"
+                            key={m.id}
+                            className="oc-model-id-chip"
+                            data-tooltip={copiedModelRef === ref ? "已复制" : "点击复制模型 ID"}
+                            onClick={() => {
+                              navigator.clipboard.writeText(m.id).then(
+                                () => {
+                                  setCopiedModelRef(ref);
+                                  setTimeout(
+                                    () =>
+                                      setCopiedModelRef((current) =>
+                                        current === ref ? null : current,
+                                      ),
+                                    2000,
+                                  );
+                                },
+                                (e) => setStatusMsg(`复制失败: ${e}`),
+                              );
+                            }}
+                          >
+                            {m.id}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="oc-model-list">
+                      {p.models.map((m) => {
+                        const ref = modelRef(p.id, m.id);
+                        return (
+                          <ModelChip
+                            key={m.id}
+                            providerId={p.id}
+                            model={m}
+                            isDefault={view.model === ref}
+                            isSmall={view.smallModel === ref}
+                            smallLabel={secondarySlot(agent)?.badge}
+                            onEdit={() => openEditModel(p.id, m)}
+                            onDelete={() => setDeleteModelTarget({ providerId: p.id, model: m })}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -2387,48 +2488,41 @@ export function ModelConfigAgentPage({
           </div>
           <div className="modal-body oc-modal-body">
             <div className="form-group">
-              <label className="form-label" htmlFor="oc-search-models">
-                搜索已配置模型
-              </label>
-              <input
-                id="oc-search-models"
-                className="form-input"
-                placeholder="provider/model"
-                value={modelSearch}
-                onChange={(e) => setModelSearch(e.target.value)}
-                disabled={busy}
-              />
-            </div>
-            <div className="form-group">
               <label className="form-label" htmlFor="oc-default-model">
                 model
               </label>
-              <input
+              <ModelComboBox
                 id="oc-default-model"
-                className="form-input"
-                list="oc-model-options"
-                placeholder="provider/model，清空则删除"
                 value={draftModel}
-                onChange={(e) => setDraftModel(e.target.value)}
+                options={configuredModelOptions}
+                onChange={setDraftModel}
                 disabled={busy}
-                spellCheck={false}
+                placeholder="provider/model，可直接输入"
+                clearLabel="不设置（清空）"
               />
             </div>
-            <div className="form-group">
-              <label className="form-label" htmlFor="oc-small-model">
-                small_model
-              </label>
-              <input
-                id="oc-small-model"
-                className="form-input"
-                list="oc-model-options"
-                placeholder="provider/model，清空则删除"
-                value={draftSmallModel}
-                onChange={(e) => setDraftSmallModel(e.target.value)}
-                disabled={busy}
-                spellCheck={false}
-              />
-            </div>
+            {view?.smallModelSupported && secondarySlot(agent) ? (
+              <div className="form-group">
+                <label className="form-label" htmlFor="oc-small-model">
+                  {secondarySlot(agent)!.label}
+                </label>
+                <ModelComboBox
+                  id="oc-small-model"
+                  value={draftSmallModel}
+                  options={configuredModelOptions}
+                  onChange={setDraftSmallModel}
+                  disabled={busy}
+                  placeholder="provider/model，可直接输入"
+                  clearLabel="不设置（清空）"
+                />
+                <div className="oc-form-hint">
+                  {secondarySlot(agent)!.hint}
+                  {view.smallModelKey && view.smallModelKey !== secondarySlot(agent)!.label
+                    ? `（当前键：${view.smallModelKey}）`
+                    : ""}
+                </div>
+              </div>
+            ) : null}
             {agent === "omo" && view?.omoModelProfile ? (
               <div className="oc-warning">
                 <div>
@@ -2458,26 +2552,6 @@ export function ModelConfigAgentPage({
                 </div>
               </div>
             ) : null}
-            <datalist id="oc-model-options">
-              {filteredModelOptions.map((opt) => (
-                <option key={opt} value={opt} />
-              ))}
-            </datalist>
-            {filteredModelOptions.length > 0 && (
-              <div className="oc-defaults-suggestions">
-                {filteredModelOptions.slice(0, 12).map((opt) => (
-                  <button
-                    key={opt}
-                    type="button"
-                    className="oc-suggest-chip"
-                    onClick={() => setDraftModel(opt)}
-                    disabled={busy}
-                  >
-                    {opt}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
           <div className="modal-footer">
             <button

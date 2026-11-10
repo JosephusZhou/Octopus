@@ -358,6 +358,7 @@ AgentBuddy 只维护 AGENTS.md，不生成 GEMINI.md 指针。
 | 模型文件 | `~/.omp/agent/models.yml`（YAML，顶层 `providers`；兼容扫描 `models.yaml` / `models.json`） |
 | 密钥位置 | provider 内 `apiKey`（可为环境变量名或字面密钥），无独立密钥文件 |
 | 默认模型 | `~/.omp/agent/config.yml` 的 `modelRoles.default`（模型 id 可含 `/`，原样读写） |
+| 第二模型槽位 | `~/.omp/agent/config.yml` 的 `modelRoles.fast`（应用内以「fast 模型」展示/编辑） |
 | 旧版兼容 | `~/.omp/agent/auth.json` 为一次性迁移来源：读取时把 `auth.json` 中非 `none` 的 provider 密钥迁入 `providers.<id>.apiKey` 并删除对应条目；迁移失败时列表回退为空并给出 warning |
 | 文件权限 | 写入 `models.yml` / `config.yml` 后设为 0600（`atomic_write_secret`） |
 | 支持 API 类型 | `openai-completions` / `openai-responses` / `anthropic-messages` |
@@ -365,7 +366,7 @@ AgentBuddy 只维护 AGENTS.md，不生成 GEMINI.md 指针。
 
 字段映射与 Pi 相同：`contextWindow`→`limitContext`、`maxTokens`→`limitOutput`、
 `input`→`modalitiesInput`；未建模字段进 `extraOptions` 原样往返。列表 DTO **永不**回传明文 API Key。
-`modelRoles.default` 由 OMP配置页可读写，其它角色与顶层键保留。
+`modelRoles.default` 与 `modelRoles.fast` 由 OMP配置页可读写，其它角色与顶层键保留。
 
 ### 5.9 OmO (`omo`)
 
@@ -397,6 +398,9 @@ AgentBuddy 只维护 AGENTS.md，不生成 GEMINI.md 指针。
 | 引擎状态目录 | `~/.omo/agent`（`settings.json` / `auth.json` / `models.json` 等；无 branded 布局时回退 `~/.senpi/agent`） |
 | 目录覆盖环境变量 | `OMO_CODING_AGENT_DIR`（兼容 `SENPI_CODING_AGENT_DIR`） |
 | 主配置打开 | `agent_open` 打开 `~/.omo/omo.jsonc`（缺省时 `omo.json`） |
+| 默认模型 | `~/.omo/agent/settings.json(c)` 的 `defaultProvider` / `defaultModel` |
+| 固定模型档案 | `~/.omo/omo.jsonc` 的 `[native].model_profile`（兼容旧块名 `[senpi]`） |
+| 第二模型槽位 | `~/.omo/omo.jsonc` 的 `[native].categories.quick.model`（`task()` 的 quick 类别）；写入回落到已有 harness 块，避免新建 `[native]` 遮蔽旧 `[senpi]` 配置；`omo.jsonc` / `omo.json` 都不存在时按空配置创建 `~/.omo/omo.jsonc` |
 
 **MCP（全局写入已支持）**
 
@@ -578,7 +582,8 @@ if removeFromAgentConfigs:
 | Oh-My-Pi MCP | 支持 `stdio` / `http` / `sse` 三种传输 | 复用 `JsonMcpServers`；SSE 拦截只针对 agent 名 `pi`，OMP 不拦截 |
 | Oh-My-Pi 模型配置 | YAML（`~/.omp/agent/models.yml`），密钥在 provider 内 `apiKey` | `serde_yaml` 读写，写入后 0600；YAML 注释保存后丢失，前端给 warning |
 | Oh-My-Pi 旧版 auth | `~/.omp/agent/auth.json` 为历史密钥文件 | 读取时一次性迁移到 `providers.<id>.apiKey` 并移除对应条目；迁移失败时列表为空并 warning |
-| Oh-My-Pi 默认模型 | `~/.omp/agent/config.yml` 的 `modelRoles.default` | 可读写该字段，保留其它角色与顶层键 |
+| Oh-My-Pi 默认模型 | `~/.omp/agent/config.yml` 的 `modelRoles.default` / `modelRoles.fast` | 可读写这两个角色，其它角色与顶层键保留 |
+| OmO 第二模型槽位 | `~/.omo/omo.jsonc` 的 `[native].categories.quick.model` | 与 `model_profile` 同一次读-改-写；保留其它类别与同级字段；容器读取兼容 `native` / `[senpi]`，写入回落到已有块 |
 | OmO 支持范围 | 全局 MCP / Skills / 提示词、项目级骨架与模型配置已支持；项目 MCP 写 `.omo/mcp.json` | `mcp_managed: true`、`skills_supported: true`、`prompt_file: Some("agent/AGENTS.md")`；`~/.omo/agent/mcp.json` 按 title 合并 + 原子写，Skills 写 `~/.omo/agent/skills`，提示词查看/编辑写 `~/.omo/agent/AGENTS.md`；`AGENT_SPECS` 建 `.omo/` + 根 `AGENTS.md`、复用 `.agents/skills`，项目 MCP 写 `.omo/mcp.json`（`JsonMcpServers`）；模型配置经 `pi_model_config` 读写 `~/.omo/agent/models.json` / `auth.json` / `settings.json`；无版本探测/门槛、安装方式识别或升级指引 |
 | OmO 上游路径 | `~/.omo/omo.jsonc` / `~/.omo/agent/mcp.json` / `~/.omo/agent/skills` / `~/.omo/agent/AGENTS.md` | 全局 MCP 与模型配置已真机验证读写正常；stdio 条目为 `{ type: "stdio", command, args, env }`，远程为 `{ type: "http", url, headers }`。项目级 MCP 已真机验证为 `<项目>/.omo/mcp.json` 顶层 `mcpServers` |
 | 0.3.0 启动升级 | 曾清理 OMP 相关残留 | 现仅清理 `codebuddy` / `codebuddy-cn`；OMP 数据（`omp` / `ohMyPi` 键）保留 |

@@ -7,9 +7,11 @@
 //!   - 密钥：自定义 provider 的 `apiKey`（可为环境变量名或字面密钥）；旧版
 //!     `auth.json` 仅在首次读取时迁移，不再作为运行时来源
 //!   - 默认模型：`~/.omp/agent/config.yml` 的 `modelRoles.default`
+//!   - 第二模型槽位：`~/.omp/agent/config.yml` 的 `modelRoles.fast`
 //! - OmO Native：`~/.omo/agent/models.json`（JSONC；与 Pi 同一 senpi 引擎 schema）
 //!   - 密钥：`~/.omo/agent/auth.json`（`{ providerId: { type: "api_key", key } }`）
 //!   - 默认模型：`~/.omo/agent/settings.json` 的 `defaultProvider` / `defaultModel`
+//!   - 第二模型槽位：`~/.omo/omo.jsonc` 的 `[native].categories.quick.model`
 //!   - 上游以 0600 权限写 models.json（provider headers 可能携带 token）
 //!
 //! 字段映射到通用 DTO：`contextWindow`→limitContext、`maxTokens`→limitOutput、
@@ -291,17 +293,18 @@ fn read_defaults(paths: &FamilyPaths) -> (Option<String>, Option<String>) {
         return (None, None);
     };
     if paths.settings_yaml {
-        // OMP：`modelRoles.default` 原样返回（模型 id 可含 `/`，不拆分）。
+        // OMP：`modelRoles.default` / `modelRoles.fast` 原样返回（模型 id 可含 `/`，不拆分）。
         let Ok(v) = serde_yaml::from_str::<Value>(&raw) else {
             return (None, None);
         };
-        let model = v
-            .get("modelRoles")
-            .and_then(|r| r.get("default"))
-            .and_then(|x| x.as_str())
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty());
-        return (model, None);
+        let role = |name: &str| {
+            v.get("modelRoles")
+                .and_then(|r| r.get(name))
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty())
+        };
+        return (role("default"), role("fast"));
     }
     let Ok(v) = json5::from_str::<Value>(&raw) else {
         return (None, None);
@@ -328,15 +331,22 @@ fn omo_profile_file() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-/// `model_profile` 所在容器键：上游当前写 `"[native]"`，部分版本写 `native`。
+/// OmO harness 块键：`[native]` 是现行拼写，`native` 为兼容，`[senpi]` 是旧名称。
+/// 读取按此顺序取第一个存在的块；写入回落到第一个已存在的块，避免新建 `[native]`
+/// 遮蔽只写了旧 `[senpi]` 的配置（与上游写入器行为一致）。
 /// 全大写是 Rust 常量命名约定，勿跟随品牌展示名（OmO）改名。
-const OMO_PROFILE_CONTAINERS: &[&str] = &["[native]", "native"];
+const OMO_HARNESS_KEYS: &[&str] = &["[native]", "native", "[senpi]"];
+const OMO_DEFAULT_HARNESS_KEY: &str = "[native]";
 
-fn omo_profile_container_key(root: &Value) -> Option<&'static str> {
-    OMO_PROFILE_CONTAINERS
+fn omo_container_key(root: &Value) -> Option<&'static str> {
+    OMO_HARNESS_KEYS
         .iter()
         .copied()
         .find(|key| root.get(*key).map(Value::is_object).unwrap_or(false))
+}
+
+fn omo_container_display_key(root: &Value) -> &'static str {
+    omo_container_key(root).unwrap_or(OMO_DEFAULT_HARNESS_KEY)
 }
 
 /// 读取 OmO 固定 `model_profile`；兼容容器键与顶层键。
@@ -344,7 +354,7 @@ fn read_omo_model_profile() -> Option<(PathBuf, String)> {
     let path = omo_profile_file()?;
     let raw = fs::read_to_string(&path).ok()?;
     let root: Value = json5::from_str(&raw).ok()?;
-    let value = omo_profile_container_key(&root)
+    let value = omo_container_key(&root)
         .and_then(|key| root.get(key))
         .and_then(|container| container.get("model_profile"))
         .and_then(Value::as_str)
@@ -355,36 +365,136 @@ fn read_omo_model_profile() -> Option<(PathBuf, String)> {
     Some((path, value))
 }
 
-/// 写入或移除 OmO 固定 `model_profile`。
+/// 读取 OmO `categories.quick.model`；返回 (harness 块键, 模型值)。
 ///
-/// `omo.jsonc` 以 JSON5 读取后按标准 JSON 写回（与 OpenCode JSONC 写回策略一致，
-/// 注释会被丢弃）；`None` / 空串表示移除该键。
-fn write_omo_model_profile(model: Option<&str>) -> Result<PathBuf, String> {
-    let path =
-        omo_profile_file().ok_or_else(|| "未找到 ~/.omo/omo.jsonc 或 omo.json".to_string())?;
-    let raw =
-        fs::read_to_string(&path).map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+/// 只读 typed harness 块（`[native]` / `native` / `[senpi]`），不做顶层回退。
+fn read_omo_quick_model() -> Option<(&'static str, String)> {
+    let path = omo_profile_file()?;
+    let raw = fs::read_to_string(&path).ok()?;
+    let root: Value = json5::from_str(&raw).ok()?;
+    let key = omo_container_key(&root)?;
+    let value = root
+        .get(key)
+        .and_then(|container| container.get("categories"))
+        .and_then(|categories| categories.get("quick"))
+        .and_then(|quick| quick.get("model"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    Some((key, value))
+}
+
+/// 写入或移除 OmO 固定 `model_profile` / `categories.quick.model`。
+///
+/// 两个参数均为三态：`None` = 不改动，`Some("")` = 删除，其它 = 写入。
+/// 两项在同一次读-改-写内完成，避免重复重写 `omo.jsonc`。
+/// 文件以 JSON5 读取、标准 JSON 写回（注释会被丢弃）。
+fn write_omo_aux(
+    model_profile: Option<&str>,
+    quick_model: Option<&str>,
+) -> Result<PathBuf, String> {
+    // 两个候选文件都不存在时按空配置在标准路径创建（atomic_write 会建父目录），
+    // 让「首次设置 quick 模型」不必先去手工建 omo.jsonc。
+    let (path, raw) = match omo_profile_file() {
+        Some(path) => {
+            let raw = fs::read_to_string(&path)
+                .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+            (path, raw)
+        }
+        None => (home_dir()?.join(".omo").join("omo.jsonc"), "{}".to_string()),
+    };
     let mut root: Value =
         json5::from_str(&raw).map_err(|e| format!("解析 {} 失败: {e}", path.display()))?;
     if !root.is_object() {
         return Err(format!("{} 根节点必须是对象", path.display()));
     }
-    let key = omo_profile_container_key(&root).unwrap_or("[native]");
+    let key = omo_container_display_key(&root);
+    // harness 块存在但不是对象时直接报错，绝不覆盖用户已有值。
+    if root.get(key).is_some_and(|block| !block.is_object()) {
+        return Err(format!("{} 的 {} 必须是对象", path.display(), key));
+    }
     {
         let obj = root.as_object_mut().unwrap();
-        if !obj.get(key).map(Value::is_object).unwrap_or(false) {
+        if !obj.contains_key(key) {
             obj.insert(key.to_string(), json!({}));
         }
     }
     let container = root.get_mut(key).and_then(Value::as_object_mut).unwrap();
-    match model {
-        Some(value) if !value.is_empty() => {
+
+    if let Some(value) = model_profile {
+        if value.is_empty() {
+            container.remove("model_profile");
+        } else {
             container.insert("model_profile".into(), Value::String(value.to_string()));
         }
-        _ => {
-            container.remove("model_profile");
+    }
+
+    if let Some(value) = quick_model {
+        // 删除分支原先遇到非对象会静默跳过；这里与写入分支一致，先校验再改。
+        if let Some(categories) = container.get("categories") {
+            if !categories.is_object() {
+                return Err("categories 必须是对象".into());
+            }
+            if categories
+                .get("quick")
+                .is_some_and(|quick| !quick.is_object())
+            {
+                return Err("categories.quick 必须是对象".into());
+            }
+        }
+        if value.is_empty() {
+            let drop_categories = {
+                let mut drop_categories = false;
+                if let Some(categories) = container
+                    .get_mut("categories")
+                    .and_then(Value::as_object_mut)
+                {
+                    if let Some(quick) = categories.get_mut("quick").and_then(Value::as_object_mut)
+                    {
+                        quick.remove("model");
+                        if quick.is_empty() {
+                            categories.remove("quick");
+                        }
+                    }
+                    drop_categories = categories.is_empty();
+                }
+                drop_categories
+            };
+            if drop_categories {
+                container.remove("categories");
+            }
+        } else {
+            match container.get_mut("categories") {
+                Some(categories) if !categories.is_object() => {
+                    return Err("categories 必须是对象".into());
+                }
+                Some(_) => {}
+                None => {
+                    container.insert("categories".into(), json!({}));
+                }
+            }
+            let categories = container
+                .get_mut("categories")
+                .and_then(Value::as_object_mut)
+                .unwrap();
+            match categories.get_mut("quick") {
+                Some(quick) if !quick.is_object() => {
+                    return Err("categories.quick 必须是对象".into());
+                }
+                Some(_) => {}
+                None => {
+                    categories.insert("quick".into(), json!({}));
+                }
+            }
+            categories
+                .get_mut("quick")
+                .and_then(Value::as_object_mut)
+                .unwrap()
+                .insert("model".into(), Value::String(value.to_string()));
         }
     }
+
     let text = serde_json::to_string_pretty(&root).map_err(|e| format!("序列化失败: {e}"))?;
     atomic_write(&path, &format!("{text}\n"))?;
     Ok(path)
@@ -460,7 +570,7 @@ pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, Strin
     .to_string_lossy()
     .into_owned();
 
-    let (model, small_model) = read_defaults(&paths);
+    let (model, defaults_small_model) = read_defaults(&paths);
 
     // OmO 另有一个固定 model_profile（headless / desktop 会话会覆盖默认模型），
     // 由前端在保存默认模型时提示是否同步。
@@ -477,6 +587,28 @@ pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, Strin
         None => (None, None),
     };
 
+    // 第二模型槽位按 agent 映射：OMP=modelRoles.fast，OmO=categories.quick.model，Pi 无。
+    let omo_quick = if agent == ModelConfigAgent::Omo {
+        read_omo_quick_model()
+    } else {
+        None
+    };
+    let (small_model, small_model_key) = match agent {
+        ModelConfigAgent::OhMyPi => (defaults_small_model, Some("modelRoles.fast".to_string())),
+        ModelConfigAgent::Omo => {
+            let key = omo_quick
+                .as_ref()
+                .map(|(key, _)| *key)
+                .unwrap_or(OMO_DEFAULT_HARNESS_KEY);
+            (
+                omo_quick.as_ref().map(|(_, value)| value.clone()),
+                Some(format!("{key}.categories.quick.model")),
+            )
+        }
+        _ => (None, None),
+    };
+    let small_model_supported = small_model_key.is_some();
+
     let not_installed_view = || AgentModelConfigView {
         agent: agent.id().into(),
         config_path: display_path(&paths.models),
@@ -485,9 +617,10 @@ pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, Strin
         is_jsonc: false,
         installed: false,
         defaults_supported: true,
-        small_model_supported: false,
+        small_model_supported,
         model: None,
         small_model: None,
+        small_model_key: small_model_key.clone(),
         omo_model_profile: omo_model_profile.clone(),
         omo_profile_path: omo_profile_path.clone(),
         enabled_providers: None,
@@ -539,9 +672,10 @@ pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, Strin
         is_jsonc: false,
         installed: true,
         defaults_supported: true,
-        small_model_supported: false,
+        small_model_supported,
         model,
         small_model,
+        small_model_key,
         omo_model_profile,
         omo_profile_path,
         enabled_providers: None,
@@ -917,35 +1051,48 @@ pub fn set_defaults(
                 serde_json::to_string_pretty(&root).map_err(|e| format!("序列化失败: {e}"))?;
             atomic_write(sp, &format!("{text}\n"))?;
 
-            let mut message = "默认模型已更新".to_string();
+            // OmO 的辅助模型统一写 omo.jsonc：model_profile（显式勾选）与
+            // categories.quick.model（small_model 槽位），一次读-改-写完成。
+            let mut profile_update: Option<String> = None;
+            let mut skip_profile_reason: Option<&str> = None;
             if agent == ModelConfigAgent::Omo && payload.sync_omo_model_profile == Some(true) {
                 match payload.model.as_deref() {
-                    Some(m) if m.is_empty() => match write_omo_model_profile(None) {
-                        Ok(path) => {
-                            message = format!(
-                                "默认模型已更新，并已移除 {} 的 model_profile",
-                                path.display()
-                            );
-                        }
-                        Err(e) => {
-                            message = format!("默认模型已更新；同步 model_profile 失败：{e}");
-                        }
-                    },
-                    Some(m) if m.contains('/') => match write_omo_model_profile(Some(m)) {
-                        Ok(path) => {
-                            message = format!("默认模型已更新，并已同步 {}", path.display());
-                        }
-                        Err(e) => {
-                            message = format!("默认模型已更新；同步 model_profile 失败：{e}");
-                        }
-                    },
-                    Some(_) => {
-                        message =
-                            "默认模型已更新；未同步 model_profile：模型需为 provider/model 形式"
-                                .into();
-                    }
+                    Some(m) if m.is_empty() => profile_update = Some(String::new()),
+                    Some(m) if m.contains('/') => profile_update = Some(m.to_string()),
+                    Some(_) => skip_profile_reason = Some("模型需为 provider/model 形式"),
                     None => {}
                 }
+            }
+            let quick_update = if agent == ModelConfigAgent::Omo {
+                payload.small_model.clone()
+            } else {
+                None
+            };
+            let synced_profile = profile_update.is_some();
+            let synced_quick = quick_update.is_some();
+            let mut message = "默认模型已更新".to_string();
+            if synced_profile || synced_quick {
+                match write_omo_aux(profile_update.as_deref(), quick_update.as_deref()) {
+                    Ok(path) => {
+                        let mut items = Vec::new();
+                        if synced_profile {
+                            items.push("model_profile");
+                        }
+                        if synced_quick {
+                            items.push("categories.quick.model");
+                        }
+                        message = format!(
+                            "默认模型已更新，并已同步 {} 的 {}",
+                            path.display(),
+                            items.join(" 与 ")
+                        );
+                    }
+                    Err(e) => {
+                        message = format!("默认模型已更新；同步 omo.jsonc 失败：{e}");
+                    }
+                }
+            } else if let Some(reason) = skip_profile_reason {
+                message = format!("默认模型已更新；未同步 model_profile：{reason}");
             }
             Ok(AgentActionResult {
                 ok: true,
@@ -969,9 +1116,9 @@ pub fn set_defaults(
             if !root.is_object() {
                 root = json!({});
             }
-            // payload.model: None=不改动；Some("")=删除 modelRoles.default；
+            // payload.model / small_model: None=不改动；Some("")=删除；
             // 有值时原样写入（模型 id 可含 `/`），保留其它角色与顶层键。
-            if let Some(ref m) = payload.model {
+            if payload.model.is_some() || payload.small_model.is_some() {
                 let obj = root.as_object_mut().unwrap();
                 if !obj
                     .get("modelRoles")
@@ -984,10 +1131,19 @@ pub fn set_defaults(
                     .get_mut("modelRoles")
                     .and_then(|r| r.as_object_mut())
                     .unwrap();
-                if m.is_empty() {
-                    roles.remove("default");
-                } else {
-                    roles.insert("default".into(), Value::String(m.clone()));
+                if let Some(ref m) = payload.model {
+                    if m.is_empty() {
+                        roles.remove("default");
+                    } else {
+                        roles.insert("default".into(), Value::String(m.clone()));
+                    }
+                }
+                if let Some(ref f) = payload.small_model {
+                    if f.is_empty() {
+                        roles.remove("fast");
+                    } else {
+                        roles.insert("fast".into(), Value::String(f.clone()));
+                    }
                 }
             }
             atomic_write_secret(sp, &yaml_text(&root)?)?;
@@ -1060,10 +1216,12 @@ mod tests {
             fs::create_dir_all(&bin).unwrap();
             fs::write(bin.join("pi"), "#!/bin/sh\nexit 0\n").unwrap();
             fs::write(bin.join("omp"), "#!/bin/sh\nexit 0\n").unwrap();
+            fs::write(bin.join("omo"), "#!/bin/sh\nexit 0\n").unwrap();
             #[cfg(windows)]
             {
                 fs::write(bin.join("pi.exe"), "").unwrap();
                 fs::write(bin.join("omp.exe"), "").unwrap();
+                fs::write(bin.join("omo.exe"), "").unwrap();
             }
             let prev_path = std::env::var_os("PATH");
             let new_path = std::env::join_paths(std::iter::once(bin.clone()).chain(
@@ -1430,12 +1588,15 @@ providers:
 
         let view = get_config(ModelConfigAgent::OhMyPi).unwrap();
         assert_eq!(view.model.as_deref(), Some("magpie/magpie-opus"));
+        assert_eq!(view.small_model.as_deref(), Some("magpie/fast"));
+        assert!(view.small_model_supported);
+        assert_eq!(view.small_model_key.as_deref(), Some("modelRoles.fast"));
 
         set_defaults(
             ModelConfigAgent::OhMyPi,
             SetDefaultsPayload {
                 model: Some("magpie/magpie-opus-4".into()),
-                small_model: None,
+                small_model: Some("magpie/fast-2".into()),
                 enabled_providers: None,
                 disabled_providers: None,
                 sync_omo_model_profile: None,
@@ -1449,8 +1610,29 @@ providers:
         );
         assert_eq!(
             raw.pointer("/modelRoles/fast").and_then(|x| x.as_str()),
-            Some("magpie/fast")
+            Some("magpie/fast-2")
         );
+        assert_eq!(raw.get("theme").and_then(|x| x.as_str()), Some("dark"));
+        let view = get_config(ModelConfigAgent::OhMyPi).unwrap();
+        assert_eq!(view.small_model.as_deref(), Some("magpie/fast-2"));
+
+        set_defaults(
+            ModelConfigAgent::OhMyPi,
+            SetDefaultsPayload {
+                model: None,
+                small_model: Some(String::new()),
+                enabled_providers: None,
+                disabled_providers: None,
+                sync_omo_model_profile: None,
+            },
+        )
+        .unwrap();
+        let raw: Value = serde_yaml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(
+            raw.pointer("/modelRoles/default").and_then(|x| x.as_str()),
+            Some("magpie/magpie-opus-4")
+        );
+        assert!(raw.pointer("/modelRoles/fast").is_none());
         assert_eq!(raw.get("theme").and_then(|x| x.as_str()), Some("dark"));
 
         set_defaults(
@@ -1466,12 +1648,263 @@ providers:
         .unwrap();
         let raw: Value = serde_yaml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
         assert!(raw.pointer("/modelRoles/default").is_none());
-        assert_eq!(
-            raw.pointer("/modelRoles/fast").and_then(|x| x.as_str()),
-            Some("magpie/fast")
-        );
+        assert!(raw.pointer("/modelRoles/fast").is_none());
         let view = get_config(ModelConfigAgent::OhMyPi).unwrap();
         assert!(view.model.is_none());
+        assert!(view.small_model.is_none());
+    }
+
+    const OMO_FIXTURE: &str = r#"{
+  // 注释用于验证读取时兼容 JSONC
+  "[native]": {
+    "model_profile": "magpie/opus",
+    "theme": "dark",
+    "categories": {
+      "quick": { "model": "magpie/quick", "reasoning": "low" },
+      "deep-low": { "model": "magpie/deep" }
+    }
+  }
+}"#;
+
+    #[test]
+    fn omo_defaults_quick_category() {
+        let h = TempHome::new(&[".omo/agent"]);
+        let omo = h.path.join(".omo/omo.jsonc");
+        fs::write(&omo, OMO_FIXTURE).unwrap();
+
+        let view = get_config(ModelConfigAgent::Omo).unwrap();
+        assert!(view.installed);
+        assert!(view.small_model_supported);
+        assert_eq!(view.small_model.as_deref(), Some("magpie/quick"));
+        assert_eq!(
+            view.small_model_key.as_deref(),
+            Some("[native].categories.quick.model")
+        );
+        assert_eq!(view.omo_model_profile.as_deref(), Some("magpie/opus"));
+
+        let res = set_defaults(
+            ModelConfigAgent::Omo,
+            SetDefaultsPayload {
+                model: Some("magpie/opus-2".into()),
+                small_model: Some("magpie/quick-2".into()),
+                enabled_providers: None,
+                disabled_providers: None,
+                sync_omo_model_profile: Some(true),
+            },
+        )
+        .unwrap();
+        assert!(res.ok);
+        assert!(res.message.contains("model_profile"));
+        assert!(res.message.contains("categories.quick.model"));
+
+        // 上游优先 settings.jsonc；两者都不存在时 pick_existing 也落到该文件名。
+        let settings: Value =
+            json5::from_str(&fs::read_to_string(h.path.join(".omo/agent/settings.jsonc")).unwrap())
+                .unwrap();
+        assert_eq!(
+            settings.get("defaultProvider").and_then(Value::as_str),
+            Some("magpie")
+        );
+        assert_eq!(
+            settings.get("defaultModel").and_then(Value::as_str),
+            Some("opus-2")
+        );
+
+        let raw: Value = json5::from_str(&fs::read_to_string(&omo).unwrap()).unwrap();
+        assert_eq!(
+            raw.pointer("/[native]/model_profile")
+                .and_then(Value::as_str),
+            Some("magpie/opus-2")
+        );
+        assert_eq!(
+            raw.pointer("/[native]/categories/quick/model")
+                .and_then(Value::as_str),
+            Some("magpie/quick-2")
+        );
+        assert_eq!(
+            raw.pointer("/[native]/categories/quick/reasoning")
+                .and_then(Value::as_str),
+            Some("low")
+        );
+        assert_eq!(
+            raw.pointer("/[native]/categories/deep-low/model")
+                .and_then(Value::as_str),
+            Some("magpie/deep")
+        );
+        assert_eq!(
+            raw.pointer("/[native]/theme").and_then(Value::as_str),
+            Some("dark")
+        );
+
+        // 只清空 quick.model：保留同级字段与其它类别。
+        set_defaults(
+            ModelConfigAgent::Omo,
+            SetDefaultsPayload {
+                model: None,
+                small_model: Some(String::new()),
+                enabled_providers: None,
+                disabled_providers: None,
+                sync_omo_model_profile: Some(false),
+            },
+        )
+        .unwrap();
+        let raw: Value = json5::from_str(&fs::read_to_string(&omo).unwrap()).unwrap();
+        assert!(raw.pointer("/[native]/categories/quick/model").is_none());
+        assert_eq!(
+            raw.pointer("/[native]/categories/quick/reasoning")
+                .and_then(Value::as_str),
+            Some("low")
+        );
+        assert_eq!(
+            raw.pointer("/[native]/model_profile")
+                .and_then(Value::as_str),
+            Some("magpie/opus-2")
+        );
+        let view = get_config(ModelConfigAgent::Omo).unwrap();
+        assert!(view.small_model.is_none());
+    }
+
+    #[test]
+    fn omo_quick_prunes_empty_category() {
+        let h = TempHome::new(&[".omo/agent"]);
+        let omo = h.path.join(".omo/omo.jsonc");
+        fs::write(
+            &omo,
+            r#"{ "[native]": { "categories": { "quick": { "model": "magpie/quick" } } } }"#,
+        )
+        .unwrap();
+
+        set_defaults(
+            ModelConfigAgent::Omo,
+            SetDefaultsPayload {
+                model: None,
+                small_model: Some(String::new()),
+                enabled_providers: None,
+                disabled_providers: None,
+                sync_omo_model_profile: None,
+            },
+        )
+        .unwrap();
+
+        let raw: Value = json5::from_str(&fs::read_to_string(&omo).unwrap()).unwrap();
+        assert!(raw.pointer("/[native]/categories").is_none());
+        assert!(raw.get("[native]").is_some());
+    }
+
+    #[test]
+    fn omo_legacy_senpi_container() {
+        let h = TempHome::new(&[".omo/agent"]);
+        let omo = h.path.join(".omo/omo.jsonc");
+        fs::write(
+            &omo,
+            r#"{ "[senpi]": { "categories": { "quick": { "model": "magpie/quick" } } } }"#,
+        )
+        .unwrap();
+
+        let view = get_config(ModelConfigAgent::Omo).unwrap();
+        assert_eq!(view.small_model.as_deref(), Some("magpie/quick"));
+        assert_eq!(
+            view.small_model_key.as_deref(),
+            Some("[senpi].categories.quick.model")
+        );
+
+        set_defaults(
+            ModelConfigAgent::Omo,
+            SetDefaultsPayload {
+                model: None,
+                small_model: Some("magpie/quick-2".into()),
+                enabled_providers: None,
+                disabled_providers: None,
+                sync_omo_model_profile: None,
+            },
+        )
+        .unwrap();
+
+        let raw: Value = json5::from_str(&fs::read_to_string(&omo).unwrap()).unwrap();
+        assert!(raw.get("[native]").is_none());
+        assert_eq!(
+            raw.pointer("/[senpi]/categories/quick/model")
+                .and_then(Value::as_str),
+            Some("magpie/quick-2")
+        );
+    }
+
+    #[test]
+    fn omo_quick_creates_config_file() {
+        let h = TempHome::new(&[".omo/agent"]);
+        let res = set_defaults(
+            ModelConfigAgent::Omo,
+            SetDefaultsPayload {
+                model: Some("magpie/opus".into()),
+                small_model: Some("magpie/quick".into()),
+                enabled_providers: None,
+                disabled_providers: None,
+                sync_omo_model_profile: None,
+            },
+        )
+        .unwrap();
+        assert!(res.ok);
+        assert!(res.message.contains("categories.quick.model"));
+
+        // 两个候选文件都不存在时，按空配置在标准路径创建并写入 quick。
+        let omo = h.path.join(".omo/omo.jsonc");
+        let raw: Value = json5::from_str(&fs::read_to_string(&omo).unwrap()).unwrap();
+        assert_eq!(
+            raw.pointer("/[native]/categories/quick/model")
+                .and_then(Value::as_str),
+            Some("magpie/quick")
+        );
+
+        let view = get_config(ModelConfigAgent::Omo).unwrap();
+        assert_eq!(view.model.as_deref(), Some("magpie/opus"));
+        assert_eq!(view.small_model.as_deref(), Some("magpie/quick"));
+    }
+
+    #[test]
+    fn omo_aux_rejects_malformed_structures() {
+        let h = TempHome::new(&[".omo/agent"]);
+        let omo = h.path.join(".omo/omo.jsonc");
+        fs::write(
+            &omo,
+            r#"{ "[native]": { "categories": { "quick": "magpie/quick" } } }"#,
+        )
+        .unwrap();
+
+        let res = set_defaults(
+            ModelConfigAgent::Omo,
+            SetDefaultsPayload {
+                model: None,
+                small_model: Some("magpie/quick-2".into()),
+                enabled_providers: None,
+                disabled_providers: None,
+                sync_omo_model_profile: None,
+            },
+        )
+        .unwrap();
+        assert!(res.message.contains("categories.quick 必须是对象"));
+        let raw: Value = json5::from_str(&fs::read_to_string(&omo).unwrap()).unwrap();
+        assert_eq!(
+            raw.pointer("/[native]/categories/quick")
+                .and_then(Value::as_str),
+            Some("magpie/quick")
+        );
+
+        // harness 块本身不是对象时同样拒绝，不覆盖用户已有值。
+        fs::write(&omo, r#"{ "[native]": "oops" }"#).unwrap();
+        let res = set_defaults(
+            ModelConfigAgent::Omo,
+            SetDefaultsPayload {
+                model: None,
+                small_model: Some("magpie/quick".into()),
+                enabled_providers: None,
+                disabled_providers: None,
+                sync_omo_model_profile: None,
+            },
+        )
+        .unwrap();
+        assert!(res.message.contains("[native] 必须是对象"));
+        let raw: Value = json5::from_str(&fs::read_to_string(&omo).unwrap()).unwrap();
+        assert_eq!(raw.get("[native]").and_then(Value::as_str), Some("oops"));
     }
 
     #[test]

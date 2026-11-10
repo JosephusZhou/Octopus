@@ -37,10 +37,16 @@ pub struct AgentModelConfigView {
     pub installed: bool,
     /// 该 agent 是否支持可视化编辑默认模型。
     pub defaults_supported: bool,
-    /// 该 agent 是否支持 small model（如 OpenCode 的 small_model）。
+    /// 该 agent 是否支持可视化编辑第二模型槽位。
     pub small_model_supported: bool,
     pub model: Option<String>,
+    /// 第二模型槽位的当前值；按 agent 映射到各自配置键。
     pub small_model: Option<String>,
+    /// 第二模型槽位对应的配置键；无槽位时为 None。
+    /// opencode=small_model，oh-my-pi=modelRoles.fast，
+    /// omo=`<harness>.categories.quick.model`（harness 为 `[native]` / `native` / `[senpi]`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub small_model_key: Option<String>,
     /// OmO 专用：`omo.jsonc` 中固定 `model_profile` 的当前值（headless / desktop 会话会覆盖默认模型）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub omo_model_profile: Option<String>,
@@ -606,6 +612,7 @@ pub fn get_config() -> Result<AgentModelConfigView, String> {
             small_model_supported: true,
             model: None,
             small_model: None,
+            small_model_key: Some("small_model".into()),
             omo_model_profile: None,
             omo_profile_path: None,
             enabled_providers: None,
@@ -645,6 +652,7 @@ pub fn get_config() -> Result<AgentModelConfigView, String> {
             .get("small_model")
             .and_then(|m| m.as_str())
             .map(|s| s.to_string()),
+        small_model_key: Some("small_model".into()),
         omo_model_profile: None,
         omo_profile_path: None,
         enabled_providers: top_string_list(&root, "enabled_providers"),
@@ -1775,6 +1783,7 @@ mod tests {
         assert!(view.config_exists);
         assert!(view.is_jsonc);
         assert_eq!(view.model.as_deref(), Some("a/b"));
+        assert_eq!(view.small_model_key.as_deref(), Some("small_model"));
         assert!(!view.warnings.is_empty());
 
         set_defaults(SetDefaultsPayload {

@@ -4513,6 +4513,12 @@ button.skill-tag-none:hover {
   color: var(--seed-fg);
   word-break: break-all;
 }
+.oc-defaults-key {
+  font-size: var(--text-xs);
+  color: var(--seed-muted);
+  font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+  word-break: break-all;
+}
 .oc-defaults-path {
   margin-top: 4px;
   font-size: var(--text-xs);
@@ -4612,6 +4618,28 @@ button.skill-tag-none:hover {
   font-size: var(--text-sm);
   color: var(--seed-muted);
   padding: 4px 0 2px;
+}
+.oc-models-collapsed {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+/* 收起态的模型 ID chip：与路由聚合页「已选供应商模型」保持同一视觉。 */
+.oc-model-id-chip {
+  font-size: var(--text-xs);
+  font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+  line-height: 1.4;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--seed-surface-alt);
+  border: 1px solid var(--seed-border);
+  color: var(--seed-primary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.oc-provider-card.is-collapsed .mcp-card-header {
+  margin-bottom: 0;
 }
 .oc-model-list {
   display: flex;
@@ -4896,25 +4924,6 @@ button.skill-tag-none:hover {
   line-height: 1.45;
   resize: vertical;
   min-height: 96px;
-}
-.oc-defaults-suggestions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 4px;
-}
-.oc-suggest-chip {
-  padding: 4px 8px;
-  font-size: var(--text-xs);
-  font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
-  border: 1px solid var(--seed-border);
-  border-radius: 4px;
-  background: var(--seed-surface);
-  color: var(--seed-fg);
-  cursor: pointer;
-}
-.oc-suggest-chip:hover:not(:disabled) {
-  background: var(--seed-hover);
 }
 @media (max-width: 720px) {
   .oc-defaults-bar {
