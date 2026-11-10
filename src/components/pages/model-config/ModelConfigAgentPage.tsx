@@ -1429,38 +1429,6 @@ export function ModelConfigAgentPage({
       <div className="content-body">
         <Toast message={statusMsg} />
 
-        {view && view.installed && (
-          <div className="oc-defaults-bar">
-            <div className="oc-defaults-main">
-              <div className="oc-defaults-row">
-                <span className="oc-defaults-label">默认模型</span>
-                <code className="oc-defaults-value">{view.model || "未设置"}</code>
-              </div>
-              {view.smallModelSupported && (
-                <div className="oc-defaults-row">
-                  <span className="oc-defaults-label">small_model</span>
-                  <code className="oc-defaults-value">{view.smallModel || "未设置"}</code>
-                </div>
-              )}
-              <div className="oc-defaults-path" title={formatDisplayPath(view.configPath)}>
-                {formatDisplayPath(view.configPath)}
-                {view.isJsonc ? " · jsonc" : ""}
-                {!view.configExists ? " · 尚未创建" : ""}
-              </div>
-            </div>
-            {view.defaultsSupported && (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={openDefaults}
-                disabled={busy}
-              >
-                设置默认模型
-              </button>
-            )}
-          </div>
-        )}
-
         {view?.installed && (
           <div className={`oc-catalog-bar ${catalogError ? "is-error" : catalog ? "is-ok" : ""}`}>
             <span>
@@ -1493,6 +1461,45 @@ export function ModelConfigAgentPage({
           </div>
         ) : null}
 
+        {view?.installed && view.providers.length > 0 && (
+          <div className="mcp-summary">
+            共 <strong>{view.providers.length}</strong> 个供应商 ·{" "}
+            <strong>{configuredModelOptions.length}</strong> 个模型
+          </div>
+        )}
+
+        {view && view.installed && (
+          <div className="oc-defaults-bar">
+            <div className="oc-defaults-main">
+              <div className="oc-defaults-row">
+                <span className="oc-defaults-label">默认模型</span>
+                <code className="oc-defaults-value">{view.model || "未设置"}</code>
+              </div>
+              {view.smallModelSupported && (
+                <div className="oc-defaults-row">
+                  <span className="oc-defaults-label">small_model</span>
+                  <code className="oc-defaults-value">{view.smallModel || "未设置"}</code>
+                </div>
+              )}
+              <div className="oc-defaults-path" title={formatDisplayPath(view.configPath)}>
+                {formatDisplayPath(view.configPath)}
+                {view.isJsonc ? " · jsonc" : ""}
+                {!view.configExists ? " · 尚未创建" : ""}
+              </div>
+            </div>
+            {view.defaultsSupported && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={openDefaults}
+                disabled={busy}
+              >
+                设置默认模型
+              </button>
+            )}
+          </div>
+        )}
+
         {loading && !view ? (
           <div className="empty-state">
             <div className="empty-state-text">加载中…</div>
@@ -1514,102 +1521,94 @@ export function ModelConfigAgentPage({
             </button>
           </div>
         ) : (
-          <>
-            <div className="mcp-summary">
-              共 <strong>{view.providers.length}</strong> 个供应商 ·{" "}
-              <strong>{configuredModelOptions.length}</strong> 个模型
-            </div>
-            <div className="oc-provider-list">
-              {view.providers.map((p) => (
-                <div key={p.id} className="mcp-card oc-provider-card">
-                  <div className="mcp-card-header">
-                    <div className="mcp-card-icon">
-                      {(p.name || p.id).slice(0, 2).toUpperCase()}
+          <div className="oc-provider-list">
+            {view.providers.map((p) => (
+              <div key={p.id} className="mcp-card oc-provider-card">
+                <div className="mcp-card-header">
+                  <div className="mcp-card-icon">{(p.name || p.id).slice(0, 2).toUpperCase()}</div>
+                  <div className="mcp-card-main">
+                    <div className="mcp-card-title-row">
+                      <span className="mcp-card-title">{p.name || p.id}</span>
+                      <span className="mcp-type-badge">{p.id}</span>
+                      {p.hasApiKey ? (
+                        <span
+                          className="oc-pill oc-pill-key"
+                          title={apiKeySourceLabel(p.apiKeySource)}
+                        >
+                          <IconKey /> 已配置密钥
+                        </span>
+                      ) : (
+                        <span className="oc-pill">无密钥</span>
+                      )}
                     </div>
-                    <div className="mcp-card-main">
-                      <div className="mcp-card-title-row">
-                        <span className="mcp-card-title">{p.name || p.id}</span>
-                        <span className="mcp-type-badge">{p.id}</span>
-                        {p.hasApiKey ? (
-                          <span
-                            className="oc-pill oc-pill-key"
-                            title={apiKeySourceLabel(p.apiKeySource)}
-                          >
-                            <IconKey /> 已配置密钥
-                          </span>
-                        ) : (
-                          <span className="oc-pill">无密钥</span>
-                        )}
-                      </div>
-                      <div className="oc-provider-meta">
-                        {p.npm ? <span>npm: {p.npm}</span> : null}
-                        {p.baseUrl ? (
-                          <span className="oc-provider-url" title={p.baseUrl}>
-                            {p.baseUrl}
-                          </span>
-                        ) : null}
-                        {p.api ? (
-                          <span className="oc-provider-url" title={p.api}>
-                            {!isOpenCode ? piApiLabel(p.api) : p.api}
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                    <div className="mcp-card-actions">
-                      <button
-                        type="button"
-                        className="btn-icon-action mcp-card-action"
-                        data-tooltip="添加模型"
-                        onClick={() => openAddModel(p.id)}
-                      >
-                        <IconPlus />
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-icon-action mcp-card-action"
-                        data-tooltip="编辑"
-                        onClick={() => void openEditProvider(p)}
-                      >
-                        <IconEdit />
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-delete mcp-card-action"
-                        data-tooltip="删除"
-                        onClick={() => {
-                          setDeleteAuthToo(true);
-                          setDeleteProvider(p);
-                        }}
-                      >
-                        <IconTrash />
-                      </button>
+                    <div className="oc-provider-meta">
+                      {p.npm ? <span>npm: {p.npm}</span> : null}
+                      {p.baseUrl ? (
+                        <span className="oc-provider-url" title={p.baseUrl}>
+                          {p.baseUrl}
+                        </span>
+                      ) : null}
+                      {p.api ? (
+                        <span className="oc-provider-url" title={p.api}>
+                          {!isOpenCode ? piApiLabel(p.api) : p.api}
+                        </span>
+                      ) : null}
                     </div>
                   </div>
-
-                  {p.models.length === 0 ? (
-                    <div className="oc-models-empty">尚无模型，点击 + 添加</div>
-                  ) : (
-                    <div className="oc-model-list">
-                      {p.models.map((m) => {
-                        const ref = modelRef(p.id, m.id);
-                        return (
-                          <ModelChip
-                            key={m.id}
-                            providerId={p.id}
-                            model={m}
-                            isDefault={view.model === ref}
-                            isSmall={view.smallModel === ref}
-                            onEdit={() => openEditModel(p.id, m)}
-                            onDelete={() => setDeleteModelTarget({ providerId: p.id, model: m })}
-                          />
-                        );
-                      })}
-                    </div>
-                  )}
+                  <div className="mcp-card-actions">
+                    <button
+                      type="button"
+                      className="btn-icon-action mcp-card-action"
+                      data-tooltip="添加模型"
+                      onClick={() => openAddModel(p.id)}
+                    >
+                      <IconPlus />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-icon-action mcp-card-action"
+                      data-tooltip="编辑"
+                      onClick={() => void openEditProvider(p)}
+                    >
+                      <IconEdit />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-delete mcp-card-action"
+                      data-tooltip="删除"
+                      onClick={() => {
+                        setDeleteAuthToo(true);
+                        setDeleteProvider(p);
+                      }}
+                    >
+                      <IconTrash />
+                    </button>
+                  </div>
                 </div>
-              ))}
-            </div>
-          </>
+
+                {p.models.length === 0 ? (
+                  <div className="oc-models-empty">尚无模型，点击 + 添加</div>
+                ) : (
+                  <div className="oc-model-list">
+                    {p.models.map((m) => {
+                      const ref = modelRef(p.id, m.id);
+                      return (
+                        <ModelChip
+                          key={m.id}
+                          providerId={p.id}
+                          model={m}
+                          isDefault={view.model === ref}
+                          isSmall={view.smallModel === ref}
+                          onEdit={() => openEditModel(p.id, m)}
+                          onDelete={() => setDeleteModelTarget({ providerId: p.id, model: m })}
+                        />
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         )}
       </div>
 
