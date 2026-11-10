@@ -62,6 +62,8 @@ export const AGENT_PROJECT_INFOS: AgentProjectInfo[] = [
   { name: "codex", displayName: "Codex", rootFile: "AGENTS.md", configDir: ".codex" },
   { name: "antigravity", displayName: "Antigravity", rootFile: null, configDir: ".agents" },
   { name: "workbuddy", displayName: "WorkBuddy", rootFile: "AGENTS.md", configDir: ".workbuddy" },
+  { name: "trae-cn", displayName: "TRAE CN", rootFile: "AGENTS.md", configDir: ".trae" },
+  { name: "qoder-cn", displayName: "Qoder CN", rootFile: "AGENTS.md", configDir: ".qoder" },
   { name: "opencode", displayName: "OpenCode", rootFile: "AGENTS.md", configDir: ".opencode" },
   { name: "pi", displayName: "Pi", rootFile: "AGENTS.md", configDir: ".pi" },
   { name: "oh-my-pi", displayName: "Oh-My-Pi", rootFile: "AGENTS.md", configDir: ".omp" },

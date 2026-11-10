@@ -2057,6 +2057,28 @@ a[href]:focus-visible {
   border-radius: var(--seed-radius-md);
   display: block;
 }
+/* 单色 Agent 图标：浅色主题用黑色，深色主题用白色；两套资源同时渲染，按主题只显示其一。
+   选择器需带 :root，才能盖过各容器里 `.xxx img { display: block }` 的规则。 */
+:root .agent-icon-light {
+  display: block;
+}
+:root .agent-icon-dark {
+  display: none;
+}
+:root[data-theme="dark"] .agent-icon-light {
+  display: none;
+}
+:root[data-theme="dark"] .agent-icon-dark {
+  display: block;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .agent-icon-light {
+    display: none;
+  }
+  :root:not([data-theme="light"]) .agent-icon-dark {
+    display: block;
+  }
+}
 .agent-name {
   font-size: var(--text-base);
   font-weight: 500;

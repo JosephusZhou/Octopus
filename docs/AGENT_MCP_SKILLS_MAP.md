@@ -1,17 +1,19 @@
 # AgentBuddy — 各 Agent MCP / Skills 配置方案
 
 > **范围**：macOS / Windows 全局配置 + 项目级配置（与当前代码一致）
-> **修订日期**：2026-11-06（v5）
+> **修订日期**：2026-11-10（v7）
 > **目的**：作为 `agents.rs` / `mcp_config.rs` / `skills.rs` / `project_config.rs`
 > 的**人类可读 mirror**，说明每个 Agent 的路径、方言、读写策略。
 >
 > **状态**：除明确标注「已声明，未启用」的条目外**全部已实现**——本文不是方案/研究稿，
-> 而是当前落盘代码的规格说明（`omo` 已支持全局 MCP / Skills、项目级骨架与模型配置，见 §5.9）。
+> 而是当前落盘代码的规格说明（`omo` 已支持全局 MCP / Skills、项目级骨架与模型配置，见 §5.9；
+> `trae-cn` / `qoder-cn` 见 §12）。
 > 改 agents 路径或方言时，**先改 `agents.rs`**，再同步本文。
 >
 > **修订摘要（相对 v3 2026-08-14）**：
-> - Agent 注册表为 9 个：`codex` / `claude-code` / `claude-desktop` / `opencode` /
->   `antigravity` / `workbuddy` / `pi` / `oh-my-pi` / `omo`（历史下线的 agent 由启动时配置升级统一清理残留）
+> - Agent 注册表为 11 个：`claude-code` / `claude-desktop` / `codex` / `antigravity` /
+>   `workbuddy` / `trae-cn` / `qoder-cn` / `opencode` / `pi` / `oh-my-pi` / `omo`
+>   （历史下线的 agent 由启动时配置升级统一清理残留）
 > - McpPath 移除 `CodebuddyMcp` 变体
 > - 模型配置后端保留 OpenCode / Pi 两个通用后端（`opencode_config` / `pi_model_config`），
 >   `pi_model_config` 同时承载 Pi、Oh-My-Pi 与 OmO
@@ -26,6 +28,9 @@
 >   `mcp_managed: true`、`skills_supported: true`，不含版本探测/门槛、安装方式识别或升级指引（路径与上游依据见 §5.9）
 > - OMP 路径按官方仓库复核：原生项目 skills 为 `.omp/skills`，本应用统一复用 `.agents/skills`；
 >   最新 npm 版本 `@oh-my-pi/pi-coding-agent@18.17.0`（2026-11-06）
+> - 2026-11-10：新增 §12「TRAE CN / Qoder CN」——注册表、全局 MCP / Skills / 提示词、
+>   项目级骨架与项目 MCP 均已实现（v0.7.0）；TRAE 的全局 MCP 使用新增的
+>   `McpPath::AppUserData` 解析到平台应用数据目录。
 
 ---
 
@@ -73,7 +78,7 @@
 |---------|--------|----------|------------|
 | `TomlMcpServers` | `[mcp_servers.*]` | TOML | `codex` |
 | `ClaudeJsonUser` | `mcpServers` | JSON | `claude-code`（独立方言，因为文件位置特殊：`~/.claude.json` 而非 `~/.claude/*.json`） |
-| `JsonMcpServers` | `mcpServers` | JSON / JSONC（按 spec） | `claude-desktop` / `workbuddy` / `pi` / `oh-my-pi` / `omo` |
+| `JsonMcpServers` | `mcpServers` | JSON / JSONC（按 spec） | `claude-desktop` / `workbuddy` / `trae-cn` / `qoder-cn` / `pi` / `oh-my-pi` / `omo` |
 | `JsonMcp` | `mcp`（**不是** `mcpServers`） | JSON / JSONC（`json5` 解析） | `opencode` |
 | `JsonAntigravity` | `mcpServers`，**仅写 stdio**（远程 `serverUrl` 不建模） | JSON | `antigravity`（闭源 Google App/IDE/CLI，非开源 gcli） |
 
@@ -81,9 +86,13 @@
 
 | variant | 含义 | 用到 |
 |---------|------|------|
-| `Fixed(&'static str)` | 相对用户主目录的固定路径，如 `.codex/config.toml` | `codex` / `claude-code` / `antigravity` / `workbuddy` / `pi` / `oh-my-pi` / `omo` |
+| `Fixed(&'static str)` | 相对用户主目录的固定路径，如 `.codex/config.toml` | `codex` / `claude-code` / `antigravity` / `workbuddy` / `qoder-cn` / `pi` / `oh-my-pi` / `omo` |
 | `OpencodeConfig` | `~/.config/opencode/opencode.{jsonc,json}`（存在优先，缺省 `.json`） | `opencode` |
 | `ClaudeDesktopScan` | `~/Library/Application Support` 下扫 `claude_desktop_config.json` | `claude-desktop` |
+| `AppUserData { product, file }` | 平台应用数据目录下的产品子目录：macOS `~/Library/Application Support/<product>/<file>`、Windows `%APPDATA%\<product>\<file>`、Linux `$XDG_CONFIG_HOME/<product>/<file>`（回退 `~/.config`） | `trae-cn`（`Trae CN/User/mcp.json`） |
+
+> `AppUserData` 的实际解析由 `platform::os_config_dir()` 提供基目录，MCP 读写、打开配置、
+> 备份收集都复用同一函数，不各自拼平台分支。
 
 ### 3.3 Skills 根（来自 `agents::skills_roots`）
 
@@ -95,6 +104,8 @@
 | `opencode` | `~/.config/opencode/skills` | ✅ |
 | `antigravity` | `~/.gemini/config/skills`（主）, `~/.gemini/antigravity-cli/skills`（CLI 根，兼容扫描） | ✅ |
 | `workbuddy` | `~/.workbuddy/skills`（官方文档：用户级路径） | ✅ |
+| `trae-cn` | `~/.trae-cn/skills` | ✅ |
+| `qoder-cn` | `~/.qoder-cn/skills` | ✅ |
 | `pi` | `~/.pi/agent/skills` | ✅ |
 | `oh-my-pi` | `~/.omp/agent/skills` | ✅ |
 | `omo` | `~/.omo/agent/skills` | ✅ |
@@ -122,6 +133,8 @@
 | `opencode` | `~/.config/opencode/opencode.{jsonc,json}` | `JsonMcp` | `~/.config/opencode/skills` |
 | `antigravity` | `~/.gemini/config/mcp_config.json` | `JsonAntigravity` | `~/.gemini/config/skills` + `~/.gemini/antigravity-cli/skills` |
 | `workbuddy` | `~/.workbuddy/mcp.json`（无点前缀） | `JsonMcpServers` | `~/.workbuddy/skills` |
+| `trae-cn` | `<应用数据>/Trae CN/User/mcp.json` | `JsonMcpServers` | `~/.trae-cn/skills` |
+| `qoder-cn` | `~/.qoder-cn/settings.json` 顶层 `mcpServers` | `JsonMcpServers` | `~/.qoder-cn/skills` |
 | `pi` | `~/.pi/agent/mcp.json`（内置 builtin:mcp） | `JsonMcpServers` | `~/.pi/agent/skills` |
 | `oh-my-pi` | `~/.omp/agent/mcp.json` | `JsonMcpServers` | `~/.omp/agent/skills` |
 | `omo` | `~/.omo/agent/mcp.json` | `JsonMcpServers` | `~/.omo/agent/skills` |
@@ -540,6 +553,8 @@ if removeFromAgentConfigs:
 | `opencode` | `opencode.json` | `JsonMcp` | ❌（兼容 `.agents/skills`） |
 | `antigravity` | `.agents/mcp_config.json`（不建 `.gemini`） | `JsonAntigravity` | ❌（原生 `.agents/skills`） |
 | `workbuddy` | `.workbuddy/mcp.json` | `JsonMcpServers` | ✅（`.workbuddy/skills`） |
+| `trae-cn` | `.trae/mcp.json`（需在客户端启用「项目级 MCP」） | `JsonMcpServers` | ❌（原生 `.trae/skills`，本应用统一复用 `.agents/skills`） |
+| `qoder-cn` | `.qoder/settings.json`（不读项目根 `.mcp.json`） | `JsonMcpServers` | ❌（官方支持 `.agents/skills`） |
 | `pi` | `.pi/mcp.json`（单层，无 `agent` 层） | `JsonMcpServers` | ❌（兼容 `.agents/skills`，不建 `.pi/skills`） |
 | `oh-my-pi` | `.omp/mcp.json`（单层，无 `agent` 层） | `JsonMcpServers` | ❌（原生 `.omp/skills`，本应用统一复用 `.agents/skills`） |
 | `omo` | `.omo/mcp.json` | `JsonMcpServers` | ❌（原生 `.agents/skills`，本应用统一复用） |
@@ -555,7 +570,8 @@ if removeFromAgentConfigs:
 - 每个 agent 的 `skills_own_dir` 布尔决定自建 skills 目录：
   - **true**（`claude-code` / `workbuddy`）：Full / Symlink 模式勾选 skills 时把
     `<config_dir>/skills` 相对链接到 `.agents/skills`；
-  - **false**（`codex` / `opencode` / `antigravity` / `pi` / `oh-my-pi` / `omo`）：直接依赖通用
+  - **false**（`codex` / `antigravity` / `trae-cn` / `qoder-cn` / `opencode` / `pi` / `oh-my-pi` /
+    `omo`）：直接依赖通用
     `.agents/skills`，不建不链自己的 skills 目录。
 - 骨架范围（2026-10-22 起收敛）：只创建 `AGENTS.md`、skills（`.agents/skills` 及 `skills_own_dir` 链接）、
   项目 MCP 文件三类，**不创建** `commands` / `rules` / `agents`（含 opencode 的 `plugins` / `tools`）
@@ -643,19 +659,19 @@ if removeFromAgentConfigs:
 
 ## 11. 结论（可执行摘要）
 
-1. **5 种 MCP 方言**覆盖 9 个注册 Agent：`TomlMcpServers` / `ClaudeJsonUser` / `JsonMcpServers` /
+1. **5 种 MCP 方言**覆盖 11 个注册 Agent：`TomlMcpServers` / `ClaudeJsonUser` / `JsonMcpServers` /
    `JsonMcp` / `JsonAntigravity`（其中 `ClaudeJsonUser` 为 Claude Code 独立方言，因其文件位置
-   `~/.claude.json` 特殊）；9 个均可写全局 MCP。
-2. **9 个 Agent**（2026-11）：`codex` / `claude-code` / `claude-desktop` / `opencode` /
-   `antigravity` / `workbuddy` / `pi` / `oh-my-pi` / `omo`。历史下线的 agent 由启动时配置升级统一清理残留
-   （0.3.0 只清理 `codebuddy` / `codebuddy-cn`，不再清理 OMP）。
+   `~/.claude.json` 特殊）；11 个均可写全局 MCP。
+2. **11 个 Agent**（2026-11）：`claude-code` / `claude-desktop` / `codex` / `antigravity` /
+   `workbuddy` / `trae-cn` / `qoder-cn` / `opencode` / `pi` / `oh-my-pi` / `omo`。历史下线的
+   agent 由启动时配置升级统一清理残留（0.3.0 只清理 `codebuddy` / `codebuddy-cn`，不再清理 OMP）。
 3. **Skills** 主流是 `<root>/skills/<name>/SKILL.md`，项目优先复用通用 `.agents/skills`；
    Claude Desktop 无本地文件 skills/MCP（账户同步）；Codex 全局 skills 收敛为 `~/.codex/skills`（扫描与写入一致）。
 4. **全局应用**默认只写用户级文件；Claude Code 写 `~/.claude.json` 顶层 `mcpServers`，
    Antigravity 写 `~/.gemini/config/mcp_config.json`，**仅 stdio**，远程不建模。
-5. **项目级** MCP 由 `project_config::AGENT_SPECS` 决定落地路径；目前注册 8 个 agent，均有项目级
-   MCP 落点（claude-code / workbuddy / codex / opencode / antigravity / pi / oh-my-pi / omo）；
-   OmO 项目级 MCP 写 `.omo/mcp.json`。
+5. **项目级** MCP 由 `project_config::AGENT_SPECS` 决定落地路径；目前注册 10 个 agent，均有项目级
+   MCP 落点（claude-code / codex / antigravity / workbuddy / trae-cn / qoder-cn / opencode / pi /
+   oh-my-pi / omo）；OmO 项目级 MCP 写 `.omo/mcp.json`，Qoder CN 写 `.qoder/settings.json`。
 6. **OpenCode** 用 `mcp` 顶层键 + `local`/`remote`，不是 `mcpServers`；JSONC 用 `json5`。
 7. **Pi** 内置 `builtin:mcp`（不再依赖 pi-mcp-adapter），用 `JsonMcpServers` 方言，仅 stdio /
    streamable HTTP，拒绝 SSE（OmO 作为 Pi 衍生同样拦截）；模型配置经通用 `agent_model_config` + 各自后端
@@ -672,3 +688,55 @@ if removeFromAgentConfigs:
    `.omo/mcp.json`（`mcpServers`）；不提供版本探测/门槛、安装方式识别或升级指引。
 10. **改动路径**：改 agents / 方言 → 先改 `agents.rs` → 同步本文件 + `AGENT_PROJECT_INFOS`
     （前端 mirror）。
+
+---
+
+## 12. TRAE CN / Qoder CN（已实现）
+
+> 路径依据见 [`research/agent-config-survey-2026-10.md`](research/agent-config-survey-2026-10.md) §12 / §13。
+
+### 12.1 注册表
+
+| sniff `name` | display_name | 安装发现 | 配置根 | 全局 MCP | 方言 | 全局 Skills | 提示词 |
+|---|---|---|---|---|---|---|---|
+| `trae-cn` | TRAE CN | `/Applications/Trae CN.app`；Windows `%LOCALAPPDATA%\Programs\Trae CN\Trae CN.exe`；PATH `traecli` | `~/.trae-cn` | `<应用数据>/Trae CN/User/mcp.json` | `JsonMcpServers` | `~/.trae-cn/skills` | **None**（全局规则是目录 `~/.trae-cn/user_rules`，不做 AGENTS.md 占位） |
+| `qoder-cn` | Qoder CN | `/Applications/Qoder CN.app`；Windows `%LOCALAPPDATA%\Programs\Qoder CN\Qoder CN.exe`【待核实】；PATH `qodercn` | `~/.qoder-cn` | `~/.qoder-cn/settings.json` 顶层 `mcpServers` | `JsonMcpServers` | `~/.qoder-cn/skills` | `AGENTS.md` → `~/.qoder-cn/AGENTS.md` |
+
+### 12.2 `McpPath::AppUserData` 变体
+
+```rust
+enum McpPath {
+    // ...现有变体
+    /// 平台应用数据目录下的产品子目录，如 ("Trae CN", "User/mcp.json")
+    AppUserData { product: &'static str, file: &'static str },
+}
+```
+
+- macOS：`~/Library/Application Support/<product>/<file>`
+- Windows：`%APPDATA%\<product>\<file>`
+- Linux：`$XDG_CONFIG_HOME/<product>/<file>`，回退 `~/.config/<product>/<file>`【待核实】
+- `agent_open::open_targets` 与 `backup` 必须复用同一解析函数，不得各自拼平台分支。
+
+### 12.3 项目级落点（`project_config::AGENT_SPECS`）
+
+| `name` | root_file | config_dir | skills_own_dir | 项目 MCP | 方言 |
+|---|---|---|---|---|---|
+| `trae-cn` | `AGENTS.md` | `.trae` | false（复用 `.agents/skills`；原生 `.trae/skills`） | `.trae/mcp.json` | `JsonMcpServers` |
+| `qoder-cn` | `AGENTS.md` | `.qoder` | false（复用 `.agents/skills`） | `.qoder/settings.json` | `JsonMcpServers` |
+
+Qoder CN 只写 `.qoder/settings.json`：有效设置按 user `~/.qoder-cn/settings.json` → project
+`.qoder/settings.json` → local `.qoder/settings.local.json` 合并，`mcpServers` 为浅合并
+（同名整条覆盖，不同名共存）。项目根 `.mcp.json` 不在该链内（`Qoder CN.app` 0.5.7 `app.asar`
+只读核对），因此与其它 Agent 的 `.mcp.json` 互不冲突；未来版本若新增导入需重新核实。
+
+### 12.4 前端与备份
+
+- 图标：`public/agent-icons/trae-cn.svg`、`qoder-cn.svg`，并加入 `KNOWN_AGENTS`。两者与
+  `opencode` / `pi` / `oh-my-pi` / `omo` 同属单色图标（`MONO_AGENTS`），深色主题用白色变体
+  `<name>-dark.svg`，由 CSS 按主题切换。
+- 项目配置镜像：`AGENT_PROJECT_INFOS` 增加两条（`configDir` / `rootFile` 与 §12.3 一致）。
+- 备份：`build_generic_agent_unit` 已通过 `resolve_mcp_path` 收集 MCP 文件，TRAE CN 的应用数据
+  MCP 会随 `AppUserData` 解析自动纳入；配置目录与 Skills 由 `config_paths` / `skills_roots` 驱动。
+  无需新增专用收集代码，但必须补测试确认。
+- 明确排除：`~/.trae-cn/mcps/`（内置工具元数据）、`~/.qoder-cn/mcp-router.json`（运行时路由状态，
+  含本机地址与凭据），不展示、不备份、不读取内容。

@@ -28,6 +28,11 @@ pub enum McpPath {
     OpencodeConfig,
     /// Claude Desktop: 在 `~/Library/Application Support` 下扫描。
     ClaudeDesktopScan,
+    /// 平台应用数据目录下的产品子目录，如 `("Trae CN", "User/mcp.json")`。
+    AppUserData {
+        product: &'static str,
+        file: &'static str,
+    },
 }
 
 /// 单个 agent 的 MCP 映射。
@@ -161,6 +166,36 @@ pub fn windows_bin_candidates(spec: &AgentSpec) -> Vec<std::path::PathBuf> {
             push(
                 &mut out,
                 windows_env_path("LOCALAPPDATA", "Programs/WorkBuddy/WorkBuddy.exe"),
+            );
+        }
+        "trae-cn" => {
+            push(
+                &mut out,
+                windows_env_path("LOCALAPPDATA", "Programs/Trae CN"),
+            );
+            push(
+                &mut out,
+                windows_env_path("LOCALAPPDATA", "Programs/Trae CN/Trae CN.exe"),
+            );
+            push(&mut out, windows_env_path("PROGRAMFILES", "Trae CN"));
+            push(
+                &mut out,
+                windows_env_path("PROGRAMFILES", "Trae CN/Trae CN.exe"),
+            );
+        }
+        "qoder-cn" => {
+            push(
+                &mut out,
+                windows_env_path("LOCALAPPDATA", "Programs/Qoder CN"),
+            );
+            push(
+                &mut out,
+                windows_env_path("LOCALAPPDATA", "Programs/Qoder CN/Qoder CN.exe"),
+            );
+            push(&mut out, windows_env_path("PROGRAMFILES", "Qoder CN"));
+            push(
+                &mut out,
+                windows_env_path("PROGRAMFILES", "Qoder CN/Qoder CN.exe"),
             );
         }
         "omo" => {
@@ -297,7 +332,54 @@ static AGENTS: &[AgentSpec] = &[
         prompt_file: Some("AGENTS.md"),
         shared_root: None,
     },
-    // 6. OpenCode（CLI + App，共享配置）
+    // 6. TRAE CN（字节跳动国内版）
+    // 全局 MCP 不在 `~/.trae-cn`，而是 IDE 用户数据目录 `<应用数据>/Trae CN/User/mcp.json`；
+    // 全局规则是目录 `~/.trae-cn/user_rules`，没有单一全局 AGENTS.md，故不接入提示词编辑。
+    AgentSpec {
+        name: "trae-cn",
+        display_name: "TRAE CN",
+        icon: "Tc",
+        bin_paths: &["/Applications/Trae CN.app"],
+        search_names: &["traecli"],
+        config_paths: &["~/.trae-cn"],
+        scan_app_support: false,
+        mcp: McpSpec {
+            dialect: McpDialect::JsonMcpServers,
+            path: McpPath::AppUserData {
+                product: "Trae CN",
+                file: "User/mcp.json",
+            },
+            jsonc: false,
+        },
+        mcp_managed: true,
+        skills_roots: &["~/.trae-cn/skills"],
+        skills_supported: true,
+        prompt_file: None,
+        shared_root: None,
+    },
+    // 7. Qoder CN（阿里国内版）
+    // 全局 MCP / Skills / 提示词均在 `~/.qoder-cn`；项目 MCP 写 `.qoder/settings.json`
+    // （有效设置为 user → project → local 浅合并，不读项目根 `.mcp.json`）。
+    AgentSpec {
+        name: "qoder-cn",
+        display_name: "Qoder CN",
+        icon: "Qc",
+        bin_paths: &["/Applications/Qoder CN.app"],
+        search_names: &["qodercn"],
+        config_paths: &["~/.qoder-cn"],
+        scan_app_support: false,
+        mcp: McpSpec {
+            dialect: McpDialect::JsonMcpServers,
+            path: McpPath::Fixed(".qoder-cn/settings.json"),
+            jsonc: false,
+        },
+        mcp_managed: true,
+        skills_roots: &["~/.qoder-cn/skills"],
+        skills_supported: true,
+        prompt_file: Some("AGENTS.md"),
+        shared_root: None,
+    },
+    // 8. OpenCode（CLI + App，共享配置）
     AgentSpec {
         name: "opencode",
         display_name: "OpenCode",
@@ -322,7 +404,7 @@ static AGENTS: &[AgentSpec] = &[
         prompt_file: Some("AGENTS.md"),
         shared_root: None,
     },
-    // 7. Pi（earendil-works/pi，CLI-only）
+    // 9. Pi（earendil-works/pi，CLI-only）
     // MCP 内置：0.99.0 起内置扩展 `builtin:mcp`（1.x 默认开启），直接读取
     // `~/.pi/agent/mcp.json`（标准 mcpServers）；仅支持 stdio 与 streamable HTTP，拒绝 legacy SSE。
     AgentSpec {
@@ -348,7 +430,7 @@ static AGENTS: &[AgentSpec] = &[
         prompt_file: Some("AGENTS.md"),
         shared_root: None,
     },
-    // 8. Oh-My-Pi（can1357/oh-my-pi，CLI `omp`，Pi 的全功能 fork）
+    // 10. Oh-My-Pi（can1357/oh-my-pi，CLI `omp`，Pi 的全功能 fork）
     // 全局 MCP：内置 `mcp.json`（标准 mcpServers），支持 stdio / http / sse。
     AgentSpec {
         name: "oh-my-pi",
@@ -375,7 +457,7 @@ static AGENTS: &[AgentSpec] = &[
         prompt_file: Some("agent/AGENTS.md"),
         shared_root: None,
     },
-    // 9. OmO Native（oh-my-openagent 独立 `omo` 命令，内置 senpi 引擎）
+    // 11. OmO Native（oh-my-openagent 独立 `omo` 命令，内置 senpi 引擎）
     // 注册身份、安装发现、主配置打开，全局 MCP / Skills / 提示词写入，以及项目级骨架与
     // 模型配置（`agent_model_config` → `pi_model_config`）。
     AgentSpec {

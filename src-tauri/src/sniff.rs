@@ -275,6 +275,13 @@ mod tests {
     }
 
     #[test]
+    fn cn_agents_are_registered() {
+        let names: Vec<&str> = crate::agents::agents().iter().map(|a| a.name).collect();
+        assert!(names.contains(&"trae-cn"));
+        assert!(names.contains(&"qoder-cn"));
+    }
+
+    #[test]
     fn cmux_shim_dirs_are_skipped() {
         // Real cmux layout: $TMPDIR/cmux-cli-shims/<uuid> (note the double slash
         // cmux emits from `$TMPDIR` already ending in `/`).

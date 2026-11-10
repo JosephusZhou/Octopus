@@ -144,6 +144,38 @@ static AGENT_SPECS: &[AgentProjectSpec] = &[
         }),
     },
     AgentProjectSpec {
+        name: "trae-cn",
+        // TRAE 可导入项目根 AGENTS.md；原生 skills 位 `.trae/skills` 由本应用统一收敛到
+        // `.agents/skills`。项目 MCP 需在客户端启用「项目级 MCP」后加载。
+        root_file: Some("AGENTS.md"),
+        config_dir: ".trae",
+        full_sub_dirs: &[],
+        shared_sub_dirs: &[],
+        config_files: &[],
+        skills_own_dir: false,
+        mcp: Some(ProjectMcpSpec {
+            file: ".trae/mcp.json",
+            dialect: McpDialect::JsonMcpServers,
+            jsonc: false,
+        }),
+    },
+    AgentProjectSpec {
+        name: "qoder-cn",
+        // 项目 MCP 只写 `.qoder/settings.json`；Qoder 有效设置为 user → project → local
+        // 浅合并，不读取项目根 `.mcp.json`，因此不会与其它 Agent 的 `.mcp.json` 冲突。
+        root_file: Some("AGENTS.md"),
+        config_dir: ".qoder",
+        full_sub_dirs: &[],
+        shared_sub_dirs: &[],
+        config_files: &[],
+        skills_own_dir: false,
+        mcp: Some(ProjectMcpSpec {
+            file: ".qoder/settings.json",
+            dialect: McpDialect::JsonMcpServers,
+            jsonc: false,
+        }),
+    },
+    AgentProjectSpec {
         name: "opencode",
         root_file: Some("AGENTS.md"),
         config_dir: ".opencode",
@@ -1074,6 +1106,71 @@ mod tests {
         let doc: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(base.join(".omo/mcp.json")).unwrap()).unwrap();
         assert_eq!(doc["mcpServers"]["demo-server"]["command"], "node");
+        cleanup(&base);
+    }
+
+    #[test]
+    fn project_trae_cn_writes_trae_mcp_json() {
+        let base = scratch("trae-cn");
+        let result = init_project_config(
+            base.to_str().unwrap(),
+            &[req("trae-cn")],
+            &InitMode::Full,
+            false,
+            &[mcp_draft("trae-server")],
+            &[],
+            SkillInstallMode::Link,
+        )
+        .unwrap();
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+
+        assert!(base.join("AGENTS.md").is_file());
+        assert!(!base.join(".trae/skills").exists());
+        let doc: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(base.join(".trae/mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(doc["mcpServers"]["trae-server"]["command"], "npx");
+        cleanup(&base);
+    }
+
+    #[test]
+    fn project_qoder_cn_writes_settings_without_touching_root_mcp_json() {
+        let base = scratch("qoder-cn");
+        // 同项目其它 Agent 的 `.mcp.json` 与 Qoder 设置链无关，必须保持原样。
+        let other_mcp =
+            "{\n  \"mcpServers\": {\n    \"claude-only\": { \"command\": \"claude\" }\n  }\n}\n";
+        fs::write(base.join(".mcp.json"), other_mcp).unwrap();
+        // 既有用户设置键必须保留。
+        fs::create_dir_all(base.join(".qoder")).unwrap();
+        fs::write(
+            base.join(".qoder/settings.json"),
+            "{\n  \"model\": \"qwen3-coder\"\n}\n",
+        )
+        .unwrap();
+
+        let result = init_project_config(
+            base.to_str().unwrap(),
+            &[req("qoder-cn")],
+            &InitMode::Full,
+            false,
+            &[mcp_draft("qoder-server")],
+            &[],
+            SkillInstallMode::Link,
+        )
+        .unwrap();
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+
+        assert!(base.join("AGENTS.md").is_file());
+        assert!(!base.join(".qoder/skills").exists());
+        assert_eq!(
+            fs::read_to_string(base.join(".mcp.json")).unwrap(),
+            other_mcp
+        );
+        let doc: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(base.join(".qoder/settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(doc["model"], "qwen3-coder");
+        assert_eq!(doc["mcpServers"]["qoder-server"]["command"], "npx");
         cleanup(&base);
     }
 

@@ -1419,20 +1419,14 @@ pub fn list_remote_backups(
     Ok(items)
 }
 
-/// Expand `~/…` and leave absolute paths as-is.
+/// Expand display placeholders (`~/…`、Windows `%USERPROFILE%` / `%APPDATA%` / …)
+/// back into real paths; absolute paths pass through.
 fn expand_origin_path(origin: &str) -> Result<PathBuf, String> {
     let o = origin.trim();
     if o.is_empty() {
         return Err("manifest 条目 origin 为空".to_string());
     }
-    if let Some(rest) = o.strip_prefix("~/") {
-        let home = dirs::home_dir().ok_or_else(|| "无法解析主目录".to_string())?;
-        return Ok(home.join(rest));
-    }
-    if o == "~" {
-        return dirs::home_dir().ok_or_else(|| "无法解析主目录".to_string());
-    }
-    Ok(PathBuf::from(o))
+    platform::expand_home(o)
 }
 
 /// Safety: restored absolute paths must stay under $HOME / /opt / /usr/local / /etc.
@@ -2235,6 +2229,55 @@ fn format_bytes(n: u64) -> String {
 mod tests {
     use super::*;
 
+    /// 备份测试的 HOME / XDG 沙箱：构造时设置环境变量，Drop 时恢复并清理，
+    /// 断言失败 panic 也不会把临时 HOME 留给后续测试。
+    struct TempHomeEnv {
+        base: PathBuf,
+        prev_home: Option<std::ffi::OsString>,
+        prev_xdg: Option<std::ffi::OsString>,
+        _guard: MutexGuard<'static, ()>,
+    }
+
+    impl TempHomeEnv {
+        fn new(name: &str) -> Self {
+            let guard = crate::config::lock_home_for_test();
+            let base = std::env::temp_dir().join(format!(
+                "{name}-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let _ = fs::remove_dir_all(&base);
+            fs::create_dir_all(&base).unwrap();
+            let prev_home = std::env::var_os("HOME");
+            let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+            std::env::set_var("HOME", &base);
+            std::env::set_var("XDG_CONFIG_HOME", base.join("xdg-config"));
+            Self {
+                base,
+                prev_home,
+                prev_xdg,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for TempHomeEnv {
+        fn drop(&mut self) {
+            match self.prev_home.take() {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match self.prev_xdg.take() {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+            let _ = fs::remove_dir_all(&self.base);
+        }
+    }
+
     #[test]
     fn exclude_logs_and_sessions() {
         assert!(is_excluded(Path::new("/tmp/foo/logs/a.txt")));
@@ -2274,6 +2317,59 @@ mod tests {
         assert_eq!(unit.path_summary, codex_dir);
         assert_eq!(unit.children[0].label, format!("默认环境 ({codex_dir})"));
         assert!(!unit.path_summary.contains(home.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn expand_origin_path_restores_display_placeholders() {
+        let _home_guard = crate::config::lock_home_for_test();
+        let home = dirs::home_dir().expect("home dir");
+        assert_eq!(
+            expand_origin_path("~/Library/Application Support/Trae CN/User/mcp.json").unwrap(),
+            home.join("Library/Application Support/Trae CN/User/mcp.json")
+        );
+        assert_eq!(
+            expand_origin_path("/opt/homebrew/octopus.json").unwrap(),
+            PathBuf::from("/opt/homebrew/octopus.json")
+        );
+        assert!(expand_origin_path("   ").is_err());
+        #[cfg(windows)]
+        {
+            let appdata = std::env::var("APPDATA").expect("APPDATA");
+            assert_eq!(
+                expand_origin_path(r"%APPDATA%\Trae CN\User\mcp.json").unwrap(),
+                PathBuf::from(appdata)
+                    .join("Trae CN")
+                    .join("User")
+                    .join("mcp.json")
+            );
+            let profile = std::env::var("USERPROFILE").expect("USERPROFILE");
+            assert_eq!(
+                expand_origin_path(r"%USERPROFILE%\.qoder-cn\settings.json").unwrap(),
+                PathBuf::from(profile)
+                    .join(".qoder-cn")
+                    .join("settings.json")
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn trae_cn_app_data_mcp_is_collected() {
+        // 持 HOME 测试锁：os_config_dir 与 display_path 都依赖 HOME 派生路径。
+        let _env = TempHomeEnv::new("octopus-backup-trae-cn");
+
+        let mcp = crate::platform::os_config_dir()
+            .unwrap()
+            .join("Trae CN")
+            .join("User/mcp.json");
+        fs::create_dir_all(mcp.parent().unwrap()).unwrap();
+        fs::write(&mcp, "{\"mcpServers\":{}}").unwrap();
+
+        let spec = crate::agents::find("trae-cn").expect("trae-cn spec");
+        let unit = build_generic_agent_unit("trae-cn", "TRAE CN", spec, true, None);
+        assert!(unit.available);
+        assert!(unit.contains_secrets);
+        assert_eq!(unit.path_summary, display_path(&mcp));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 ![License](https://img.shields.io/badge/license-PolyForm_Noncommercial-blue)
 ![Platform](https://img.shields.io/badge/platform-desktop-lightgrey)
-![Version](https://img.shields.io/badge/version-0.6.0-green)
+![Version](https://img.shields.io/badge/version-0.7.0-green)
 
 Octopus 是一个面向本地桌面场景的 Tauri + React 工具，用来统一管理常见 AI Agent 生态配置。
 
@@ -10,7 +10,7 @@ Octopus 是一个面向本地桌面场景的 Tauri + React 工具，用来统一
 
 | 模块 | 说明 |
 |------|------|
-| Agent | 自动扫描本机已安装的 AI Agent（Claude Code、Claude Desktop、Codex CLI、OpenCode、Antigravity、WorkBuddy、Pi、Oh-My-Pi、OmO），展示安装路径、配置目录、MCP 状态等详情 |
+| Agent | 自动扫描本机已安装的 AI Agent（Claude Code、Claude Desktop、Codex CLI、Antigravity、WorkBuddy、TRAE CN、Qoder CN、OpenCode、Pi、Oh-My-Pi、OmO），展示安装路径、配置目录、MCP 状态等详情 |
 | MCP | 跨 Agent 统一管理 MCP 服务器配置（增删改、批量应用/删除、连接测试），支持 TOML / JSON / JSONC 等多方言写入 |
 | Skills | 本地 / GitHub / GitCode 多源导入 Skill，支持批量应用到多个 Agent、标签管理、导出 |
 | Claude 多环境 | 管理多个 `CLAUDE_CONFIG_DIR` 环境（别名安装、Token 配置、MCP 同步、模型选择） |
@@ -134,7 +134,7 @@ src/                          React 前端
   components/
     Sidebar.tsx               侧边栏导航
     ui.tsx                    通用 UI 原语
-    agent-icons.tsx           Agent 彩色图标组件（SVG，来自 Magpie）
+    agent-icons.tsx           Agent 图标组件（SVG，来自 Magpie）
     agent-filter.tsx          Agent 过滤组件（共享）
     ModelComboBox.tsx         模型下拉选择组件
     pages/
@@ -163,7 +163,7 @@ public/
   octopus-sidebar-dark.png    侧边栏品牌图标（深色，透明底）
   octopus-about-light.png     关于页 Logo（浅色，透明底）
   octopus-about-dark.png      关于页 Logo（深色，透明底）
-  agent-icons/                9 个 Agent 彩色 SVG 图标
+  agent-icons/                11 个 Agent SVG 图标 + 6 个单色图标的白色深色模式变体
 
 src-tauri/src/                Rust 后端
   lib.rs                      Tauri 命令注册与 setup
@@ -204,7 +204,7 @@ src-tauri/src/                Rust 后端
 `src-tauri/Cargo.lock` 和 `README.md` 版本号一致：
 
 ```bash
-git tag v0.6.0
+git tag v0.7.0
 git push origin main --tags
 ```
 

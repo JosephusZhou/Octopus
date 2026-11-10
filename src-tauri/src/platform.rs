@@ -86,6 +86,33 @@ pub fn app_data_dir() -> Result<PathBuf, String> {
     }
 }
 
+/// OS user config root (not Octopus's own data dir):
+/// macOS `~/Library/Application Support`, Windows `%APPDATA%`,
+/// Linux `$XDG_CONFIG_HOME` with `~/.config` fallback.
+///
+/// Used by IDE-family agents whose MCP config lives outside `~` (e.g. TRAE CN).
+pub fn os_config_dir() -> Result<PathBuf, String> {
+    if let Some(dir) = dirs::config_dir() {
+        return Ok(dir);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return Ok(home_dir()?.join("Library/Application Support"));
+    }
+    #[cfg(windows)]
+    {
+        if let Some(v) = std::env::var_os("APPDATA").filter(|v| !v.is_empty()) {
+            return Ok(PathBuf::from(v));
+        }
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        return Ok(home_dir()?.join(".config"));
+    }
+    #[allow(unreachable_code)]
+    Err("无法解析系统配置目录".to_string())
+}
+
 /// Startup migration: if the old `.agentbuddy` directory exists, move it to
 /// `.octopus`. Called before any config / DB access so every subsequent
 /// `app_data_dir()` call returns the new path.

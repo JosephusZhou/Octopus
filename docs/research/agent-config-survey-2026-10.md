@@ -1,7 +1,8 @@
 # 各 Agent 配置现状调研报告（MCP / Skills / 指令文件）
 
-- 调研日期：2026-10-21；补充调研：2026-11-06（Asia/Shanghai）
+- 调研日期：2026-10-21；补充调研：2026-11-06、2026-11-10（Asia/Shanghai）
 - 目的：为优化本应用（AgentBuddy/Octopus）的「项目配置」功能，逐项对照**应用当前实现**与**各 Agent 官方最新现状**，列出差距与建议动作。
+- 2026-11-10 补充：新增 TRAE CN（字节跳动）与 Qoder CN（阿里）两个国内版产品的调研（§12、§13），并给出与 WorkBuddy 同级的接入建议。
 - 方法：只读仓库基线（`src-tauri/src/agents.rs`、`src-tauri/src/project_config.rs`）+ 联网检索官方文档/官方仓库；未改任何源码、未编译。
 - 确定性标注：
   - **【官方明确】**：官方文档 / 官方仓库 README/docs/源码直接记载。
@@ -23,6 +24,8 @@
 7. **Claude Desktop**：legacy `claude_desktop_config.json` 机制官方确认仍存在，但官方主推 .mcpb 扩展；无项目级、无本地文件 skills（聊天 App skills 走账户同步）。
 8. **Oh-My-Pi（OMP）已在本应用完整落地**：全局 `~/.omp/agent/mcp.json`、项目 `.omp/mcp.json`、全局 skills `~/.omp/agent/skills` 均与官方一致；官方项目 skills 原生为最近的非空 `.omp/skills`，本应用统一复用 `.agents/skills`（官方兼容位），属于产品收敛而非路径错误。
 9. **OmO Native（`omo`）上游最新 5.1.62（2026-11-06）**：独立 `omo` 命令、内置 senpi（Pi fork），配置根 `~/.omo`；官方支持 MCP（`~/.omo/agent/mcp.json`）与 Skills（`~/.omo/agent/skills`）。**本应用已支持全局 MCP / Skills 读写、项目级骨架与 MCP（`.omo/mcp.json`）及模型配置**（`mcp_managed: true` + `skills_supported: true`）；不提供版本探测/门槛、安装方式识别或升级指引。
+10. **TRAE CN（§12）**：国内版独立目录 `Trae CN.app` / `~/.trae-cn`。全局 MCP 不在 `~/.trae-cn`，而是 IDE 用户数据目录 `.../Trae CN/User/mcp.json`（macOS `~/Library/Application Support`，Windows `%APPDATA%`）；项目 MCP `.trae/mcp.json`；全局 Skills `~/.trae-cn/skills`，项目 `.trae/skills` 且原生兼容 `.agents/skills`；全局规则是目录 `~/.trae-cn/user_rules`，**没有单一全局 AGENTS.md**。现有 `McpPath::Fixed` 无法表达该全局 MCP 路径，需要新增路径变体。
+11. **Qoder CN（§13）**：国内版以 `Qoder CN.app` / `~/.qoder-cn` 为根。全局 MCP 在 `~/.qoder-cn/settings.json` 顶层 `mcpServers`；项目 MCP `.qoder/settings.json`（有效设置为 user → project → local 浅合并，**不读项目根 `.mcp.json`**）；全局 Skills `~/.qoder-cn/skills`，官方 IDE 同时支持 `.agents/skills`；全局提示词 `~/.qoder-cn/AGENTS.md`。整体最接近 WorkBuddy 的适配成本，但 IDE 与 CLI 是否共用同一 `settings.json` 仍需实测。
 
 ---
 
@@ -254,7 +257,7 @@
 
 ---
 
-## 9. 总对照表：当前实现 vs 官方现状（2026-11-06 补充 OMP / OmO）
+## 9. 总对照表：当前实现 vs 官方现状（2026-11-06 补充 OMP / OmO；2026-11-10 补充 TRAE CN / Qoder CN）
 
 > 「应用」列来自 `agents.rs`（全局）与 `project_config.rs`（项目）；「官方」列来自上文各节。✅ 一致 / ⚠️ 部分差异 / ❌ 不符。
 
@@ -271,6 +274,8 @@
 | pi | `~/.pi/agent/mcp.json` `mcpServers`（误认为靠 adapter）✅ | 内置 `builtin:mcp`，同路径同键 ✅ | `~/.pi/agent/skills` ✅ | 同左（另兼容 `~/.agents/skills`）✅ | AGENTS.md ✅ | AGENTS.override.md>AGENTS.md>…>CLAUDE.md ✅ |
 | oh-my-pi | `~/.omp/agent/mcp.json` `mcpServers` ✅ | 同左（stdio/http/sse）✅ | `~/.omp/agent/skills` ✅ | 同左；项目原生 `.omp/skills`，兼容 `.agents/skills` ✅ | AGENTS.md ✅ | `~/.omp/agent/AGENTS.md` + 独立 `AGENTS.md` ✅ |
 | omo | `~/.omo/agent/mcp.json` `mcpServers`，按 title 合并 + 原子写 ✅ | `~/.omo/agent/mcp.json`（engine schema：`type` + `command/args/env` 或 `url/headers`；已真机验证） | `~/.omo/agent/skills` ✅ | 同左 + 用户兼容 `~/.agents/skills` | `~/.omo/agent/AGENTS.md` ✅（`prompt_file: Some("agent/AGENTS.md")`，可查看/编辑） | AGENTS.md：`~/.omo/agent/AGENTS.md` ✅ |
+| trae-cn | `.../Trae CN/User/mcp.json`（`McpPath::AppUserData`，`mcpServers`）✅ | 同左（macOS `Application Support`、Windows `%APPDATA%`，非 `~`）✅ | `~/.trae-cn/skills` ✅ | 同左；项目兼容 `.agents/skills` | 不提供（官方无单一全局 AGENTS.md）✅ | 全局规则目录 `~/.trae-cn/user_rules`，AGENTS.md 需导入（待核实） |
+| qoder-cn | `~/.qoder-cn/settings.json` 顶层 `mcpServers` ✅ | 同左 ✅ | `~/.qoder-cn/skills` ✅ | 同左；项目兼容 `.agents/skills` | `~/.qoder-cn/AGENTS.md` ✅ | 同左；项目 `AGENTS.md` / `AGENTS.local.md` |
 
 ### 9.2 项目级（仓库内骨架）
 
@@ -284,6 +289,8 @@
 | pi | `.pi/agent/mcp.json` ❌ | **`.pi/mcp.json`**（trust 后，官方正确位置） | `.pi/agent`；skills ❌ | `.pi/`（无 agent 层）；项目 skills `.pi/skills/`（兼容 `.agents/skills/`） | AGENTS.md ✅ | AGENTS.md（无需 trust）✅ |
 | oh-my-pi | `.omp/mcp.json` ✅ | 同左（`mcpServers`）✅ | `.omp`；复用 `.agents/skills` ✅ | `.omp/`；原生 `.omp/skills/`，兼容 `.agents/skills/` ✅ | AGENTS.md ✅ | `.omp/AGENTS.md`（最近的非空 `.omp/`）✅ |
 | omo | `.omo/mcp.json`（`mcpServers`）✅（已真机验证） | 同左 ✅ | `.omo/`；复用 `.agents/skills` ✅ | 项目 skills 原生 `.agents/skills/`（引擎兼容 `.senpi/skills`、`.pi/skills`）；项目配置 `.omo/omo.jsonc` | AGENTS.md ✅ | AGENTS.md ✅ |
+| trae-cn | `.trae/mcp.json`（`mcpServers`）✅ | 同左（需启用「项目级 MCP」） | `.trae`；复用 `.agents/skills` ✅ | `.trae/`；原生 `.trae/skills`，兼容 `.agents/skills` | 根 `AGENTS.md` ✅ | 根 `AGENTS.md` 可导入规则（是否自动读取待核实） |
+| qoder-cn | `.qoder/settings.json`（`mcpServers`，按 server 名与 `settings.local.json` 浅合并）✅ | 同左（设置链**不含** `.mcp.json`）✅ | `.qoder`；复用 `.agents/skills` ✅ | `.qoder/`；官方支持 `.agents/skills`（`.qoder/skills` 待核实） | 根 `AGENTS.md` ✅ | `AGENTS.md` + `AGENTS.local.md` |
 
 > 项目 Skills 统一放 `<repo>/.agents/skills` 再链接/复制到各 agent 目录：对 Codex、OpenCode、gcli、Antigravity App、Pi（兼容位）、Oh-My-Pi（兼容位）成立；Claude Code 原生是 `.claude/skills`；Pi 原生是 `.pi/skills`；OMP 原生是 `.omp/skills`；OmO Native 原生就是 `.agents/skills`（另兼容 `.senpi/skills`、`.pi/skills`）。
 
@@ -426,7 +433,171 @@
 
 ---
 
-## 12. 差距清单（现状 → 官方 → 建议动作 → 确定性）
+## 12. TRAE CN（字节跳动，国内版）
+
+> 官方文档：https://docs.trae.cn/ ・ https://docs.trae.cn/ide/mcp ・ https://docs.trae.cn/ide/rules ・ https://docs.trae.cn/ide/skills ・ https://docs.trae.cn/cli/
+> 产品区分：本节只覆盖**国内版 TRAE CN**；国际版 TRAE 的目录名与包名不同，不能混用。
+> 版本基线：本机客户端 `3.4.17`（CFBundleShortVersionString）；CLI 2.0（`traecli`）。
+> 版本号官方未在文档页固定，版本探测**待核实**。
+
+### 12.1 身份与安装【官方明确 + 本机实测】
+
+| 项 | 值 |
+|---|---|
+| 应用名 | `Trae CN`（macOS bundle `/Applications/Trae CN.app`） |
+| Windows 安装 | 默认 `%LOCALAPPDATA%\Programs\Trae CN\Trae CN.exe`；安装包 `Trae CN-Setup-x64.exe` |
+| CLI | `traecli`（官方安装脚本 `https://trae.cn/trae-cli/install.sh` / `install.ps1`） |
+| 用户配置根 | `~/.trae-cn`（macOS/Linux）；Windows `%USERPROFILE%\.trae-cn` |
+| IDE 用户数据 | macOS `~/Library/Application Support/Trae CN/`；Windows `%APPDATA%\Trae CN\`；Linux `~/.config/Trae CN/`【待核实】 |
+
+本机只读检查确认：`~/.trae-cn` 存在 `builtin_skills/`、`mcps/`、`skill-config.json`、`memory/`；
+`~/Library/Application Support/Trae CN/User/settings.json` 存在；**不存在** `~/.trae-cn/mcp.json`，
+也没有 `~/.trae-cn/skills/`。`~/.trae-cn/mcps/` 只是内置工具元数据，不是用户 MCP 配置。
+
+### 12.2 全局 MCP【本机实测 + 官方结构】
+
+- **位置**：IDE 用户数据目录下的 `User/mcp.json`：
+  - macOS：`~/Library/Application Support/Trae CN/User/mcp.json`
+  - Windows：`%APPDATA%\Trae CN\User\mcp.json`
+  - Linux：`~/.config/Trae CN/User/mcp.json`【待核实，按 VS Code 系用户数据惯例推断】
+- **证据**：客户端代码中 MCP 服务路径为
+  `joinPath(preferencesService.userSettingsResource, "..", "mcp.json")`，而
+  `userSettingsResource` 指向 `<用户数据>/User/settings.json`，因此 MCP 文件是其同级 `User/mcp.json`。
+- **格式**：标准 JSON，顶层 `mcpServers`；stdio 条目 `command` / `args` / `env`；HTTP 条目
+  `url` / `headers`（与 VS Code `mcp.json` 形态一致）。是否支持 SSE / `type` 字段【待核实】。
+- **注意**：`~/.trae-cn/mcp.json` 不是用户 MCP 配置，社区文章中该路径不可信。
+- **CLI**：`traecli` 使用 `traecli.toml` 作为用户配置（旧版曾有 `trae_cli.yaml`【待核实】），
+  并可读取项目 `.trae/mcp.json`；CLI 与 IDE 是否共用 `User/mcp.json`【待核实】。
+
+### 12.3 项目级 MCP【官方明确】
+
+- 文件：**`<repo>/.trae/mcp.json`**，顶层 `mcpServers`。
+- stdio：`command` / `args` / `env`；HTTP：`url` / `headers`。
+- 支持 `${workspaceFolder}` 变量；项目级 MCP 需在设置中显式启用「项目级 MCP」后才会加载。
+- 项目内是否存在 local/私有覆盖文件【待核实】。
+
+### 12.4 Skills【官方明确】
+
+| 作用域 | 路径 |
+|---|---|
+| 全局（IDE） | `~/.trae-cn/skills/<name>/SKILL.md`（Windows `%USERPROFILE%\.trae-cn\skills`） |
+| 项目（原生） | `<repo>/.trae/skills/<name>/SKILL.md` |
+| 通用兼容位 | `<repo>/.agents/skills/`（官方更新日志明确自动加载） |
+| CLI | 全局 `~/.traecli/skills`；项目 `<repo>/.traecli/skills`【待核实】 |
+
+- 本机当前没有 `~/.trae-cn/skills/`，首次写入时应自动创建。
+- 技能格式为目录 + `SKILL.md`，与 Agent Skills 约定一致。
+
+### 12.5 规则 / 指令文件【官方明确 + 待核实】
+
+- 项目规则：`<repo>/.trae/rules/`（支持最多 3 层子目录）。
+- 全局规则：**目录** `~/.trae-cn/user_rules/`；旧版单文件 `~/.trae-cn/user_rules.md` 在客户端代码中
+  仍作为 legacy 路径存在。
+- `AGENTS.md` / `CLAUDE.md`：官方设置提供「导入规则」开关，可将项目根 `AGENTS.md` /
+  `CLAUDE.md` / `CLAUDE.local.md` 导入规则体系；**是否无需导入即自动读取**、是否存在全局
+  `~/.trae-cn/AGENTS.md`，均【待核实】。
+- 结论：TRAE CN **没有可直接读写的单一全局提示词文件**。若接入时按 WorkBuddy 的
+  `prompt_file: Some("AGENTS.md")` 处理，会写入一个 agent 不读取的文件，属于错误适配。
+
+### 12.6 对本应用的含义
+
+- 全局 MCP 路径位于**平台应用数据目录**，不是 `~` 下的固定相对路径，现有
+  `McpPath::Fixed` 无法表达，需要新增路径变体（见 `AGENT_MCP_SKILLS_MAP.md` §12 与接入计划）。
+- 全局 Skills 可直接用 `~/.trae-cn/skills`，与现有 `skills_roots` 模型兼容。
+- 全局提示词建议**不接入**（`prompt_file: None`），或后续单独做「全局规则目录」编辑器；
+  不要用 AGENTS.md 占位。
+- 项目级可完全复用 WorkBuddy 模式：`.trae/` + 根 `AGENTS.md` + 复用 `.agents/skills` +
+  项目 MCP `.trae/mcp.json`。
+
+---
+
+## 13. Qoder CN（阿里，国内版）
+
+> 官方文档：https://docs.qoder.cn/ ・ https://docs.qoder.cn/ide/mcp ・ https://docs.qoder.cn/ide/skills ・ https://docs.qoder.cn/ide/memory ・ https://docs.qoder.cn/cli/
+> 产品区分：本节只覆盖**国内版 Qoder CN**；国际版 Qoder 的目录名、包名与 CLI 命令不同。
+> 版本基线：本机桌面版 `0.5.7`（CFBundleShortVersionString，bundle 名 `Qoder CN`）；CLI `qodercn`。
+> 应用名以 `Qoder CN.app` 为准（本机实测存在，`Qoder CN IDE.app` 不存在）。版本探测**待核实**。
+
+### 13.1 身份与安装【官方明确 + 本机实测】
+
+| 项 | 值 |
+|---|---|
+| 应用名 | `Qoder CN`（本机实测） |
+| macOS | `/Applications/Qoder CN.app`（本机实测） |
+| Windows | 用户级 `%LOCALAPPDATA%\Programs\Qoder CN\Qoder CN.exe`；系统级在 `Program Files`【待核实：实际目录名】 |
+| Linux | 包名 `qoder-cn-ide`，二进制 `/usr/share/qoder-cn-ide/qoder-cn-ide` |
+| CLI | `qodercn`；原生脚本 `https://static.qoder.com.cn/qoder-cli-cn/install.sh` / `install.ps1`；npm 兜底 `@qodercn-ai/qoderclicn` |
+| 配置根 | `~/.qoder-cn`；可用 `--config-dir`、`QODERCN_CONFIG_DIR`、`QODERCN_CLI_HOME` 覆盖 |
+
+本机只读检查确认 `~/.qoder-cn` 存在 `settings.json`、`skills/`、`projects/`、`agents/`、`memory/`、
+`mcp-router.json`、`.qodersec/`。`settings.json` 当前顶层为 `enabledPlugins` / `model` / `providers`，
+**尚无 `mcpServers` 键**；`mcp-router.json` 是运行时路由状态（含本机 localhost 地址与凭据），
+**不得展示、备份或读取其内容**。
+
+### 13.2 全局 MCP【官方明确；IDE/CLI 共用性待核实】
+
+- **位置**：`~/.qoder-cn/settings.json` 顶层 `mcpServers`（Windows `%USERPROFILE%\.qoder-cn\settings.json`）。
+- **schema**：
+  - stdio：`command` / `args` / `env` / `cwd`
+  - 远程：`url` + `type`（`sse` / `http`）/ `headers`
+  - 可选：`timeout`、`description`、`trust`、`includeTools`、`excludeTools`、`disabled`、
+    `alwaysAllow`、`oauth`、`qoder_url`
+- **待核实**：本机 IDE 的 `settings.json` 尚未出现 `mcpServers`，可能是首次配置后才创建；
+  CLI 文档明确使用该键，IDE 是否与 CLI 共用同一文件需实测。若不共用，需按 IDE 实际落点调整。
+- 不要读写 `mcp-router.json`：它是运行时路由状态，不是用户可编辑配置。
+
+### 13.3 项目级 MCP【官方明确 + asar 只读核对】
+
+- 主文件：**`<repo>/.qoder/settings.json`** 顶层 `mcpServers`。
+- 私有覆盖：**`<repo>/.qoder/settings.local.json`**。
+- **有效设置合并链**（`Qoder CN.app` 0.5.7 `app.asar` 只读检查，2026-11-10）：
+
+  | 层 | 文件 |
+  |---|---|
+  | user | `~/.qoder-cn/settings.json` |
+  | project | `<repo>/.qoder/settings.json` |
+  | local | `<repo>/.qoder/settings.local.json` |
+
+- `mcpServers` 在 **shallow merge** 键集合内（与 `providers` / `skillOverrides` /
+  `enabledPlugins` / `extraKnownMarketplaces` / `pluginConfigs` 同组）：按 server **名称**
+  整条覆盖，不做字段级合并；优先级 `local > project > user`，不同名称的 server 共存。
+- **`.mcp.json` 不在该合并链内**：asar 中 `.mcp.json` 字面量只出现在 UI 文案，未发现自动加载器。
+  因此同项目其它 Agent 写入的 `.mcp.json` 不会被 Qoder CN 读取，也不与之冲突。
+- 项目级 server 默认需要批准：`mcp.enableAllProjectMcpServers` / `mcp.enabledProjectMcpServers`
+  （这两个键为 union merge）。
+- 本应用只写 `.qoder/settings.json`，不同时写 `.mcp.json`，避免同一 server 出现两个来源。
+- 【待核实】未来版本若新增 `.mcp.json` 自动导入，需重新确认优先级；Phase 0 用测试条目验证。
+
+### 13.4 Skills【官方明确 + 本机实测】
+
+| 作用域 | 路径 |
+|---|---|
+| 全局 | `~/.qoder-cn/skills/<name>/SKILL.md`（本机已存在并含已安装技能） |
+| 项目原生 | 官方 IDE 支持 `<repo>/.agents/skills/`；是否存在 `.qoder/skills/`【待核实】 |
+| 旧文档 | `~/.lingma/skills` 属于 Lingma 时代 legacy，不应作为写入目标 |
+
+- 本应用项目级沿用 `.agents/skills` 即可满足官方支持位。
+- 全局写入 `~/.qoder-cn/skills`，与现有 `skills_roots` 模型兼容。
+
+### 13.5 指令文件 / 规则【官方明确】
+
+- 全局提示词：**`~/.qoder-cn/AGENTS.md`**（官方 memory 文档）。
+- 项目提示词：仓库根 `AGENTS.md`；私有 `AGENTS.local.md`；`context.fileName` 默认 `AGENTS.md`。
+- 项目规则：`<repo>/.qoder/rules/*.md`。
+- 结论：可直接按 WorkBuddy 模式接入全局提示词（`prompt_file: Some("AGENTS.md")`）。
+
+### 13.6 对本应用的含义
+
+- Qoder CN 的全局 MCP / Skills / 提示词全部在 `~/.qoder-cn` 下，现有 `McpPath::Fixed` +
+  `JsonMcpServers` + `skills_roots` + `prompt_file` 模型可直接表达，适配成本最低。
+- 唯一需要实测的是 IDE 与 CLI 是否共用 `settings.json` 的 `mcpServers`；若共用则无需额外工作。
+- 项目级按 WorkBuddy 模式落地：`.qoder/` + 根 `AGENTS.md` + 复用 `.agents/skills` +
+  项目 MCP `.qoder/settings.json`；该文件与其它 Agent 的 `.mcp.json` 互不影响。
+- `mcp-router.json` 属于运行时敏感状态，明确排除在打开、备份、展示之外。
+
+---
+
+## 14. 差距清单（现状 → 官方 → 建议动作 → 确定性）
 
 | # | Agent | 现状（应用） | 官方现状 | 建议动作 | 确定性 |
 |---|---|---|---|---|---|
@@ -450,10 +621,12 @@
 | D18 | oh-my-pi | 全局/项目 MCP、全局 skills、模型配置均已对齐 | 官方项目 skills 原生 `.omp/skills`，`.agents/skills` 为兼容位；支持 SSE | 保留 `.agents/skills` 收敛；文档注明原生位；SSE 不拦截 OMP | 官方明确 |
 | D19 | omo | 全局 MCP / Skills / 提示词、项目级骨架与 MCP、模型配置均已接入 | Native 支持 `~/.omo/agent/mcp.json`、`~/.omo/agent/skills`、`~/.omo/agent/AGENTS.md`、项目 `.omo/mcp.json`、`.omo/omo.jsonc` | 保持现有接入；因 Pi 衍生，SSE 与 Pi 一样拦截；不引入版本探测/门槛、安装方式识别或升级指引 | 官方明确 + 真机验证 |
 | D20 | opencode | 全局目录硬编码为 `~/.config/opencode`（`agents.rs`、`opencode_config.rs`、`mcp_config.rs` 共四处） | 支持 `OPENCODE_CONFIG_DIR`；未设置时取 `$XDG_CONFIG_HOME/opencode`，再回退 `~/.config/opencode` | 暂只记录限制，不改代码；适配时按该顺序统一全局路径解析 | 官方明确（源码） |
+| D21 | trae-cn | 已注册（v0.7.0）：`McpPath::AppUserData` + 两条 `AGENT_SPECS` | 国内版独立产品：`Trae CN.app` / `~/.trae-cn`；全局 MCP 在 `.../Trae CN/User/mcp.json`（应用数据目录），项目 `.trae/mcp.json`，全局 skills `~/.trae-cn/skills`，项目 `.trae/skills` + `.agents/skills`，全局规则目录 `~/.trae-cn/user_rules`、无单一全局 AGENTS.md | 已接入：全局 MCP / Skills、项目级按 WorkBuddy 模式；全局提示词 `prompt_file: None` | 全局 MCP 路径实测；其余官方明确 / AGENTS.md 自动读取待核实 |
+| D22 | qoder-cn | 已注册（v0.7.0）：`Fixed(".qoder-cn/settings.json")` + 两条 `AGENT_SPECS` | 国内版独立产品：`Qoder CN.app` / `~/.qoder-cn`；全局 MCP `~/.qoder-cn/settings.json` `mcpServers`；项目 `.qoder/settings.json`（user → project → local 浅合并，不读 `.mcp.json`）；全局 skills `~/.qoder-cn/skills` + `.agents/skills`；全局提示词 `~/.qoder-cn/AGENTS.md` | 已接入：全局 MCP / Skills / 提示词、项目级按 WorkBuddy 模式；排除 `mcp-router.json` | 官方明确 + asar 核对；IDE/CLI 共用 settings 待实测 |
 
 ---
 
-## 13. 待核实清单
+## 15. 待核实清单
 
 1. Claude Code：`.mcp.json` 条目是否存在未文档化 `enabled`；消费版 Desktop `claude_desktop_config.json` 现行精确路径与是否仍被新版读取；Chat tab 是否保留手编 JSON 入口。
 2. Codex：项目级 `.codex/config.toml` 与用户级是深合并还是整表覆盖；`~/.codex/skills` 是否仍被当前版本兼容扫描；`.codex/instructions.md` 是否有隐藏加载。
@@ -463,10 +636,13 @@
 6. WorkBuddy 桌面：远程 MCP 字段、`~/.workbuddy/skills` / `.workbuddy/skills`、是否读 AGENTS.md（官方文档未披露，需官方复核或实测）。
 7. OmO Native：`~/.omo/agent/mcp.json` 的精确顶层键（官方只写 “engine's schema”，`mcpServers` 为同族推断）；Native 项目级 MCP 落点。
 8. OmO Native：项目级 skills 除 `.agents/skills` 外是否也读取 `.omo/skills`（`.senpi/skills`、`.pi/skills` 已由源码确认）。
+9. TRAE CN：Linux 下 IDE 用户数据目录是否为 `~/.config/Trae CN`；`traecli` 与 IDE 是否共用 `User/mcp.json`；`AGENTS.md` 是自动读取还是仅「导入规则」；是否存在全局 AGENTS.md；SSE / `type` 字段支持；项目级是否有 local 覆盖文件；CLI 用户配置文件名（`traecli.toml` 与旧 `trae_cli.yaml`）。
+10. Qoder CN：IDE 与 CLI 是否共用 `~/.qoder-cn/settings.json` 的 `mcpServers`（本机 IDE 尚未出现该键）；项目原生 skills 是否有 `.qoder/skills`；未来版本是否会自动导入项目根 `.mcp.json`（0.5.7 `app.asar` 未发现加载器）；`QODERCN_CONFIG_DIR` 与 `QODERCN_CLI_HOME` 的优先级。
+11. 通用：应用数据目录路径变体在 Linux（XDG）与 Windows（`%APPDATA%`）的解析规则需在实现时用测试固定，不散落平台分支。
 
 ---
 
-## 14. 来源索引
+## 16. 来源索引
 
 ### Pi
 - 内置 MCP：https://pi.dev/docs/latest/mcp
@@ -554,3 +730,24 @@
 - Sub-agents：https://www.workbuddy.ai/docs/cli/sub-agents
 - 腾讯云 1831：https://cloud.tencent.com/document/product/1831/137016 ・ /137020 ・ /137461
 - 社区/半官方（需复核）：https://cloud.tencent.com/developer/techpedia/2610/20530 ・ https://developer.cloud.tencent.com/article/2672691 ・ https://developer.cloud.tencent.com/article/2686192 ・ https://developer.cloud.tencent.com/article/2750199
+
+### TRAE CN（字节跳动，国内版）
+- 官方文档站：https://docs.trae.cn/
+- MCP：https://docs.trae.cn/ide/mcp
+- Rules / 规则：https://docs.trae.cn/ide/rules
+- Skills：https://docs.trae.cn/ide/skills
+- CLI：https://docs.trae.cn/cli/
+- CLI 安装脚本：https://trae.cn/trae-cli/install.sh ・ https://trae.cn/trae-cli/install.ps1
+- 本机证据：`/Applications/Trae CN.app`、`~/.trae-cn/`、`~/Library/Application Support/Trae CN/User/settings.json`；
+  客户端代码中 `joinPath(userSettingsResource, "..", "mcp.json")` 指向 `User/mcp.json`
+
+### Qoder CN（阿里，国内版）
+- 官方文档站：https://docs.qoder.cn/
+- MCP：https://docs.qoder.cn/ide/mcp
+- Skills：https://docs.qoder.cn/ide/skills
+- Memory / 指令文件：https://docs.qoder.cn/ide/memory
+- CLI：https://docs.qoder.cn/cli/
+- CLI 安装脚本：https://static.qoder.com.cn/qoder-cli-cn/install.sh ・ https://static.qoder.com.cn/qoder-cli-cn/install.ps1
+- npm 兜底包：https://www.npmjs.com/package/@qodercn-ai/qoderclicn
+- 本机证据：`/Applications/Qoder CN.app`（0.5.7）、`~/.qoder-cn/settings.json`、`~/.qoder-cn/skills/`；
+  `~/.qoder-cn/mcp-router.json` 为运行时状态，排除在配置读写之外

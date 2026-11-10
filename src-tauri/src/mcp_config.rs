@@ -724,6 +724,14 @@ fn resolve_target(agent: &str) -> Result<ResolvedTarget, OpError> {
                 jsonc: false,
             })
         }
+        McpPath::AppUserData { product, file } => {
+            let root = crate::platform::os_config_dir().map_err(|m| err(None, m))?;
+            Ok(ResolvedTarget {
+                path: root.join(product).join(file),
+                dialect,
+                jsonc: spec.mcp.jsonc,
+            })
+        }
     }
 }
 
@@ -1703,6 +1711,24 @@ mod tests {
             url: "https://example.com/mcp".into(),
             headers: Default::default(),
         }
+    }
+
+    #[test]
+    fn new_agents_resolve_expected_mcp_paths() {
+        // 持 HOME 测试锁：Fixed 与 os_config_dir 都依赖 HOME 派生路径。
+        let _home_guard = crate::config::lock_home_for_test();
+        let home = dirs::home_dir().expect("home");
+        assert_eq!(
+            resolve_mcp_path("qoder-cn").unwrap(),
+            home.join(".qoder-cn").join("settings.json")
+        );
+        assert_eq!(
+            resolve_mcp_path("trae-cn").unwrap(),
+            crate::platform::os_config_dir()
+                .unwrap()
+                .join("Trae CN")
+                .join("User/mcp.json")
+        );
     }
 
     #[test]

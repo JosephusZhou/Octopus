@@ -372,6 +372,60 @@ mod tests {
     }
 
     #[test]
+    fn qoder_cn_prompt_and_mcp_live_in_config_root() {
+        // 持 HOME 测试锁：home_dir 与 open_targets 都依赖 HOME 派生路径。
+        let _home_guard = crate::config::lock_home_for_test();
+        let home = dirs::home_dir().expect("home");
+        let targets = open_targets("qoder-cn");
+        assert_eq!(
+            targets.mcp_file.as_deref(),
+            Some(
+                home.join(".qoder-cn")
+                    .join("settings.json")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            targets.prompt_file.as_deref(),
+            Some(
+                home.join(".qoder-cn")
+                    .join("AGENTS.md")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            targets.config_dir.as_deref(),
+            Some(home.join(".qoder-cn").to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn trae_cn_has_no_global_prompt_and_mcp_in_app_data() {
+        // 持 HOME 测试锁：config_dir 依赖 HOME；MCP 路径依赖平台配置根。
+        let _home_guard = crate::config::lock_home_for_test();
+        let home = dirs::home_dir().expect("home");
+        let targets = open_targets("trae-cn");
+        assert_eq!(
+            targets.mcp_file.as_deref(),
+            Some(
+                crate::platform::os_config_dir()
+                    .unwrap()
+                    .join("Trae CN")
+                    .join("User/mcp.json")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(targets.prompt_file.is_none());
+        assert_eq!(
+            targets.config_dir.as_deref(),
+            Some(home.join(".trae-cn").to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
     fn unknown_manual_agent_has_no_mcp() {
         let targets = open_targets("my-custom-agent-xyz");
         assert!(targets.mcp_file.is_none());

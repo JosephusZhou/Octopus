@@ -1,28 +1,54 @@
 /**
- * 内置 Agent 彩色图标（SVG，来自开源项目 Magpie https://github.com/yetone/magpie，MIT 协议）。
+ * 内置 Agent 图标（SVG，来自开源项目 Magpie https://github.com/yetone/magpie，MIT 协议）。
  *
  * 图标文件位于 public/agent-icons/*.svg，按 agent name 命名。
- * key 与 src-tauri/src/sniff.rs 中 AgentDef.name 保持一致；未匹配的 agent
+ * key 与 src-tauri/src/agents.rs 注册表中的 name 保持一致；未匹配的 agent
  * （如手动添加）由调用方回退为名称缩写。
+ *
+ * 单色图标（透明底 + 黑色前景）在深色主题下看不清，额外提供 `<name>-dark.svg`
+ * 白色版本；两套同时渲染，由 index.css 按主题只显示其一。彩色图标只有一套。
  */
 import type { ReactNode } from "react";
 
-/** 已知有彩色图标的 agent name 集合。 */
+/** 已知有图标的 agent name 集合。 */
 const KNOWN_AGENTS = new Set([
-  "codex",
   "claude-code",
   "claude-desktop",
-  "opencode",
+  "codex",
   "antigravity",
   "workbuddy",
+  "trae-cn",
+  "qoder-cn",
+  "opencode",
   "pi",
   "oh-my-pi",
   "omo",
 ]);
 
-/** 渲染指定 agent 的彩色图标；无匹配返回 null，由调用方回退到名称缩写。 */
+/** 只有黑色前景的单色图标，需要深色主题的白色变体。 */
+const MONO_AGENTS = new Set(["trae-cn", "qoder-cn", "opencode", "pi", "oh-my-pi", "omo"]);
+
+/** 渲染指定 agent 的图标；无匹配返回 null，由调用方回退到名称缩写。 */
 export function getAgentIcon(name: string): ReactNode | null {
   if (!KNOWN_AGENTS.has(name)) return null;
+  if (MONO_AGENTS.has(name)) {
+    return (
+      <>
+        <img
+          className="agent-icon-light"
+          src={`/agent-icons/${name}.svg`}
+          alt={name}
+          draggable={false}
+        />
+        <img
+          className="agent-icon-dark"
+          src={`/agent-icons/${name}-dark.svg`}
+          alt={name}
+          draggable={false}
+        />
+      </>
+    );
+  }
   return <img src={`/agent-icons/${name}.svg`} alt={name} draggable={false} />;
 }
 

@@ -11,7 +11,7 @@ Octopus 是一个 Tauri 2 桌面应用，用于发现本机 AI coding agent，�
 - 应用数据：macOS/Linux 使用 `~/.octopus/`；Windows 优先使用
   `%LOCALAPPDATA%\Octopus`，同时兼容旧的 `~/.octopus/`。
 
-版本发布：当前版本为 `0.5.0`。更新版本号时需要同步修改以下 5 个文件：
+版本发布：当前版本为 `0.7.0`。更新版本号时需要同步修改以下 5 个文件：
 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`、
 `src-tauri/Cargo.lock` 和 `README.md`。
 
@@ -122,8 +122,8 @@ await invoke("command_name", { ... });
 稳定的 `name` 为：
 
 ```text
-codex, claude-code, claude-desktop, opencode, antigravity,
-workbuddy, pi, oh-my-pi, omo
+claude-code, claude-desktop, codex, antigravity,
+workbuddy, trae-cn, qoder-cn, opencode, pi, oh-my-pi, omo
 ```
 
 历史上下线的 agent 由启动时的版本适配升级统一清理：`config::run_startup_config_upgrade`
@@ -148,7 +148,8 @@ OpenCode JSONC 用 json5 读取后写为标准 JSON；扫描以磁盘状态更�
   的 MCP 同步到 `$CLAUDE_CONFIG_DIR/.claude.json`。
 - Codex 使用 `CODEX_HOME`；默认 MCP 在 `~/.codex/config.toml` 的 `[mcp_servers]`，自定义
   环境同步时只替换该表并保留其它配置。
-- 项目级配置由 `project_config.rs` 的 8 个 `AGENT_SPECS` 决定（OmO 项目 MCP 写 `.omo/mcp.json`）；全局 MCP 应用不会默认写项目。
+- 项目级配置由 `project_config.rs` 的 10 个 `AGENT_SPECS` 决定（OmO 项目 MCP 写 `.omo/mcp.json`，
+  Qoder CN 写 `.qoder/settings.json`）；全局 MCP 应用不会默认写项目。
 - Skills 库位于 `~/.octopus/skills/<id>/SKILL.md`，项目级统一安装到 `.agents/skills`，
   再按 Full/Symlink 模式供选中的 Agent 使用。Claude Desktop 当前不支持本地 Skills。
 
