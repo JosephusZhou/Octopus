@@ -231,6 +231,12 @@ function toRecord(s: McpServer) {
   };
 }
 
+/** 按 agents 列表（注册表）顺序排序；不在列表中的 name 排最后。 */
+function sortByAgentOrder(names: string[], agents: { name: string }[]): string[] {
+  const rank = new Map(agents.map((a, i) => [a.name, i]));
+  return [...names].sort((a, b) => (rank.get(a) ?? agents.length) - (rank.get(b) ?? agents.length));
+}
+
 async function persistServers(servers: McpServer[]) {
   // DB is the single source of truth; no localStorage mirror.
   try {
@@ -625,7 +631,7 @@ export default function McpManage() {
       env: mcpType === "stdio" ? kvListToRecord(envList) : {},
       url: mcpType !== "stdio" ? url.trim() : "",
       headers: mcpType !== "stdio" ? kvListToRecord(headerList) : {},
-      appliedAgents: Array.from(selectedAgents),
+      appliedAgents: sortByAgentOrder(Array.from(selectedAgents), agents),
     };
 
     const previous = editingId ? servers.find((s) => s.id === editingId) : null;
@@ -715,6 +721,7 @@ export default function McpManage() {
     url,
     headerList,
     selectedAgents,
+    agents,
     servers,
     editingId,
     resetForm,
@@ -1014,7 +1021,7 @@ export default function McpManage() {
         if (!delta) return s;
         const nextAgents =
           batchApplyMode === "add"
-            ? Array.from(new Set([...s.appliedAgents, ...delta]))
+            ? sortByAgentOrder(Array.from(new Set([...s.appliedAgents, ...delta])), agents)
             : s.appliedAgents.filter((a) => !delta.has(a));
         return { ...s, appliedAgents: nextAgents };
       });
@@ -1037,7 +1044,15 @@ export default function McpManage() {
     } finally {
       setIsBatchRunning(false);
     }
-  }, [isBatchRunning, servers, validSelectedIds, batchApplyAgents, batchApplyMode, exitBatchMode]);
+  }, [
+    isBatchRunning,
+    servers,
+    validSelectedIds,
+    batchApplyAgents,
+    batchApplyMode,
+    agents,
+    exitBatchMode,
+  ]);
 
   return (
     <>

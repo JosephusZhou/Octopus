@@ -250,7 +250,9 @@ pub fn sniff_mcp_servers() -> McpSniffResult {
     let mut servers: Vec<McpServerRecord> = by_title
         .into_values()
         .map(|(mut rec, set)| {
-            rec.applied_agents = set.into_iter().collect();
+            let mut agents: Vec<String> = set.into_iter().collect();
+            agents.sort_by_key(|a| crate::agents::display_order(a));
+            rec.applied_agents = agents;
             rec
         })
         .collect();

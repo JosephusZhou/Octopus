@@ -115,21 +115,6 @@ static AGENT_SPECS: &[AgentProjectSpec] = &[
         }),
     },
     AgentProjectSpec {
-        name: "opencode",
-        root_file: Some("AGENTS.md"),
-        config_dir: ".opencode",
-        // 当前仅聚焦 AGENTS.md / skills / MCP：不建 agents、commands、plugins、tools 等骨架目录。
-        full_sub_dirs: &[],
-        shared_sub_dirs: &[],
-        config_files: &[],
-        skills_own_dir: false,
-        mcp: Some(ProjectMcpSpec {
-            file: "opencode.json",
-            dialect: McpDialect::JsonMcp,
-            jsonc: false,
-        }),
-    },
-    AgentProjectSpec {
         name: "antigravity",
         root_file: None,
         config_dir: ".agents",
@@ -155,6 +140,21 @@ static AGENT_SPECS: &[AgentProjectSpec] = &[
         mcp: Some(ProjectMcpSpec {
             file: ".workbuddy/mcp.json",
             dialect: McpDialect::JsonMcpServers,
+            jsonc: false,
+        }),
+    },
+    AgentProjectSpec {
+        name: "opencode",
+        root_file: Some("AGENTS.md"),
+        config_dir: ".opencode",
+        // 当前仅聚焦 AGENTS.md / skills / MCP：不建 agents、commands、plugins、tools 等骨架目录。
+        full_sub_dirs: &[],
+        shared_sub_dirs: &[],
+        config_files: &[],
+        skills_own_dir: false,
+        mcp: Some(ProjectMcpSpec {
+            file: "opencode.json",
+            dialect: McpDialect::JsonMcp,
             jsonc: false,
         }),
     },

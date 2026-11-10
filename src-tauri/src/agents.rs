@@ -82,6 +82,14 @@ pub fn find(name: &str) -> Option<&'static AgentSpec> {
     AGENTS.iter().find(|a| a.name == name)
 }
 
+/// 注册表中的展示位次；未登记的 name（手动添加）排在最后。
+pub fn display_order(name: &str) -> usize {
+    AGENTS
+        .iter()
+        .position(|a| a.name == name)
+        .unwrap_or(usize::MAX)
+}
+
 /// Windows 上额外的静态安装路径候选（从环境变量解析，不硬编码盘符）。
 /// 在 `cfg(windows)` 的 sniff 中与 `bin_paths` 合并；其它平台返回空。
 #[cfg(windows)]
@@ -176,7 +184,51 @@ pub fn windows_bin_candidates(spec: &AgentSpec) -> Vec<std::path::PathBuf> {
 }
 
 static AGENTS: &[AgentSpec] = &[
-    // 1. Codex（CLI + App，共享 ~/.codex）
+    // 1. Claude Code CLI
+    AgentSpec {
+        name: "claude-code",
+        display_name: "Claude Code",
+        icon: "Cc",
+        bin_paths: &[
+            "~/.local/bin/claude",
+            "/usr/local/bin/claude",
+            "/opt/homebrew/bin/claude",
+        ],
+        search_names: &["claude", "claude-code"],
+        config_paths: &["~/.claude"],
+        scan_app_support: false,
+        mcp: McpSpec {
+            dialect: McpDialect::ClaudeJsonUser,
+            path: McpPath::Fixed(".claude.json"),
+            jsonc: false,
+        },
+        mcp_managed: true,
+        skills_roots: &["~/.claude/skills"],
+        skills_supported: true,
+        prompt_file: Some("CLAUDE.md"),
+        shared_root: None,
+    },
+    // 2. Claude Desktop App
+    AgentSpec {
+        name: "claude-desktop",
+        display_name: "Claude Desktop",
+        icon: "Cd",
+        bin_paths: &["/Applications/Claude.app"],
+        search_names: &[],
+        config_paths: &[],
+        scan_app_support: true,
+        mcp: McpSpec {
+            dialect: McpDialect::JsonMcpServers,
+            path: McpPath::ClaudeDesktopScan,
+            jsonc: false,
+        },
+        mcp_managed: false,
+        skills_roots: &[],
+        skills_supported: false,
+        prompt_file: None,
+        shared_root: None,
+    },
+    // 3. Codex（CLI + App，共享 ~/.codex）
     AgentSpec {
         name: "codex",
         display_name: "Codex",
@@ -201,76 +253,7 @@ static AGENTS: &[AgentSpec] = &[
         prompt_file: Some("AGENTS.md"),
         shared_root: None,
     },
-    // 2. Claude Code CLI
-    AgentSpec {
-        name: "claude-code",
-        display_name: "Claude Code",
-        icon: "Cc",
-        bin_paths: &[
-            "~/.local/bin/claude",
-            "/usr/local/bin/claude",
-            "/opt/homebrew/bin/claude",
-        ],
-        search_names: &["claude", "claude-code"],
-        config_paths: &["~/.claude"],
-        scan_app_support: false,
-        mcp: McpSpec {
-            dialect: McpDialect::ClaudeJsonUser,
-            path: McpPath::Fixed(".claude.json"),
-            jsonc: false,
-        },
-        mcp_managed: true,
-        skills_roots: &["~/.claude/skills"],
-        skills_supported: true,
-        prompt_file: Some("CLAUDE.md"),
-        shared_root: None,
-    },
-    // 3. Claude Desktop App
-    AgentSpec {
-        name: "claude-desktop",
-        display_name: "Claude Desktop",
-        icon: "Cd",
-        bin_paths: &["/Applications/Claude.app"],
-        search_names: &[],
-        config_paths: &[],
-        scan_app_support: true,
-        mcp: McpSpec {
-            dialect: McpDialect::JsonMcpServers,
-            path: McpPath::ClaudeDesktopScan,
-            jsonc: false,
-        },
-        mcp_managed: false,
-        skills_roots: &[],
-        skills_supported: false,
-        prompt_file: None,
-        shared_root: None,
-    },
-    // 4. OpenCode（CLI + App，共享配置）
-    AgentSpec {
-        name: "opencode",
-        display_name: "OpenCode",
-        icon: "Oc",
-        bin_paths: &[
-            "/usr/local/bin/opencode",
-            "/opt/homebrew/bin/opencode",
-            "~/.opencode/bin/opencode",
-            "/Applications/OpenCode.app",
-        ],
-        search_names: &["opencode"],
-        config_paths: &["~/.config/opencode"],
-        scan_app_support: false,
-        mcp: McpSpec {
-            dialect: McpDialect::JsonMcp,
-            path: McpPath::OpencodeConfig,
-            jsonc: false,
-        },
-        mcp_managed: true,
-        skills_roots: &["~/.config/opencode/skills"],
-        skills_supported: true,
-        prompt_file: Some("AGENTS.md"),
-        shared_root: None,
-    },
-    // 5. Antigravity（闭源 Google App/IDE/CLI；不是开源 Gemini CLI gcli）
+    // 4. Antigravity（闭源 Google App/IDE/CLI；不是开源 Gemini CLI gcli）
     AgentSpec {
         name: "antigravity",
         display_name: "Antigravity",
@@ -294,7 +277,7 @@ static AGENTS: &[AgentSpec] = &[
         prompt_file: Some("AGENTS.md"),
         shared_root: None,
     },
-    // 6. WorkBuddy（腾讯桌面办公版；不含 CodeBuddy Code CLI）
+    // 5. WorkBuddy（腾讯桌面办公版；不含 CodeBuddy Code CLI）
     AgentSpec {
         name: "workbuddy",
         display_name: "WorkBuddy",
@@ -310,6 +293,31 @@ static AGENTS: &[AgentSpec] = &[
         },
         mcp_managed: true,
         skills_roots: &["~/.workbuddy/skills"],
+        skills_supported: true,
+        prompt_file: Some("AGENTS.md"),
+        shared_root: None,
+    },
+    // 6. OpenCode（CLI + App，共享配置）
+    AgentSpec {
+        name: "opencode",
+        display_name: "OpenCode",
+        icon: "Oc",
+        bin_paths: &[
+            "/usr/local/bin/opencode",
+            "/opt/homebrew/bin/opencode",
+            "~/.opencode/bin/opencode",
+            "/Applications/OpenCode.app",
+        ],
+        search_names: &["opencode"],
+        config_paths: &["~/.config/opencode"],
+        scan_app_support: false,
+        mcp: McpSpec {
+            dialect: McpDialect::JsonMcp,
+            path: McpPath::OpencodeConfig,
+            jsonc: false,
+        },
+        mcp_managed: true,
+        skills_roots: &["~/.config/opencode/skills"],
         skills_supported: true,
         prompt_file: Some("AGENTS.md"),
         shared_root: None,

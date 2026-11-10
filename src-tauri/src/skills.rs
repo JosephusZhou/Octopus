@@ -838,7 +838,7 @@ pub fn list_skills() -> Result<SkillsListResult, String> {
             .get(&id)
             .map(|s| s.iter().cloned().collect())
             .unwrap_or_default();
-        applied.sort();
+        applied.sort_by_key(|a| crate::agents::display_order(a));
 
         // Also try matching by frontmatter name if dir differs
         let doc = read_skill_doc(&path);
@@ -849,7 +849,7 @@ pub fn list_skills() -> Result<SkillsListResult, String> {
                         applied.push(a.clone());
                     }
                 }
-                applied.sort();
+                applied.sort_by_key(|a| crate::agents::display_order(a));
             }
         }
 
@@ -1007,7 +1007,7 @@ fn import_skill_dir(
             }
         }
     }
-    applied.sort();
+    applied.sort_by_key(|a| crate::agents::display_order(a));
 
     Ok(build_record(&id, &dest, &entry, &applied, false))
 }
@@ -1662,7 +1662,7 @@ fn applied_after_for(id: &str, lib_skill_dir: &Path) -> Vec<String> {
             }
         }
     }
-    applied.sort();
+    applied.sort_by_key(|a| crate::agents::display_order(a));
     applied
 }
 
@@ -3609,7 +3609,7 @@ pub fn scan_skill_repo_changes() -> Result<SkillRepoChangesResult, String> {
                     }
                 }
             }
-            applied.sort();
+            applied.sort_by_key(|a| crate::agents::display_order(a));
 
             let managed = managed_entry_names(&member.id, &local_dir);
             let installations = installations_for_names(&managed);
@@ -4198,7 +4198,7 @@ pub fn update_skills_batch(ids: Vec<String>) -> Result<BatchSkillResult, String>
                                         }
                                     }
                                 }
-                                applied.sort();
+                                applied.sort_by_key(|a| crate::agents::display_order(a));
                                 let managed = managed_entry_names(&item.id, &local_dir);
                                 let installations = installations_for_names(&managed);
                                 let rec = RepoChangeRemoved {

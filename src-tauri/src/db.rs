@@ -300,7 +300,7 @@ pub fn load_agents() -> Result<Vec<SniffResult>, String> {
         )
         .map_err(|e| format!("Failed to prepare query: {}", e))?;
 
-    let agents = stmt
+    let mut agents = stmt
         .query_map([], |row| {
             let install_paths_raw: String = row.get(3)?;
             let config_dirs_raw: String = row.get(4)?;
@@ -323,6 +323,10 @@ pub fn load_agents() -> Result<Vec<SniffResult>, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to read agents: {}", e))?;
 
+    // id 是首次插入序，upsert 不会重排；展示顺序以注册表为准，
+    // 手动添加的 agent（不在注册表）保持 id 序排在最后。
+    agents.sort_by_key(|a| crate::agents::display_order(&a.name));
+
     Ok(agents)
 }
 
@@ -337,7 +341,8 @@ fn row_to_mcp(row: &rusqlite::Row<'_>) -> rusqlite::Result<McpServerRecord> {
     let args: Vec<String> = serde_json::from_str(&args_raw).unwrap_or_default();
     let env: HashMap<String, String> = serde_json::from_str(&env_raw).unwrap_or_default();
     let headers: HashMap<String, String> = serde_json::from_str(&headers_raw).unwrap_or_default();
-    let applied_agents: Vec<String> = serde_json::from_str(&agents_raw).unwrap_or_default();
+    let mut applied_agents: Vec<String> = serde_json::from_str(&agents_raw).unwrap_or_default();
+    applied_agents.sort_by_key(|a| crate::agents::display_order(a));
 
     Ok(McpServerRecord {
         id: row.get(0)?,
