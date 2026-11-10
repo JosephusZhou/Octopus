@@ -67,7 +67,7 @@ jobs:
             target: x86_64-apple-darwin
           - arch: aarch64
             target: aarch64-apple-darwin
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Check out tagged source
         uses: actions/checkout@v4

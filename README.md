@@ -2,7 +2,7 @@
 
 ![License](https://img.shields.io/badge/license-PolyForm_Noncommercial-blue)
 ![Platform](https://img.shields.io/badge/platform-desktop-lightgrey)
-![Version](https://img.shields.io/badge/version-0.5.0-green)
+![Version](https://img.shields.io/badge/version-0.6.0-green)
 
 Octopus 是一个面向本地桌面场景的 Tauri + React 工具，用来统一管理常见 AI Agent 生态配置。
 
@@ -196,14 +196,15 @@ src-tauri/src/                Rust 后端
 
 发布由 `vMAJOR.MINOR.PATCH` 格式的 Git tag 触发（见 `.github/workflows/release.yml`），会自动创建 GitHub Release 并上传：
 
-- macOS：Intel + Apple Silicon 两个 DMG
+- macOS：Intel + Apple Silicon 两个 DMG（在 `macos-15` arm64 runner 上交叉编译，`macos-14` 已于
+  2026-11-02 退役）
 - Windows：x64 NSIS 安装包（`*-setup.exe`）
 
 打 tag 前请保证 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、
 `src-tauri/Cargo.lock` 和 `README.md` 版本号一致：
 
 ```bash
-git tag v0.5.0
+git tag v0.6.0
 git push origin main --tags
 ```
 
