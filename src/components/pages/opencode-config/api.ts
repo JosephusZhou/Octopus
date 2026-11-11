@@ -101,3 +101,11 @@ export async function invokeRevealConfig(agent: ModelConfigAgentId): Promise<Age
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke("reveal_agent_model_config", { agent }) as Promise<AgentActionResult>;
 }
+
+/** OpenCode 1.x 残留一键迁移到 2.x；返回刷新后的视图。 */
+export async function invokeMigrateLegacyConfig(
+  agent: ModelConfigAgentId,
+): Promise<AgentActionResult> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke("migrate_agent_model_config", { agent }) as Promise<AgentActionResult>;
+}

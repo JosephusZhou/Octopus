@@ -599,18 +599,15 @@ pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderAct
                         id: binding.agent_provider_id.clone(),
                         previous_id: None,
                         name: None,
-                        npm: None,
+                        package: None,
                         api: None, // 不动用户已选的 api 格式
                         base_url: if base_url.is_empty() {
                             None
                         } else {
                             Some(base_url)
                         },
-                        set_cache_key: None,
                         timeout: None,
                         chunk_timeout: None,
-                        whitelist: None,
-                        blacklist: None,
                         api_key: Some(plain_key.clone()),
                     };
 
@@ -649,7 +646,7 @@ pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderAct
         }
 
         if !sync_parts.is_empty() {
-            message.push_str("；");
+            message.push('；');
             message.push_str(&sync_parts.join("；"));
         }
     }

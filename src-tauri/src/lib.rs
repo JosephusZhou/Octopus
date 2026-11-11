@@ -999,6 +999,19 @@ async fn reveal_agent_model_config(
     }
 }
 
+/// OpenCode 1.x 残留（顶层 `provider` / 旧版 auth.json 密钥）一键迁移到 2.x。
+/// Pi 家族没有 1.x → 2.x 的迁移场景，直接拒绝，避免前端误调用时静默改盘。
+#[tauri::command]
+async fn migrate_agent_model_config(
+    agent: String,
+) -> Result<opencode_config::AgentActionResult, String> {
+    use agent_model_config::ModelConfigAgent;
+    match ModelConfigAgent::parse(&agent)? {
+        ModelConfigAgent::Opencode => opencode_config::migrate_legacy_config(),
+        a => Err(format!("{} 不支持 1.x 配置迁移", a.id())),
+    }
+}
+
 /* ===== Codex multi-env (CODEX_HOME) ===== */
 
 #[tauri::command]
@@ -1949,6 +1962,7 @@ pub fn run() {
             fetch_models_dev_catalog,
             probe_models_endpoint,
             reveal_agent_model_config,
+            migrate_agent_model_config,
             pick_project_folder,
             pick_agent_cli_path,
             pick_agent_config_dir,

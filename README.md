@@ -15,10 +15,7 @@ Octopus 是一个面向本地桌面场景的 Tauri + React 工具，用来统一
 | Skills | 本地 / GitHub / GitCode 多源导入 Skill，支持批量应用到多个 Agent、标签管理、导出 |
 | Claude 多环境 | 管理多个 `CLAUDE_CONFIG_DIR` 环境（别名安装、Token 配置、MCP 同步、模型选择） |
 | Codex 多环境 | 管理多个 `CODEX_HOME` 环境（别名安装、Auth 配置、MCP 同步） |
-| OpenCode配置 | 管理 OpenCode 的 Provider / Model、API Key、Models.dev 目录同步 |
-| Pi配置 | 管理 Pi 的 Provider / Model、API Key、Models.dev 目录同步 |
-| OMP配置 | 管理 Oh-My-Pi 的 Provider / Model、API Key、Models.dev 目录同步（YAML 配置） |
-| OmO配置 | 管理 OmO 的 Provider / Model、API Key、Models.dev 目录同步 |
+| 模型配置 | 一个入口管理 OpenCode / Pi / OMP / OmO 的 Provider / Model、API Key 与 Models.dev 目录同步，顶部下拉切换 Agent |
 | 供应商 | 集中管理供应商（Anthropic / OpenAI / 通用 Universal），加密存储 API Key，支持 Base URL 自定义 |
 | 路由聚合 | 本地 Axum 代理，统一接入已启用供应商的模型路由，支持同协议转发、故障转移与 cloaking |
 | 项目配置 | 一键为项目初始化 AI Agent 骨架（Full / Symlink 模式），可选注入 MCP 和 Skills |
@@ -144,11 +141,7 @@ src/                          React 前端
       SkillsManage.tsx        Skills
       ClaudeEnv.tsx           Claude 多环境管理
       CodexEnv.tsx            Codex 多环境管理
-      OpenCodeConfig.tsx      OpenCode配置入口（薄包装）
-      PiConfig.tsx            Pi配置入口（薄包装）
-      OmpConfig.tsx           OMP配置入口（薄包装）
-      OmoConfig.tsx           OmO配置入口（薄包装）
-      model-config/ModelConfigAgentPage.tsx  OpenCode/Pi/Oh-My-Pi/OmO 复用的模型配置主体
+      model-config/ModelConfigAgentPage.tsx  模型配置（合并入口 + 单 Agent 配置主体）
       AiProviders.tsx         供应商
       RouteAggregation.tsx    路由聚合
       ProjectConfig.tsx       项目配置初始化

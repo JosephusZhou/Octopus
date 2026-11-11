@@ -251,8 +251,23 @@ project `.opencode` 目录扫描；同名 skill 会覆盖 `~/.config/opencode/sk
 这是项目级覆盖，不是第二个全局路径；存量技能建议迁移到全局主路径，不要双写。
 
 **模型配置**：`opencode_config.rs` 提供 `get_agent_model_config` / `upsert_agent_model` /
-`upsert_agent_provider` 等命令；`~/.config/opencode/opencode.json` 的 `provider` / `model`
-条目与 `auth.json`（API Key）独立维护。
+`upsert_agent_provider` 等命令；按 **OpenCode 2.x 原生 schema** 读写
+`providers.<id>.{name,package,settings,models}` 与顶层 `model` / `agents.title.model`。
+OpenCode 2.x 只认 2.x 字段，写侧约束：
+
+- 顶层只用 `providers`；保存/删除某个 provider 时同步清理 1.x `provider.<id>` 残留
+  （2.x 中 `providers` 覆盖 `provider`，同 id 双写会导致保存不生效）。
+- `package`：AI SDK 包必须带 `aisdk:` 前缀（保存时自动补），否则落到原生 loader。
+- 供应商请求参数在 `settings`（`baseURL` / `apiKey` / `timeout` / `chunkTimeout`）；
+  密钥写 `settings.apiKey` 并收紧文件权限；1.x 的 `options` / `npm` / `whitelist` /
+  `blacklist` / `setCacheKey` 不再写回。
+- 模型能力在 `capabilities`（`input` / `output` / `tools` / `reasoning`）；
+  `reasoning` 必须是对象（`{supported:false}` 或 `{supported:true,effort?,budget?}`），
+  写成布尔会让 2.x **静默丢弃整个 provider**。`variants` 必须是数组
+  `[{id, settings?, headers?, body?}]`。
+- 第二模型槽位写 `agents.title.model`（1.x `small_model` 的 2.x 等价物，保存时清除旧键）。
+- 1.x 的 `provider` / `auth.json`（`~/.local/share/opencode/auth.json`，2.x 不再读取）
+  仅在读取时兼容：读取归入列表并给出 warning，保存时按 id 迁移到 2.x 形态。
 
 ### 5.5 Antigravity (`antigravity`)
 
@@ -379,7 +394,7 @@ AgentBuddy 只维护 AGENTS.md，不生成 GEMINI.md 指针。
 
 字段映射与 Pi 相同：`contextWindow`→`limitContext`、`maxTokens`→`limitOutput`、
 `input`→`modalitiesInput`；未建模字段进 `extraOptions` 原样往返。列表 DTO **永不**回传明文 API Key。
-`modelRoles.default` 与 `modelRoles.fast` 由 OMP配置页可读写，其它角色与顶层键保留。
+`modelRoles.default` 与 `modelRoles.fast` 由模型配置页（顶部下拉选 OMP）可读写，其它角色与顶层键保留。
 
 ### 5.9 OmO (`omo`)
 

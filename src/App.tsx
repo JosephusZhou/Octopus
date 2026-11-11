@@ -4,10 +4,7 @@ import AgentSniff from "./components/pages/AgentSniff";
 import AiProviders from "./components/pages/AiProviders";
 import About from "./components/pages/About";
 import BackupManage from "./components/pages/BackupManage";
-import OpenCodeConfig from "./components/pages/OpenCodeConfig";
-import OmpConfig from "./components/pages/OmpConfig";
-import OmoConfig from "./components/pages/OmoConfig";
-import PiConfig from "./components/pages/PiConfig";
+import { ModelConfigPage } from "./components/pages/model-config/ModelConfigAgentPage";
 import ProjectConfig from "./components/pages/ProjectConfig";
 import SkillsManage from "./components/pages/SkillsManage";
 import McpManage from "./components/pages/McpManage";
@@ -35,10 +32,7 @@ import { Toast } from "./components/Toast";
 export type MainView =
   | "agent-sniff"
   | "ai-providers"
-  | "opencode-config"
-  | "pi-config"
-  | "omp-config"
-  | "omo-config"
+  | "model-config"
   | "project-config"
   | "skills-manage"
   | "mcp-manage"
@@ -189,10 +183,7 @@ export default function App() {
       <main className="main-content">
         {view === "agent-sniff" && <AgentSniff onNavigate={setView} />}
         {view === "ai-providers" && <AiProviders />}
-        {view === "opencode-config" && <OpenCodeConfig />}
-        {view === "pi-config" && <PiConfig />}
-        {view === "omp-config" && <OmpConfig />}
-        {view === "omo-config" && <OmoConfig />}
+        {view === "model-config" && <ModelConfigPage />}
         {view === "project-config" && <ProjectConfig />}
         {view === "skills-manage" && <SkillsManage />}
         {view === "mcp-manage" && <McpManage />}

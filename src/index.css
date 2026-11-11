@@ -4438,6 +4438,18 @@ button.skill-tag-none:hover {
   word-break: break-all;
 }
 
+/* ===== 模型配置：标题与 Agent 切换下拉同排 ===== */
+.model-config-header-main {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+.model-config-agent-switcher {
+  width: 200px;
+  flex-shrink: 0;
+}
+
 /* ===== OpenCode config ===== */
 /* 弹窗骨架：限制 90vh，body 内部滚动（供应商 / 模型等长表单共用） */
 .oc-modal {
@@ -4578,6 +4590,24 @@ button.skill-tag-none:hover {
   background: color-mix(in srgb, #f59e0b 12%, transparent);
   border: 1px solid color-mix(in srgb, #f59e0b 28%, transparent);
   border-radius: var(--seed-radius);
+}
+/* 含可迁移项时：说明文字左侧撑满，红色「迁移」按钮贴右下角 */
+.oc-warning.is-actionable {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+.oc-warning-list {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.oc-warning-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  /* 只有按钮、没有说明文字时也贴右侧 */
+  margin-left: auto;
 }
 .oc-provider-list {
   display: flex;

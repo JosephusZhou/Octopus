@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Octopus 是一个 Tauri 2 桌面应用，用于发现本机 AI coding agent，并管理 MCP、Skills、
-多环境、OpenCode配置、Pi配置、OMP配置、OmO配置、供应商、项目配置和备份。
+多环境、模型配置（OpenCode / Pi / OMP / OmO 合并入口）、供应商、项目配置和备份。
 
 ## 技术栈与命令
 
@@ -225,8 +225,7 @@ CLIProxyAPI 只提供行为同步参考，不是运行时依赖。上游变更�
 
 ## 前端视图
 
-主界面包含 Agent、MCP、Skills、Claude 环境、Codex 环境、OpenCode配置、Pi配置、
-OMP配置、OmO配置、供应商、路由聚合、项目配置和备份管理；设置界面包含偏好、网络代理和 WebDAV。
+主界面包含 Agent、MCP、Skills、Claude 环境、Codex 环境、模型配置、供应商、路由聚合、项目配置和备份管理；设置界面包含偏好、网络代理和 WebDAV。
 
 ## 修改规则
 

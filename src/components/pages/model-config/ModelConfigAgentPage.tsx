@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useStatusMessage } from "@/lib/useStatusMessage";
 import { formatDisplayPath } from "@/lib/formatPath";
 import { Toast } from "@/components/Toast";
@@ -22,6 +22,7 @@ import {
   invokeFetchCatalog,
   invokeGetConfig,
   invokeGetSecret,
+  invokeMigrateLegacyConfig,
   invokeRevealConfig,
   invokeSetDefaults,
   invokeUpsertModel,
@@ -141,17 +142,6 @@ function apiKeySourceLabel(source: string): string {
     default:
       return "未配置";
   }
-}
-
-function parseCsvTags(raw: string): string[] {
-  return raw
-    .split(/[,，\n]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-function tagsToCsv(tags: string[]): string {
-  return tags.join(", ");
 }
 
 function modelRef(providerId: string, modelId: string): string {
@@ -310,6 +300,7 @@ function applyCatalogLimits(
 
 const NPM_PRESETS = [
   { value: "@ai-sdk/openai", label: "OpenAI" },
+  { value: "@ai-sdk/openai-compatible", label: "OpenAI Compatible" },
   { value: "@ai-sdk/anthropic", label: "Anthropic" },
 ];
 
@@ -323,6 +314,7 @@ type AppSelectOption = {
 function AppSelect({
   id,
   labelId,
+  ariaLabel,
   value,
   options,
   onChange,
@@ -332,6 +324,8 @@ function AppSelect({
 }: {
   id?: string;
   labelId?: string;
+  /** 无可见 <label> 时的无障碍名称，落到触发按钮和 listbox 上。 */
+  ariaLabel?: string;
   value: string;
   options: AppSelectOption[];
   onChange: (value: string) => void;
@@ -380,6 +374,7 @@ function AppSelect({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-labelledby={labelId}
+        aria-label={ariaLabel}
         disabled={disabled}
         onClick={() => {
           if (!disabled) setOpen((v) => !v);
@@ -393,7 +388,12 @@ function AppSelect({
         </span>
       </button>
       {open && (
-        <div className="app-select-menu" role="listbox" aria-labelledby={labelId}>
+        <div
+          className="app-select-menu"
+          role="listbox"
+          aria-labelledby={labelId}
+          aria-label={ariaLabel}
+        >
           {options.length === 0 ? (
             <div className="app-select-empty">{emptyText}</div>
           ) : (
@@ -432,9 +432,11 @@ const NPM_SELECT_OPTIONS: AppSelectOption[] = [
   })),
 ];
 
-/** OpenCode 旧配置可能使用其它 SDK 包；编辑时归一到当前支持的两种包。 */
-function normalizeOpenCodeNpm(npm: string | null | undefined): string {
-  return npm === "@ai-sdk/anthropic" ? "@ai-sdk/anthropic" : "@ai-sdk/openai";
+/** OpenCode 2.x：剥掉 `aisdk:` 前缀后的裸包名；空值回退到 OpenAI 兼容包。
+ *  认不出的包必须原样保留，否则用户只改个超时也会把 `openai-compatible` 改成 `openai`。 */
+function normalizeOpenCodeNpm(packageName: string | null | undefined): string {
+  const raw = (packageName ?? "").trim().replace(/^aisdk:/, "");
+  return raw || "@ai-sdk/openai";
 }
 
 /** Pi 家族（Pi / Oh-My-Pi）供应商允许配置的 HTTP API 格式。
@@ -519,11 +521,11 @@ function protocolForNpm(
   providerId?: string,
 ): ProviderProtocol {
   if (isRouteAggregationProvider(providerId)) {
-    return npm === "@ai-sdk/anthropic" ? "anthropic" : "openai";
+    return npm.includes("anthropic") ? "anthropic" : "openai";
   }
-  if (hasAnyOpenaiType(types) && npm !== "@ai-sdk/anthropic") return "openai";
+  if (hasAnyOpenaiType(types) && !npm.includes("anthropic")) return "openai";
   if (hasApiType(types, "anthropic")) return "anthropic";
-  return npm === "@ai-sdk/anthropic" ? "anthropic" : "openai";
+  return npm.includes("anthropic") ? "anthropic" : "openai";
 }
 
 function protocolForApi(
@@ -543,12 +545,6 @@ function providerBaseUrlForProtocol(p: AiProvider, protocol: ProviderProtocol): 
   return protocol === "openai" ? openaiProviderBaseUrl(p) : p.baseUrl;
 }
 
-const THINKING_TYPE_OPTIONS: AppSelectOption[] = [
-  { value: "", label: "（不设置）" },
-  { value: "enabled", label: "enabled" },
-  { value: "disabled", label: "disabled" },
-];
-
 /** 供应商（OpenAI / 通用类型）面向 OpenAI 兼容端点的 Base URL。 */
 function aiProviderOpenaiBaseUrl(p: AiProvider): string {
   return openaiProviderBaseUrl(p);
@@ -563,8 +559,6 @@ type ProviderForm = {
   baseUrl: string;
   timeout: string;
   chunkTimeout: string;
-  whitelist: string;
-  blacklist: string;
   apiKey: string;
   apiKeyTouched: boolean;
   isNew: boolean;
@@ -582,8 +576,6 @@ type ModelForm = {
   modalitiesOutput: string[];
   reasoning: boolean | null;
   toolCall: boolean | null;
-  attachment: boolean | null;
-  thinkingType: string;
   thinkingBudgetTokens: string;
   reasoningEffort: string;
   textVerbosity: string;
@@ -603,8 +595,6 @@ function emptyProviderForm(): ProviderForm {
     baseUrl: "",
     timeout: "",
     chunkTimeout: "",
-    whitelist: "",
-    blacklist: "",
     apiKey: "",
     apiKeyTouched: false,
     isNew: true,
@@ -624,8 +614,6 @@ function emptyModelForm(providerId: string): ModelForm {
     modalitiesOutput: ["text"],
     reasoning: null,
     toolCall: null,
-    attachment: null,
-    thinkingType: "",
     thinkingBudgetTokens: "",
     reasoningEffort: "",
     textVerbosity: "",
@@ -718,9 +706,9 @@ const SECONDARY_SLOT: Record<
   { label: string; badge: string; hint: string } | null
 > = {
   opencode: {
-    label: "small_model",
-    badge: "small",
-    hint: "写入 OpenCode 配置顶层的 small_model。",
+    label: "title 模型",
+    badge: "title",
+    hint: "写入 OpenCode 2.x 的 agents.title.model（1.x small_model 的等价物）。",
   },
   pi: null,
   "oh-my-pi": {
@@ -820,16 +808,29 @@ function ModelChip({
 
 /* ===== Page ===== */
 
+/** 页面标题：四个 Agent 共用同一入口，标题文案只有这一处。 */
+function ConfigHeaderTitle() {
+  return (
+    <h1 className="content-title">
+      <span className="title-crumb">
+        环境与配置<span className="title-sep">/</span>
+      </span>
+      模型配置
+    </h1>
+  );
+}
+
 /**
- * 单 Agent 模型配置页（OpenCode 或 Pi）。
- * 由 OpenCodeConfig / PiConfig 两个页面入口分别以固定 agent 复用本组件。
+ * 单 Agent 模型配置主体：按 agent 读写对应 Agent 的供应商与模型配置。
+ * 由合并入口 ModelConfigPage 以下拉切换 agent 的方式复用。
  */
 export function ModelConfigAgentPage({
   agent,
-  pageTitle,
+  agentSwitcher,
 }: {
   agent: ModelConfigAgentId;
-  pageTitle: string;
+  /** 合并入口传入的 Agent 切换控件，渲染在标题右侧。 */
+  agentSwitcher?: ReactNode;
 }) {
   const isOpenCode = agent === "opencode";
   const [view, setView] = useState<AgentModelConfigView | null>(null);
@@ -838,6 +839,8 @@ export function ModelConfigAgentPage({
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  // OpenCode 1.x 一键迁移进行中（只影响「迁移」按钮文案，禁用统一走 busy）。
+  const [migrating, setMigrating] = useState(false);
   const [statusMsg, setStatusMsg] = useStatusMessage();
 
   const [providerForm, setProviderForm] = useState<ProviderForm | null>(null);
@@ -1054,7 +1057,7 @@ export function ModelConfigAgentPage({
   const openEditProvider = async (p: AgentProviderView) => {
     setFormError("");
     setShowApiKey(false);
-    const npm = normalizeOpenCodeNpm(p.npm);
+    const npm = isOpenCode ? normalizeOpenCodeNpm(p.package) : "@ai-sdk/openai";
     const api = normalizePiApi(p.api);
     const protocol = isOpenCode ? protocolForNpm(undefined, npm) : protocolForApi(undefined, api);
     const form: ProviderForm = {
@@ -1066,8 +1069,6 @@ export function ModelConfigAgentPage({
       baseUrl: normalizeBaseUrlForProtocol(p.baseUrl ?? "", protocol),
       timeout: p.timeout != null ? String(p.timeout) : "",
       chunkTimeout: p.chunkTimeout != null ? String(p.chunkTimeout) : "",
-      whitelist: tagsToCsv(p.whitelist),
-      blacklist: tagsToCsv(p.blacklist),
       apiKey: "",
       apiKeyTouched: false,
       isNew: false,
@@ -1133,8 +1134,6 @@ export function ModelConfigAgentPage({
       modalitiesOutput: [...model.modalitiesOutput],
       reasoning: model.reasoning ?? null,
       toolCall: model.toolCall ?? null,
-      attachment: model.attachment ?? null,
-      thinkingType: model.thinkingType ?? "",
       thinkingBudgetTokens:
         model.thinkingBudgetTokens != null ? String(model.thinkingBudgetTokens) : "",
       reasoningEffort: model.reasoningEffort ?? "",
@@ -1223,7 +1222,8 @@ export function ModelConfigAgentPage({
         payload.api = providerForm.api;
       }
       if (isOpenCode) {
-        payload.npm = providerForm.npm.trim() || null;
+        // OpenCode 2.x：协议由 package 推导；timeout/chunkTimeout 写入 settings。
+        payload.package = providerForm.npm.trim() || null;
         payload.timeout = (() => {
           const n = parseOptionalNumber(providerForm.timeout);
           return n == null ? null : Math.round(n);
@@ -1232,8 +1232,6 @@ export function ModelConfigAgentPage({
           const n = parseOptionalNumber(providerForm.chunkTimeout);
           return n == null ? null : Math.round(n);
         })();
-        payload.whitelist = parseCsvTags(providerForm.whitelist);
-        payload.blacklist = parseCsvTags(providerForm.blacklist);
       }
       if (providerForm.apiKeyTouched) {
         payload.apiKey = providerForm.apiKey;
@@ -1291,10 +1289,9 @@ export function ModelConfigAgentPage({
         modalitiesInput: modelForm.modalitiesInput,
         modalitiesOutput: modelForm.modalitiesOutput,
         reasoning: modelForm.reasoning,
-        // 以下为 OpenCode 专属字段；Pi 家族后端会忽略
+        // toolCall 为 OpenCode 专属（2.x capabilities.tools）；Pi 家族仅建模 reasoning
         toolCall: isOpenCode ? modelForm.toolCall : null,
-        attachment: isOpenCode ? modelForm.attachment : null,
-        thinkingType: isOpenCode ? modelForm.thinkingType.trim() || null : null,
+        // attachment / status / thinkingType 是 1.x 遗留（2.x 用 capabilities 表达），不再上报
         thinkingBudgetTokens: isOpenCode
           ? (() => {
               const n = parseOptionalNumber(modelForm.thinkingBudgetTokens);
@@ -1396,6 +1393,25 @@ export function ModelConfigAgentPage({
     }
   };
 
+  /** 把 1.x 残留（顶层 provider / 旧版 auth.json 密钥）一键迁移到 2.x。 */
+  const migrateLegacy = async () => {
+    if (busy || migrating) return;
+    setMigrating(true);
+    setBusy(true);
+    try {
+      const res = await invokeMigrateLegacyConfig(agent);
+      // 后端返回迁移后的视图：供应商列表、警告块和待迁移项同时刷新。
+      if (res.view) applyView(res.view);
+      else await loadConfig(true);
+      setStatusMsg(res.message || "OpenCode 1.x 配置已迁移");
+    } catch (e) {
+      setStatusMsg(`迁移失败: ${e}`);
+    } finally {
+      setBusy(false);
+      setMigrating(false);
+    }
+  };
+
   const catalogReasoning = modelForm
     ? reasoningOptionsFor(catalog, modelForm.providerId, modelForm.id)
     : [];
@@ -1420,17 +1436,28 @@ export function ModelConfigAgentPage({
       })()
     : null;
   const inputModalityOptions = agent === "opencode" ? MODALITY_OPTIONS : PI_MODALITY_OPTIONS;
+  // 当前 package 不在预置列表时（如 `@ai-sdk/openai-compatible` 之外的第三方包）临时补一项，
+  // 否则下拉框只显示占位符，用户随手保存就会把原 package 改掉。
+  const npmSelectOptions = useMemo<AppSelectOption[]>(() => {
+    const current = providerForm?.npm ?? "";
+    if (!current || NPM_SELECT_OPTIONS.some((o) => o.value === current)) return NPM_SELECT_OPTIONS;
+    return [...NPM_SELECT_OPTIONS, { value: current, label: current, sub: "当前配置" }];
+  }, [providerForm?.npm]);
+  // 仅 OpenCode 存在 1.x → 2.x 迁移场景；后端对 Pi 家族返回 null。
+  const legacyMigration = isOpenCode ? (view?.legacyMigration ?? null) : null;
+  // 同一个供应商可能既在 1.x `provider` 里、密钥又只在 auth.json，按 id 去重计数。
+  const legacyMigrationCount = legacyMigration
+    ? new Set([...legacyMigration.providers, ...legacyMigration.authProviders]).size
+    : 0;
 
   return (
     <>
       <div className="content-header">
         <div className="content-header-bar">
-          <h1 className="content-title">
-            <span className="title-crumb">
-              环境与配置<span className="title-sep">/</span>
-            </span>
-            {pageTitle}
-          </h1>
+          <div className="model-config-header-main">
+            <ConfigHeaderTitle />
+            {agentSwitcher}
+          </div>
           <div className="header-actions">
             <button
               type="button"
@@ -1497,11 +1524,28 @@ export function ModelConfigAgentPage({
           </div>
         )}
 
-        {view?.installed && view.warnings?.length ? (
-          <div className="oc-warning">
-            {view.warnings.map((w) => (
-              <div key={w}>{w}</div>
-            ))}
+        {view?.installed && (view.warnings?.length || legacyMigrationCount > 0) ? (
+          <div className={`oc-warning ${legacyMigrationCount > 0 ? "is-actionable" : ""}`}>
+            {view.warnings?.length ? (
+              <div className="oc-warning-list">
+                {view.warnings.map((w) => (
+                  <div key={w}>{w}</div>
+                ))}
+              </div>
+            ) : null}
+            {legacyMigrationCount > 0 ? (
+              <div className="oc-warning-actions">
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  onClick={() => void migrateLegacy()}
+                  disabled={busy}
+                  title={`把 ${legacyMigrationCount} 项 1.x 残留迁移到 OpenCode 2.x`}
+                >
+                  {migrating ? "迁移中…" : "迁移"}
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -1598,7 +1642,7 @@ export function ModelConfigAgentPage({
                         )}
                       </div>
                       <div className="oc-provider-meta">
-                        {p.npm ? <span>npm: {p.npm}</span> : null}
+                        {p.package ? <span>package: {p.package}</span> : null}
                         {p.baseUrl ? (
                           <span className="oc-provider-url" title={p.baseUrl}>
                             {p.baseUrl}
@@ -1785,13 +1829,13 @@ export function ModelConfigAgentPage({
                 {isOpenCode && (
                   <div className="form-group">
                     <label className="form-label" id="oc-npm-label" htmlFor="oc-npm">
-                      npm 包
+                      package（协议 SDK）
                     </label>
                     <AppSelect
                       id="oc-npm"
                       labelId="oc-npm-label"
                       value={providerForm.npm}
-                      options={NPM_SELECT_OPTIONS}
+                      options={npmSelectOptions}
                       onChange={(v) => {
                         const selected = aiProviders.find((p) => p.id === formAiProviderId);
                         const protocol = protocolForNpm(selected?.providerTypes, v, selected?.id);
@@ -1802,8 +1846,12 @@ export function ModelConfigAgentPage({
                         });
                       }}
                       disabled={busy}
-                      placeholder="选择 npm 包"
+                      placeholder="选择 package"
                     />
+                    <p className="oc-form-hint">
+                      写入 OpenCode 2.x 的 <code>providers.&lt;id&gt;.package</code>
+                      ；保存时自动补 <code>aisdk:</code> 前缀。
+                    </p>
                   </div>
                 )}
                 {!isOpenCode && (
@@ -1886,38 +1934,6 @@ export function ModelConfigAgentPage({
                     </div>
                   </div>
                 )}
-                {isOpenCode && (
-                  <div className="form-group">
-                    <label className="form-label" htmlFor="oc-wl">
-                      whitelist（逗号分隔）
-                    </label>
-                    <input
-                      id="oc-wl"
-                      className="form-input"
-                      value={providerForm.whitelist}
-                      onChange={(e) =>
-                        setProviderForm({ ...providerForm, whitelist: e.target.value })
-                      }
-                      disabled={busy}
-                    />
-                  </div>
-                )}
-                {isOpenCode && (
-                  <div className="form-group">
-                    <label className="form-label" htmlFor="oc-bl">
-                      blacklist（逗号分隔）
-                    </label>
-                    <input
-                      id="oc-bl"
-                      className="form-input"
-                      value={providerForm.blacklist}
-                      onChange={(e) =>
-                        setProviderForm({ ...providerForm, blacklist: e.target.value })
-                      }
-                      disabled={busy}
-                    />
-                  </div>
-                )}
                 <div className="form-group">
                   <label className="form-label" htmlFor="oc-key">
                     API Key
@@ -1929,7 +1945,7 @@ export function ModelConfigAgentPage({
                       type={showApiKey ? "text" : "password"}
                       placeholder={
                         providerForm.isNew
-                          ? `可选，写入 ${formatDisplayPath(view?.credentialPath ?? "") || "Agent 配置文件"}`
+                          ? `可选，写入 ${formatDisplayPath(view?.configPath ?? "") || "Agent 配置文件"}`
                           : "留空且不改动；清空并保存可删除密钥"
                       }
                       value={providerForm.apiKey}
@@ -1955,8 +1971,9 @@ export function ModelConfigAgentPage({
                     </button>
                   </div>
                   <p className="oc-form-hint">
-                    密钥默认写入 <code>auth.json</code>
-                    ，列表不会回传明文。清空输入并保存可删除密钥。
+                    {isOpenCode
+                      ? "密钥写入配置文件的 providers.<id>.settings.apiKey（OpenCode 2.x 不再读取 auth.json），列表不会回传明文。清空输入并保存可删除密钥。"
+                      : "密钥写入对应 agent 的凭据文件，列表不会回传明文。清空输入并保存可删除密钥。"}
                   </p>
                   <button
                     type="button"
@@ -2283,12 +2300,11 @@ export function ModelConfigAgentPage({
                   <label className="form-label">能力标记</label>
                   <div className="oc-modality-checks">
                     {
-                      // toolCall/attachment 为 OpenCode 专属字段；Pi 家族仅建模 reasoning
+                      // toolCall 为 OpenCode 专属（2.x capabilities.tools）；Pi 家族仅建模 reasoning
                       (isOpenCode
                         ? ([
                             ["reasoning", "reasoning"],
-                            ["toolCall", "tool_call"],
-                            ["attachment", "attachment"],
+                            ["toolCall", "tool_call（2.x tools）"],
                           ] as const)
                         : ([["reasoning", "reasoning"]] as const)
                       ).map(([key, label]) => {
@@ -2356,59 +2372,23 @@ export function ModelConfigAgentPage({
                       </div>
                     )}
                     {(hasBudget || hasToggle || !catalogReasoning.length) && (
-                      <div className="oc-form-grid">
-                        <div className="form-group">
-                          <label
-                            className="form-label form-label-optional"
-                            id="oc-think-type-label"
-                            htmlFor="oc-think-type"
-                          >
-                            thinking.type
-                          </label>
-                          <AppSelect
-                            id="oc-think-type"
-                            labelId="oc-think-type-label"
-                            value={modelForm.thinkingType}
-                            options={(() => {
-                              if (
-                                modelForm.thinkingType &&
-                                !THINKING_TYPE_OPTIONS.some(
-                                  (o) => o.value === modelForm.thinkingType,
-                                )
-                              ) {
-                                return [
-                                  ...THINKING_TYPE_OPTIONS,
-                                  {
-                                    value: modelForm.thinkingType,
-                                    label: modelForm.thinkingType,
-                                  },
-                                ];
-                              }
-                              return THINKING_TYPE_OPTIONS;
-                            })()}
-                            onChange={(v) => setModelForm({ ...modelForm, thinkingType: v })}
-                            disabled={busy}
-                            placeholder="（不设置）"
-                          />
-                        </div>
-                        <div className="form-group">
-                          <label className="form-label form-label-optional" htmlFor="oc-budget">
-                            budgetTokens
-                          </label>
-                          <input
-                            id="oc-budget"
-                            className="form-input"
-                            inputMode="numeric"
-                            value={modelForm.thinkingBudgetTokens}
-                            onChange={(e) =>
-                              setModelForm({
-                                ...modelForm,
-                                thinkingBudgetTokens: e.target.value,
-                              })
-                            }
-                            disabled={busy}
-                          />
-                        </div>
+                      <div className="form-group">
+                        <label className="form-label form-label-optional" htmlFor="oc-budget">
+                          budgetTokens（2.x reasoning.budget.max）
+                        </label>
+                        <input
+                          id="oc-budget"
+                          className="form-input"
+                          inputMode="numeric"
+                          value={modelForm.thinkingBudgetTokens}
+                          onChange={(e) =>
+                            setModelForm({
+                              ...modelForm,
+                              thinkingBudgetTokens: e.target.value,
+                            })
+                          }
+                          disabled={busy}
+                        />
                       </div>
                     )}
                   </div>
@@ -2604,7 +2584,7 @@ export function ModelConfigAgentPage({
                 disabled={busy}
               />
               <CheckGlyph />
-              <span className="ui-check-label">同时删除 auth.json 中的密钥</span>
+              <span className="ui-check-label">同时清理旧版 auth.json 中的密钥</span>
             </label>
           </div>
           <div className="modal-footer">
@@ -2677,5 +2657,31 @@ export function ModelConfigAgentPage({
         </div>
       </div>
     </>
+  );
+}
+
+/* ===== 合并入口 ===== */
+
+/**
+ * 模型配置页（合并入口）：顶部下拉切换 Agent，正文复用单 Agent 配置主体。
+ * key={agent} 重挂载主体，避免切换时残留上一个 Agent 的表单/弹窗状态。
+ */
+export function ModelConfigPage() {
+  const [agent, setAgent] = useState<ModelConfigAgentId>("opencode");
+  return (
+    <ModelConfigAgentPage
+      key={agent}
+      agent={agent}
+      agentSwitcher={
+        <div className="model-config-agent-switcher">
+          <AppSelect
+            ariaLabel="选择要配置的 Agent"
+            value={agent}
+            options={AGENT_TABS.map((t) => ({ value: t.id, label: t.label }))}
+            onChange={(next) => setAgent(next as ModelConfigAgentId)}
+          />
+        </div>
+      }
+    />
   );
 }

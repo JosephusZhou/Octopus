@@ -268,7 +268,7 @@ fn parse_provider(id: &str, raw: &Value, auth: &Map<String, Value>) -> AgentProv
     AgentProviderView {
         id: id.to_string(),
         name: str_opt(raw, "name"),
-        npm: None,
+        package: None,
         api: str_opt(raw, "api"),
         has_api_key: in_auth || in_config,
         api_key_source: api_key_source(in_auth, in_config),
@@ -627,6 +627,8 @@ pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, Strin
         disabled_providers: None,
         providers: Vec::new(),
         warnings: Vec::new(),
+        // Pi 家族没有 1.x → 2.x 的迁移场景，前端不会渲染「迁移」按钮。
+        legacy_migration: None,
     };
     if !installed {
         return Ok(not_installed_view());
@@ -682,6 +684,7 @@ pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, Strin
         disabled_providers: None,
         providers,
         warnings,
+        legacy_migration: None,
     })
 }
 
@@ -1001,14 +1004,11 @@ pub fn set_provider_secret(
             id: provider_id,
             previous_id: None,
             name: None,
-            npm: None,
+            package: None,
             api: None,
             base_url: None,
-            set_cache_key: None,
             timeout: None,
             chunk_timeout: None,
-            whitelist: None,
-            blacklist: None,
             api_key: Some(api_key),
         },
     )
@@ -1057,7 +1057,7 @@ pub fn set_defaults(
             let mut skip_profile_reason: Option<&str> = None;
             if agent == ModelConfigAgent::Omo && payload.sync_omo_model_profile == Some(true) {
                 match payload.model.as_deref() {
-                    Some(m) if m.is_empty() => profile_update = Some(String::new()),
+                    Some("") => profile_update = Some(String::new()),
                     Some(m) if m.contains('/') => profile_update = Some(m.to_string()),
                     Some(_) => skip_profile_reason = Some("模型需为 provider/model 形式"),
                     None => {}
@@ -1291,9 +1291,6 @@ mod tests {
                 modalities_output: None,
                 reasoning: Some(true),
                 tool_call: None,
-                attachment: None,
-                status: None,
-                thinking_type: None,
                 thinking_budget_tokens: None,
                 reasoning_effort: None,
                 text_verbosity: None,
@@ -1331,14 +1328,11 @@ mod tests {
                 id: "deepseek".into(),
                 previous_id: None,
                 name: None,
-                npm: None,
+                package: None,
                 api: Some("openai-completions".into()),
                 base_url: Some("https://api.deepseek.com".into()),
-                set_cache_key: None,
                 timeout: None,
                 chunk_timeout: None,
-                whitelist: None,
-                blacklist: None,
                 api_key: Some("sk-test".into()),
             },
         )
@@ -1465,9 +1459,6 @@ providers:
                 modalities_output: None,
                 reasoning: Some(true),
                 tool_call: None,
-                attachment: None,
-                status: None,
-                thinking_type: None,
                 thinking_budget_tokens: None,
                 reasoning_effort: None,
                 text_verbosity: None,
