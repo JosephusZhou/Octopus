@@ -2,7 +2,7 @@
 
 ![License](https://img.shields.io/badge/license-PolyForm_Noncommercial-blue)
 ![Platform](https://img.shields.io/badge/platform-desktop-lightgrey)
-![Version](https://img.shields.io/badge/version-0.7.0-green)
+![Version](https://img.shields.io/badge/version-0.7.1-green)
 
 Octopus 是一个面向本地桌面场景的 Tauri + React 工具，用来统一管理常见 AI Agent 生态配置。
 
@@ -197,7 +197,7 @@ src-tauri/src/                Rust 后端
 `src-tauri/Cargo.lock` 和 `README.md` 版本号一致：
 
 ```bash
-git tag v0.7.0
+git tag v0.7.1
 git push origin main --tags
 ```
 

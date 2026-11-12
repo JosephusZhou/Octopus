@@ -1,6 +1,6 @@
 [package]
 name = "octopus"
-version = "0.7.0"
+version = "0.7.1"
 description = "AI Agents Configuration Manager"
 authors = ["senfeng"]
 edition = "2021"
