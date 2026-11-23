@@ -3,6 +3,10 @@
 - 调研日期：2026-10-21；补充调研：2026-11-06、2026-11-10（Asia/Shanghai）
 - 目的：为优化本应用（AgentBuddy/Octopus）的「项目配置」功能，逐项对照**应用当前实现**与**各 Agent 官方最新现状**，列出差距与建议动作。
 - 2026-11-10 补充：新增 TRAE CN（字节跳动）与 Qoder CN（阿里）两个国内版产品的调研（§12、§13），并给出与 WorkBuddy 同级的接入建议。
+- 2026-11-11 补充：**模型配置**不在本文覆盖范围，另见
+  [`agent-custom-model-config-2026-11.md`](./agent-custom-model-config-2026-11.md)
+  （结论：WorkBuddy 写 `~/.workbuddy/models.json`；Qoder CN 写 `~/.qoder-cn/settings.json` 顶层
+  `providers` + `model.name`（未文档化但桌面版 agent 运行时确实读取）；Trae CN 的自定义模型绑定服务端，无文件级接入路径）。
 - 方法：只读仓库基线（`src-tauri/src/agents.rs`、`src-tauri/src/project_config.rs`）+ 联网检索官方文档/官方仓库；未改任何源码、未编译。
 - 确定性标注：
   - **【官方明确】**：官方文档 / 官方仓库 README/docs/源码直接记载。
