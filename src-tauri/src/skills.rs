@@ -171,8 +171,10 @@ pub struct SkillDuplicateConflict {
 #[serde(rename_all = "camelCase")]
 pub struct SkillDuplicateCheckResult {
     pub ok: bool,
-    /// Conflicts found (may be multiple if the path contains several skill dirs).
+    /// Conflicts against the library (may be multiple if the path has several skill dirs).
     pub conflicts: Vec<SkillDuplicateConflict>,
+    /// Display names repeated inside this batch; only the first copy gets imported.
+    pub batch_duplicates: Vec<String>,
     /// Total skill dirs detected in the given path (0 = not a valid skill path).
     pub total_detected: usize,
     pub message: String,
@@ -1098,6 +1100,7 @@ pub fn check_skill_local_duplicate(path: String) -> Result<SkillDuplicateCheckRe
         return Ok(SkillDuplicateCheckResult {
             ok: false,
             conflicts: Vec::new(),
+            batch_duplicates: Vec::new(),
             total_detected: 0,
             message: format!("路径不存在: {}", src.display()),
         });
@@ -1121,6 +1124,7 @@ pub fn check_skill_local_duplicate(path: String) -> Result<SkillDuplicateCheckRe
         return Ok(SkillDuplicateCheckResult {
             ok: false,
             conflicts: Vec::new(),
+            batch_duplicates: Vec::new(),
             total_detected: 0,
             message: "请选择包含 SKILL.md 的技能目录".into(),
         });
@@ -1130,6 +1134,7 @@ pub fn check_skill_local_duplicate(path: String) -> Result<SkillDuplicateCheckRe
         return Ok(SkillDuplicateCheckResult {
             ok: false,
             conflicts: Vec::new(),
+            batch_duplicates: Vec::new(),
             total_detected: 0,
             message: "所选目录中未找到包含 SKILL.md 的技能".into(),
         });
@@ -1141,11 +1146,18 @@ pub fn check_skill_local_duplicate(path: String) -> Result<SkillDuplicateCheckRe
     let existing_map = library_identity_index(&lib);
 
     let mut conflicts = Vec::new();
+    let mut batch_duplicates = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     for dir in &skill_dirs {
         let doc = read_skill_doc(dir);
         let name = skill_display_name(dir);
         let key = skill_identity_key(dir);
         if key.is_empty() {
+            continue;
+        }
+        // 同一批里的同名技能也要预告：导入时只有第一个会落库。
+        if !seen.insert(key.clone()) {
+            batch_duplicates.push(name);
             continue;
         }
         if let Some((existing_id, existing_version, existing_source)) = existing_map.get(&key) {
@@ -1162,6 +1174,7 @@ pub fn check_skill_local_duplicate(path: String) -> Result<SkillDuplicateCheckRe
     Ok(SkillDuplicateCheckResult {
         ok: true,
         conflicts,
+        batch_duplicates,
         total_detected: total,
         message: String::new(),
     })

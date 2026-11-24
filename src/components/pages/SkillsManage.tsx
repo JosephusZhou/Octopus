@@ -128,6 +128,9 @@ export default function SkillsManage() {
   const [addTag, setAddTag] = useState("");
   // 本地导入重复冲突弹窗
   const [dupConflicts, setDupConflicts] = useState<SkillDuplicateConflict[] | null>(null);
+  const [dupBatchDuplicates, setDupBatchDuplicates] = useState<string[]>([]);
+  // 检测到的技能目录总数，用于算「仅导入 N 个新技能」里的 N
+  const [dupTotalDetected, setDupTotalDetected] = useState(0);
   const [dupCheckedPath, setDupCheckedPath] = useState("");
   const [dupChecking, setDupChecking] = useState(false);
   const [dupSelectedOverwrite, setDupSelectedOverwrite] = useState<Set<string>>(new Set());
@@ -607,6 +610,13 @@ export default function SkillsManage() {
     [reload],
   );
 
+  const closeDupDialog = useCallback(() => {
+    setDupConflicts(null);
+    setDupBatchDuplicates([]);
+    setDupTotalDetected(0);
+    setDupSelectedOverwrite(new Set());
+  }, []);
+
   const checkAndImportLocal = useCallback(
     async (path: string, tag: string) => {
       setDupChecking(true);
@@ -618,10 +628,12 @@ export default function SkillsManage() {
           setStatusMsg(checkRes.message);
           return;
         }
-        if (checkRes.conflicts.length > 0) {
-          // Show conflict dialog
+        if (checkRes.conflicts.length > 0 || checkRes.batchDuplicates.length > 0) {
+          // 库内重名与同一批内重名都要先告知用户再导入
           setDupCheckedPath(path);
           setDupConflicts(checkRes.conflicts);
+          setDupBatchDuplicates(checkRes.batchDuplicates);
+          setDupTotalDetected(checkRes.totalDetected);
           // Default: skip all (no overwrite selected)
           setDupSelectedOverwrite(new Set());
           return;
@@ -1321,6 +1333,12 @@ export default function SkillsManage() {
     }
   }, [isBatchRunning, validSelectedIds, batchTag, exitBatchMode]);
 
+  // 冲突弹窗里「跳过重名、只导入新技能」按钮的数量：重名 = 库内冲突 + 同批重复
+  const dupSkippedCount = (dupConflicts?.length ?? 0) + dupBatchDuplicates.length;
+  const dupNewCount = Math.max(0, dupTotalDetected - dupSkippedCount);
+  const exportSkippedCount = exportConflicts?.length ?? 0;
+  const exportNewCount = Math.max(0, exportSkillIds.length - exportSkippedCount);
+
   return (
     <>
       <div className="content-header">
@@ -1978,134 +1996,146 @@ export default function SkillsManage() {
           <div className="modal modal-lg">
             <div className="modal-header">
               <h2 className="modal-title">检测到重复技能</h2>
-              <button
-                className="modal-close"
-                onClick={() => {
-                  setDupConflicts(null);
-                  setDupSelectedOverwrite(new Set());
-                }}
-                disabled={isAdding}
-              >
+              <button className="modal-close" onClick={closeDupDialog} disabled={isAdding}>
                 <IconClose />
               </button>
             </div>
             <div className="modal-body">
               <p className="skill-add-hint">
-                以下技能在技能库中已存在，请选择要覆盖的技能。覆盖将替换已有技能的全部文件，未选择的将跳过。
+                {dupConflicts.length > 0
+                  ? "以下技能在技能库中已存在，请选择要覆盖的技能。覆盖将替换已有技能的全部文件，未选择的将跳过。"
+                  : "同一批目录里有同名技能，只会导入第一个。"}
               </p>
-              <div className="skill-dup-toolbar">
-                <label className="ui-check skill-dup-select-all">
-                  <input
-                    type="checkbox"
-                    className="ui-check-input"
-                    checked={
-                      dupConflicts.length > 0 && dupSelectedOverwrite.size === dupConflicts.length
-                    }
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setDupSelectedOverwrite(new Set(dupConflicts.map((c) => c.existingId)));
-                      } else {
-                        setDupSelectedOverwrite(new Set());
-                      }
-                    }}
-                    disabled={isAdding}
-                  />
-                  <CheckGlyph />
-                  <span className="ui-check-label">全选</span>
-                </label>
-                <span className="skill-dup-count">
-                  已选 {dupSelectedOverwrite.size} / {dupConflicts.length}
-                </span>
-              </div>
-              <div className="skill-dup-list">
-                {dupConflicts.map((c) => {
-                  const checked = dupSelectedOverwrite.has(c.existingId);
-                  return (
-                    <div
-                      key={c.existingId}
-                      className={`skill-dup-item ${checked ? "checked" : ""}`}
-                    >
-                      <label className="ui-check skill-dup-check">
-                        <input
-                          type="checkbox"
-                          className="ui-check-input"
-                          checked={checked}
-                          onChange={() => {
-                            setDupSelectedOverwrite((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(c.existingId)) next.delete(c.existingId);
-                              else next.add(c.existingId);
-                              return next;
-                            });
-                          }}
-                          disabled={isAdding}
-                        />
-                        <CheckGlyph />
-                      </label>
-                      <div className="skill-dup-info">
-                        <div className="skill-dup-name">{c.name}</div>
-                        <div className="skill-dup-versions">
-                          <span className="skill-dup-version-existing">
-                            已有版本: <strong>{c.existingVersion || "未标注"}</strong>
-                            <span className="skill-dup-source">
-                              （
-                              {c.existingSource === "github"
-                                ? "GitHub"
-                                : c.existingSource === "gitcode"
-                                  ? "GitCode"
-                                  : "本地"}
-                              ）
-                            </span>
-                          </span>
-                          <span className="skill-dup-version-arrow">→</span>
-                          <span className="skill-dup-version-import">
-                            导入版本: <strong>{c.importVersion || "未标注"}</strong>
-                          </span>
+              {dupBatchDuplicates.length > 0 && dupConflicts.length > 0 && (
+                <p className="skill-add-hint">
+                  同一批内还有 {dupBatchDuplicates.length} 个同名技能（
+                  {dupBatchDuplicates.join("、")}），只会导入第一个。
+                </p>
+              )}
+              {dupConflicts.length > 0 && (
+                <>
+                  <div className="skill-dup-toolbar">
+                    <label className="ui-check skill-dup-select-all">
+                      <input
+                        type="checkbox"
+                        className="ui-check-input"
+                        checked={
+                          dupConflicts.length > 0 &&
+                          dupSelectedOverwrite.size === dupConflicts.length
+                        }
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setDupSelectedOverwrite(new Set(dupConflicts.map((c) => c.existingId)));
+                          } else {
+                            setDupSelectedOverwrite(new Set());
+                          }
+                        }}
+                        disabled={isAdding}
+                      />
+                      <CheckGlyph />
+                      <span className="ui-check-label">全选</span>
+                    </label>
+                    <span className="skill-dup-count">
+                      已选 {dupSelectedOverwrite.size} / {dupConflicts.length}
+                    </span>
+                  </div>
+                  <div className="skill-dup-list">
+                    {dupConflicts.map((c) => {
+                      const checked = dupSelectedOverwrite.has(c.existingId);
+                      return (
+                        <div
+                          key={c.existingId}
+                          className={`skill-dup-item ${checked ? "checked" : ""}`}
+                        >
+                          <label className="ui-check skill-dup-check">
+                            <input
+                              type="checkbox"
+                              className="ui-check-input"
+                              checked={checked}
+                              onChange={() => {
+                                setDupSelectedOverwrite((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(c.existingId)) next.delete(c.existingId);
+                                  else next.add(c.existingId);
+                                  return next;
+                                });
+                              }}
+                              disabled={isAdding}
+                            />
+                            <CheckGlyph />
+                          </label>
+                          <div className="skill-dup-info">
+                            <div className="skill-dup-name">{c.name}</div>
+                            <div className="skill-dup-versions">
+                              <span className="skill-dup-version-existing">
+                                已有版本: <strong>{c.existingVersion || "未标注"}</strong>
+                                <span className="skill-dup-source">
+                                  （
+                                  {c.existingSource === "github"
+                                    ? "GitHub"
+                                    : c.existingSource === "gitcode"
+                                      ? "GitCode"
+                                      : "本地"}
+                                  ）
+                                </span>
+                              </span>
+                              <span className="skill-dup-version-arrow">→</span>
+                              <span className="skill-dup-version-import">
+                                导入版本: <strong>{c.importVersion || "未标注"}</strong>
+                              </span>
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </div>
             <div className="modal-footer">
               <button
                 type="button"
                 className="btn btn-secondary"
-                onClick={() => {
-                  setDupConflicts(null);
-                  setDupSelectedOverwrite(new Set());
-                }}
+                onClick={closeDupDialog}
                 disabled={isAdding}
               >
                 取消
               </button>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => {
-                  // 不勾选覆盖：后端只导入非重名技能，重名的一律跳过
-                  const path = dupCheckedPath;
-                  setDupConflicts(null);
-                  setDupSelectedOverwrite(new Set());
-                  void doImportLocal(path, addTag.trim());
-                }}
-                disabled={isAdding}
-              >
-                全部跳过
-              </button>
+              {dupConflicts.length > 0 && dupNewCount > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    // 不覆盖任何重名技能，只导入没有同名的新技能
+                    const path = dupCheckedPath;
+                    closeDupDialog();
+                    void doImportLocal(path, addTag.trim());
+                  }}
+                  disabled={isAdding}
+                >
+                  仅导入 {dupNewCount} 个新技能（跳过 {dupSkippedCount} 个重名）
+                </button>
+              )}
               <button
                 type="button"
                 className="btn btn-primary"
                 onClick={() => {
                   const overwriteIds = Array.from(dupSelectedOverwrite);
-                  setDupConflicts(null);
-                  setDupSelectedOverwrite(new Set());
-                  void doImportLocal(dupCheckedPath, addTag.trim(), overwriteIds);
+                  const path = dupCheckedPath;
+                  closeDupDialog();
+                  if (dupConflicts.length > 0) {
+                    void doImportLocal(path, addTag.trim(), overwriteIds);
+                  } else {
+                    void doImportLocal(path, addTag.trim());
+                  }
                 }}
-                disabled={isAdding || dupSelectedOverwrite.size === 0}
+                disabled={isAdding || (dupConflicts.length > 0 && dupSelectedOverwrite.size === 0)}
               >
-                {isAdding ? "导入中…" : `覆盖选中 (${dupSelectedOverwrite.size})`}
+                {isAdding
+                  ? "导入中…"
+                  : dupConflicts.length > 0
+                    ? `覆盖选中 (${dupSelectedOverwrite.size})`
+                    : "继续导入"}
               </button>
             </div>
           </div>
@@ -2211,25 +2241,27 @@ export default function SkillsManage() {
               >
                 取消
               </button>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => {
-                  const overwriteIds: string[] = [];
-                  // Export only non-conflicting skills, skip all conflicts
-                  setExportConflicts(null);
-                  setExportSelectedOverwrite(new Set());
-                  void doExportToDir(
-                    exportSkillIds,
-                    exportInstallMode,
-                    exportTargetDir,
-                    overwriteIds,
-                  );
-                }}
-                disabled={Boolean(exportingId) || isBatchRunning}
-              >
-                全部跳过
-              </button>
+              {exportNewCount > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    const overwriteIds: string[] = [];
+                    // 不覆盖任何重名技能，只导出目标目录里没有同名的新技能
+                    setExportConflicts(null);
+                    setExportSelectedOverwrite(new Set());
+                    void doExportToDir(
+                      exportSkillIds,
+                      exportInstallMode,
+                      exportTargetDir,
+                      overwriteIds,
+                    );
+                  }}
+                  disabled={Boolean(exportingId) || isBatchRunning}
+                >
+                  仅导出 {exportNewCount} 个新技能（跳过 {exportSkippedCount} 个重名）
+                </button>
+              )}
               <button
                 type="button"
                 className="btn btn-primary"

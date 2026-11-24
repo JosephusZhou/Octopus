@@ -31,6 +31,8 @@ export interface SkillDuplicateConflict {
 export interface SkillDuplicateCheckResult {
   ok: boolean;
   conflicts: SkillDuplicateConflict[];
+  /** 同一批内重复的技能名；导入时只保留第一个。 */
+  batchDuplicates: string[];
   totalDetected: number;
   message: string;
 }
