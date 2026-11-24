@@ -93,8 +93,8 @@
 
 ## 来源
 
-逐项官方出处与调研过程见 [`research/agent-config-survey-2026-10.md`](research/agent-config-survey-2026-10.md)；
-方言/写器/合并策略的工程规格见 [`AGENT_MCP_SKILLS_MAP.md`](AGENT_MCP_SKILLS_MAP.md)。
+逐项官方出处与调研过程见 [`agent-config-survey-2026-10.md`](./agent-config-survey-2026-10.md)；
+方言/写器/合并策略的工程规格见 [`AGENT_MCP_SKILLS_MAP.md`](../AGENT_MCP_SKILLS_MAP.md)。
 
 OMP / OmO 本轮补充来源（2026-11-06）：
 

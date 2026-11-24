@@ -70,6 +70,7 @@ sync/SYNC_PLAYBOOK.md               CLIProxyAPI 行为同步手册
 sync/cli_proxy_api_sync_state.json  CLIProxyAPI 同步状态
 sync/scripts/check_upstream_sync.py 上游漂移检查
 docs/AGENT_MCP_SKILLS_MAP.md        MCP/Skills 路径、方言和字段规范
+docs/design/octopus-icons/          App 与菜单栏图标源文件（build.py 生成 SVG + PNG）
 ```
 
 ## 前后端边界

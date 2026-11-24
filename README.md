@@ -183,6 +183,8 @@ src-tauri/src/                Rust 后端
   backup.rs                   备份打包与多 WebDAV 上传、远端恢复
   backup_schedule.rs          自动备份调度（定时触发，与手动备份互斥）
   route_aggregation/          本地路由聚合、故障转移与 cloaking
+
+docs/design/octopus-icons/    App 与菜单栏图标源文件（build.py 生成 SVG + PNG）
 ```
 
 ## 维护者：发布新版本
