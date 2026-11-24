@@ -427,7 +427,9 @@ static AGENTS: &[AgentSpec] = &[
         mcp_managed: true,
         skills_roots: &["~/.pi/agent/skills"],
         skills_supported: true,
-        prompt_file: Some("AGENTS.md"),
+        // Pi 的用户级提示词位于 agent 子目录（`~/.pi/agent/AGENTS.md`），
+        // 由 docs/configuration.md 的 agent 目录表定义；`~/.pi/AGENTS.md` 不会被读取。
+        prompt_file: Some("agent/AGENTS.md"),
         shared_root: None,
     },
     // 10. Oh-My-Pi（can1357/oh-my-pi，CLI `omp`，Pi 的全功能 fork）

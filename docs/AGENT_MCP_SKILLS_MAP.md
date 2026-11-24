@@ -356,6 +356,10 @@ AgentBuddy 只维护 AGENTS.md，不生成 GEMINI.md 指针。
 字段映射到通用 DTO：`contextWindow`→`limitContext`、`maxTokens`→`limitOutput`、
 `input`→`modalitiesInput`；未建模字段进 `extraOptions` 原样往返。列表 DTO **永不**回传明文 API Key。
 
+**提示文件**：`~/.pi/agent/AGENTS.md`（agent 目录，注册表 `prompt_file: Some("agent/AGENTS.md")`）。
+Pi 的上下文文件从 agent 目录、工作目录及其父目录发现，`~/.pi/AGENTS.md` **不在**任何发现路径上，
+不是用户级提示词；项目级规则写项目根 `AGENTS.md`。
+
 ### 5.8 Oh-My-Pi (`oh-my-pi`)
 
 **性质**：Pi 的社区分支，CLI 命令 `omp`，配置根 `~/.omp`（与 Pi 的 `~/.pi` 完全独立）。
@@ -623,9 +627,11 @@ if removeFromAgentConfigs:
 | SSE 方言差异 | 各产品支持不一 | Pi / OmO 直接拒绝 SSE；Oh-My-Pi 支持；其余能映射则映射，否则提示跳过 |
 | 密钥 | 配置中常含 token | AgentBuddy 永不日志打印 env/headers 值；API Key 经 `crypto::encrypt` 落 SQLite |
 | OpenCode JSONC | 注释 / 尾逗号 | `json5` 解析；重写 pretty JSON（注释不保留，会抛 warn 给用户） |
-| OpenCode 全局目录 | 硬编码 `~/.config/opencode`（`agents.rs`、`opencode_config.rs`、`mcp_config.rs` 共四处），不解析 `OPENCODE_CONFIG_DIR` / `XDG_CONFIG_HOME` | 设置了变量的用户，OpenCode 实际读取的全局目录与 App 写入/扫描的目录不一致，可能出现「App 显示已安装但 agent 读不到」或反向误判；默认用户不受影响。后续按 `OPENCODE_CONFIG_DIR` → `$XDG_CONFIG_HOME/opencode` → `~/.config/opencode` 适配 |
+| OpenCode 全局目录 | 硬编码 `~/.config/opencode`（`agents.rs`、`opencode_config.rs`、`mcp_config.rs` 共四处），不解析 `OPENCODE_CONFIG_DIR` / `XDG_CONFIG_HOME` | 设置了变量的用户，OpenCode 实际读取的全局目录与 App 写入/扫描的目录不一致，可能出现「App 显示已安装但 agent 读不到」或反向误判；全局提示词 `AGENTS.md` 同受影响；默认用户不受影响。后续按 `OPENCODE_CONFIG_DIR` → `$XDG_CONFIG_HOME/opencode` → `~/.config/opencode` 适配 |
 | partial failure | apply 批次中部分 agent 失败 | UI 只把 ok=true 的 agent 写进 `appliedAgents` |
 | Pi 模型配置 | JSON 解析（`~/.pi/agent/models.json`） | 字段映射到统一 DTO，列表 DTO 不回传明文 Key |
+| Pi 全局提示词 | 仅 agent 目录下的 `AGENTS.md` 生效 | 注册表 `prompt_file: Some("agent/AGENTS.md")`，查看/编辑写 `~/.pi/agent/AGENTS.md`；`~/.pi/AGENTS.md` 不在上下文文件发现路径上，写到那里对 Pi 无效 |
+| Pi 系提示词目录不可配置 | Pi / Oh-My-Pi / OmO 的提示词路径由 `agents.rs` 固定为 `~/.pi` / `~/.omp` / `~/.omo` 下的 agent 子目录 | 运行时 agent 目录可被改造，App 不感知：Pi 与 OMP 认 `PI_CODING_AGENT_DIR`，OMP 另有 `PI_PROFILE`（`~/.omp/profiles/<name>/agent`）和 Linux `omp config init-xdg`（落 `$XDG_DATA_HOME/omp`，无 agent 层），OmO 认 `OMO_CODING_AGENT_DIR`，senpi 引擎还可用 `settings.json` 的 `contextFiles.globalPath` 换掉全局提示词文件。用了这些的用户，App 读写的 `agent/AGENTS.md` 与运行时实际加载的文件不一致；默认安装不受影响 |
 | Oh-My-Pi 模型配置 | YAML 解析（`~/.omp/agent/models.yml`） | 与 Pi 共用 `pi_model_config` 后端；密钥在 provider `apiKey`；列表 DTO 不回传明文 Key |
 | 内部冒烟 server | 嗅探时混入 | 嗅探忽略 `__agentbuddy` 前缀 title |
 
