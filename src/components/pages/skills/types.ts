@@ -106,6 +106,8 @@ export interface SkillActionResult {
   ok: boolean;
   skill: SkillRecord | null;
   message: string;
+  /** 非致命失败项（如删除后副本清理失败），逐条可展示。 */
+  errors: string[];
 }
 
 export interface SkillApplyResult {

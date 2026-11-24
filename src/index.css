@@ -3711,6 +3711,32 @@ button.skill-tag-none:hover {
   font-size: var(--text-sm);
   line-height: 1.5;
 }
+.skill-batch-result {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--seed-radius);
+  border: 1px solid color-mix(in srgb, var(--seed-success, #22c55e) 35%, transparent);
+  background: color-mix(in srgb, var(--seed-success, #22c55e) 10%, transparent);
+  color: var(--seed-fg);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+.skill-batch-result.is-warning {
+  border-color: color-mix(in srgb, var(--seed-danger) 40%, transparent);
+  background: var(--seed-danger-bg);
+  color: var(--seed-danger);
+}
+.skill-batch-result-title {
+  font-weight: 600;
+}
+.skill-batch-result-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  word-break: break-word;
+}
 .skill-add-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;

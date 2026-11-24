@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStatusMessage } from "@/lib/useStatusMessage";
 import { formatDisplayPath } from "@/lib/formatPath";
+import { decideBatchDialog } from "@/lib/batchResult";
 import { Toast } from "@/components/Toast";
 import { AgentBadge, getAgentIcon } from "../agent-icons";
 import { Tooltip } from "../Tooltip";
@@ -80,6 +81,24 @@ const _persist = {
 };
 
 /* ===== Component ===== */
+
+type BatchOutcomeView = { message: string; details: string[]; failed: boolean };
+
+/** 批量操作结果面板：失败/跳过时留在弹窗里，逐条列出后端返回的 errors。 */
+function BatchOutcomePanel({ outcome }: { outcome: BatchOutcomeView }) {
+  return (
+    <div className={`skill-batch-result ${outcome.failed ? "is-warning" : "is-success"}`}>
+      <div className="skill-batch-result-title">{outcome.message}</div>
+      {outcome.details.length > 0 && (
+        <ul className="skill-batch-result-list">
+          {outcome.details.map((detail, index) => (
+            <li key={index}>{detail}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 export default function SkillsManage() {
   const [skills, setSkills] = useState<SkillRecord[]>([]);
@@ -189,6 +208,8 @@ export default function SkillsManage() {
   }, []);
   // 批量删除确认
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  // 批量操作结果：失败/跳过时保留弹窗并列出 errors（见 decideBatchDialog）
+  const [batchOutcome, setBatchOutcome] = useState<BatchOutcomeView | null>(null);
   const [batchDeleteAgentCopies, setBatchDeleteAgentCopies] = useState(false);
   // 批量应用到 Agent
   const [batchApplyOpen, setBatchApplyOpen] = useState(false);
@@ -212,9 +233,18 @@ export default function SkillsManage() {
     !isBatchRunning,
   );
   const deleteDismiss = useOverlayDismiss(() => setDeleteTarget(null), !isDeleting);
-  const batchDeleteDismiss = useOverlayDismiss(() => setBatchDeleteOpen(false), !isBatchRunning);
-  const batchApplyDismiss = useOverlayDismiss(() => setBatchApplyOpen(false), !isBatchRunning);
-  const batchTagDismiss = useOverlayDismiss(() => setBatchTagOpen(false), !isBatchRunning);
+  const batchDeleteDismiss = useOverlayDismiss(() => {
+    setBatchDeleteOpen(false);
+    setBatchOutcome(null);
+  }, !isBatchRunning);
+  const batchApplyDismiss = useOverlayDismiss(() => {
+    setBatchApplyOpen(false);
+    setBatchOutcome(null);
+  }, !isBatchRunning);
+  const batchTagDismiss = useOverlayDismiss(() => {
+    setBatchTagOpen(false);
+    setBatchOutcome(null);
+  }, !isBatchRunning);
   const repoChangeDismiss = useOverlayDismiss(() => setShowRepoChanges(false), !repoChangeBusy);
 
   const loadAgents = useCallback(async () => {
@@ -1182,8 +1212,18 @@ export default function SkillsManage() {
       const res = await invokeBatchDelete(ids, batchDeleteAgentCopies);
       setSkills(res.skills);
       setStatusMsg(res.message);
-      setBatchDeleteOpen(false);
-      exitBatchMode();
+      const decision = decideBatchDialog(res);
+      if (decision.keepDialogOpen) {
+        setBatchOutcome({
+          message: res.message,
+          details: decision.details,
+          failed: res.failed > 0,
+        });
+      } else {
+        setBatchOutcome(null);
+        setBatchDeleteOpen(false);
+      }
+      if (decision.exitBatchMode) exitBatchMode();
     } catch (e) {
       setStatusMsg(`批量删除失败: ${e}`);
     } finally {
@@ -1241,6 +1281,7 @@ export default function SkillsManage() {
     }
     setBatchApplyAgents(new Set());
     setBatchApplyMode("add");
+    setBatchOutcome(null);
     setBatchInstallMode("link");
     setBatchApplyOpen(true);
   }, [validSelectedIds]);
@@ -1278,8 +1319,18 @@ export default function SkillsManage() {
       );
       setSkills(res.skills);
       setStatusMsg(res.message);
-      setBatchApplyOpen(false);
-      exitBatchMode();
+      const decision = decideBatchDialog(res);
+      if (decision.keepDialogOpen) {
+        setBatchOutcome({
+          message: res.message,
+          details: decision.details,
+          failed: res.failed > 0,
+        });
+      } else {
+        setBatchOutcome(null);
+        setBatchApplyOpen(false);
+      }
+      if (decision.exitBatchMode) exitBatchMode();
     } catch (e) {
       setStatusMsg(`批量应用失败: ${e}`);
     } finally {
@@ -1305,6 +1356,7 @@ export default function SkillsManage() {
     );
     // 所选技能标签一致时预填该标签，便于微调；不一致则留空由用户决定
     setBatchTag(selectedTags.size === 1 ? [...selectedTags][0] : "");
+    setBatchOutcome(null);
     setBatchTagOpen(true);
   }, [validSelectedIds, skills]);
 
@@ -1324,8 +1376,18 @@ export default function SkillsManage() {
       const res = await invokeBatchSetTag(ids, tag);
       setSkills(res.skills);
       setStatusMsg(res.message);
-      setBatchTagOpen(false);
-      exitBatchMode();
+      const decision = decideBatchDialog(res);
+      if (decision.keepDialogOpen) {
+        setBatchOutcome({
+          message: res.message,
+          details: decision.details,
+          failed: res.failed > 0,
+        });
+      } else {
+        setBatchOutcome(null);
+        setBatchTagOpen(false);
+      }
+      if (decision.exitBatchMode) exitBatchMode();
     } catch (e) {
       setStatusMsg(`批量设置标签失败: ${e}`);
     } finally {
@@ -1801,6 +1863,7 @@ export default function SkillsManage() {
                   return;
                 }
                 setBatchDeleteAgentCopies(false);
+                setBatchOutcome(null);
                 setBatchDeleteOpen(true);
               }}
               disabled={isBatchRunning || validSelectedIds.size === 0}
@@ -2958,7 +3021,11 @@ export default function SkillsManage() {
             <h2 className="modal-title">批量删除</h2>
             <button
               className="modal-close"
-              onClick={() => !isBatchRunning && setBatchDeleteOpen(false)}
+              onClick={() => {
+                if (isBatchRunning) return;
+                setBatchDeleteOpen(false);
+                setBatchOutcome(null);
+              }}
               disabled={isBatchRunning}
             >
               <IconClose />
@@ -3001,24 +3068,40 @@ export default function SkillsManage() {
               <CheckGlyph />
               <span className="ui-check-label">同时删除已应用到各 Agent 的 Skill 副本</span>
             </label>
+            {batchOutcome && <BatchOutcomePanel outcome={batchOutcome} />}
           </div>
           <div className="modal-footer">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => setBatchDeleteOpen(false)}
-              disabled={isBatchRunning}
-            >
-              取消
-            </button>
-            <button
-              type="button"
-              className="btn btn-danger"
-              onClick={() => void confirmBatchDelete()}
-              disabled={isBatchRunning || validSelectedIds.size === 0}
-            >
-              {isBatchRunning ? "删除中…" : `删除（${validSelectedIds.size}）`}
-            </button>
+            {batchOutcome ? (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  setBatchDeleteOpen(false);
+                  setBatchOutcome(null);
+                }}
+              >
+                关闭
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setBatchDeleteOpen(false)}
+                  disabled={isBatchRunning}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  onClick={() => void confirmBatchDelete()}
+                  disabled={isBatchRunning || validSelectedIds.size === 0}
+                >
+                  {isBatchRunning ? "删除中…" : `删除（${validSelectedIds.size}）`}
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -3030,7 +3113,11 @@ export default function SkillsManage() {
             <h2 className="modal-title">批量应用到 Agent（{validSelectedIds.size} 个技能）</h2>
             <button
               className="modal-close"
-              onClick={() => !isBatchRunning && setBatchApplyOpen(false)}
+              onClick={() => {
+                if (isBatchRunning) return;
+                setBatchApplyOpen(false);
+                setBatchOutcome(null);
+              }}
               disabled={isBatchRunning}
             >
               <IconClose />
@@ -3149,29 +3236,49 @@ export default function SkillsManage() {
                 </div>
               )}
             </div>
+            {batchOutcome && <BatchOutcomePanel outcome={batchOutcome} />}
           </div>
 
           <div className="modal-footer">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => setBatchApplyOpen(false)}
-              disabled={isBatchRunning}
-            >
-              取消
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => void confirmBatchApply()}
-              disabled={
-                isBatchRunning ||
-                validSelectedIds.size === 0 ||
-                (batchApplyMode === "add" && batchApplyAgents.size === 0)
-              }
-            >
-              {isBatchRunning ? "同步中…" : batchApplyMode === "replace" ? "覆盖应用" : "追加应用"}
-            </button>
+            {batchOutcome ? (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  setBatchApplyOpen(false);
+                  setBatchOutcome(null);
+                }}
+              >
+                关闭
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setBatchApplyOpen(false)}
+                  disabled={isBatchRunning}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => void confirmBatchApply()}
+                  disabled={
+                    isBatchRunning ||
+                    validSelectedIds.size === 0 ||
+                    (batchApplyMode === "add" && batchApplyAgents.size === 0)
+                  }
+                >
+                  {isBatchRunning
+                    ? "同步中…"
+                    : batchApplyMode === "replace"
+                      ? "覆盖应用"
+                      : "追加应用"}
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -3183,7 +3290,11 @@ export default function SkillsManage() {
             <h2 className="modal-title">批量设置标签（{validSelectedIds.size} 个技能）</h2>
             <button
               className="modal-close"
-              onClick={() => !isBatchRunning && setBatchTagOpen(false)}
+              onClick={() => {
+                if (isBatchRunning) return;
+                setBatchTagOpen(false);
+                setBatchOutcome(null);
+              }}
               disabled={isBatchRunning}
             >
               <IconClose />
@@ -3208,25 +3319,41 @@ export default function SkillsManage() {
                 <div className="skill-edit-warning">未填写标签：将清除所选技能的现有标签。</div>
               )}
             </div>
+            {batchOutcome && <BatchOutcomePanel outcome={batchOutcome} />}
           </div>
 
           <div className="modal-footer">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => setBatchTagOpen(false)}
-              disabled={isBatchRunning}
-            >
-              取消
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => void confirmBatchTag()}
-              disabled={isBatchRunning || validSelectedIds.size === 0}
-            >
-              {isBatchRunning ? "处理中…" : batchTag.trim() === "" ? "清除标签" : "应用标签"}
-            </button>
+            {batchOutcome ? (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  setBatchTagOpen(false);
+                  setBatchOutcome(null);
+                }}
+              >
+                关闭
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setBatchTagOpen(false)}
+                  disabled={isBatchRunning}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => void confirmBatchTag()}
+                  disabled={isBatchRunning || validSelectedIds.size === 0}
+                >
+                  {isBatchRunning ? "处理中…" : batchTag.trim() === "" ? "清除标签" : "应用标签"}
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>

@@ -148,6 +148,9 @@ pub struct SkillActionResult {
     pub ok: bool,
     pub skill: Option<SkillRecord>,
     pub message: String,
+    /// 非致命失败项（如删除后各 Agent 副本清理失败），逐条可展示。
+    #[serde(default)]
+    pub errors: Vec<String>,
 }
 
 /// One conflict discovered when importing a local skill that already exists.
@@ -574,9 +577,19 @@ fn skill_display_name(skill_dir: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// 判重用的技能身份键（展示名小写），与 `check_skill_local_duplicate` 的比对口径一致。
+/// 判重用的身份键：展示名小写，并去掉开头的保留前缀 `.` / `-`。
+///
+/// 读取侧把 `.` 前缀目录当作内部条目（staging、隐藏项）跳过，写入侧
+/// `sanitize_skill_id` 也会归一掉首部 `.`；判重必须用同一口径，否则同名技能
+/// 会被反复导入成 `.hidden`、`.hidden-2` 这类列表里看不见的副本。
 fn skill_identity_key(skill_dir: &Path) -> String {
-    skill_display_name(skill_dir).trim().to_lowercase()
+    identity_key_of(&skill_display_name(skill_dir))
+}
+
+fn identity_key_of(name: &str) -> String {
+    name.trim()
+        .trim_start_matches(|c| c == '.' || c == '-')
+        .to_lowercase()
 }
 
 /// Resolve a library skill directory by id: the id must be a single plain path
@@ -762,19 +775,22 @@ pub(crate) fn list_agent_skills(agent: &str) -> Vec<AgentSkillInfo> {
 /* ===== List library ===== */
 
 fn sanitize_skill_id(raw: &str) -> String {
-    let s: String = raw
+    let mapped: String = raw
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
                 c
-            } else if c.is_whitespace() {
-                '-'
             } else {
                 '-'
             }
         })
         .collect();
-    let s = s.trim_matches('-').to_string();
+    // 首部 `.` 是读取侧的保留前缀（隐藏条目）：归一掉，避免导入后技能在列表、
+    // 应用状态扫描和计数里全部不可见（见 REVIEW_FINDINGS D-001）。
+    let s = mapped
+        .trim_start_matches(|c| c == '.' || c == '-')
+        .trim_end_matches('-')
+        .to_string();
     if s.is_empty() {
         format!("skill-{}", now_secs())
     } else {
@@ -920,9 +936,14 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
             if name == ".git" || name == ".DS_Store" {
                 continue;
             }
-            if path.is_dir() {
+            let file_type = entry
+                .file_type()
+                .map_err(|e| format!("读取文件类型失败 {}: {}", path.display(), e))?;
+            if file_type.is_symlink() {
+                copy_symlink(&path, &target.join(&name))?;
+            } else if file_type.is_dir() {
                 stack.push(path);
-            } else if path.is_file() {
+            } else if file_type.is_file() {
                 let dest_file = target.join(&name);
                 fs::copy(&path, &dest_file).map_err(|e| {
                     format!(
@@ -936,6 +957,64 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// 复制软链接本体，不跟随链接目标。
+///
+/// 跟随目录软链会成环（`loop -> .`）或把技能目录外的整棵树搬进库里；跟随文件软链
+/// 则会把链接实体化成普通文件，与导出/应用时的软链策略不一致。Windows 无创建链接
+/// 权限时仅对文件链接降级为复制内容，目录链接跳过。
+fn copy_symlink(src: &Path, dst: &Path) -> Result<(), String> {
+    let link_target =
+        fs::read_link(src).map_err(|e| format!("读取软链接失败 {}: {}", src.display(), e))?;
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&link_target, dst)
+            .map_err(|e| format!("创建软链接失败 {}: {}", dst.display(), e))
+    }
+    #[cfg(not(unix))]
+    {
+        if crate::platform::symlink_any(&link_target, dst).is_ok() {
+            return Ok(());
+        }
+        match fs::canonicalize(src) {
+            Ok(target) if target.is_file() => fs::copy(&target, dst)
+                .map(|_| ())
+                .map_err(|e| format!("复制软链接目标失败 {}: {}", dst.display(), e)),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// 用已准备好的 `staging` 原子替换 `dest`：先把 `dest` 改名到 `backup`，替换失败则还原。
+/// 覆盖导入/导出的唯一替换入口，避免“先删后拷”在失败时毁掉用户已有内容。
+fn replace_path_with_staged(staging: &Path, dest: &Path, backup: &Path) -> Result<(), String> {
+    let had_dest = fs::symlink_metadata(dest).is_ok();
+    if had_dest {
+        fs::rename(dest, backup).map_err(|e| format!("备份已有条目失败: {}", e))?;
+    }
+    if let Err(e) = fs::rename(staging, dest) {
+        let _ = remove_path_entry(staging);
+        if had_dest {
+            if let Err(restore) = fs::rename(backup, dest) {
+                return Err(format!("替换失败: {}；恢复原条目失败: {}", e, restore));
+            }
+        }
+        return Err(format!("替换失败: {}", e));
+    }
+    if had_dest {
+        remove_path_entry(backup).map_err(|e| format!("清理旧条目失败: {}", e))?;
+    }
+    Ok(())
+}
+
+/// 同一父目录下的临时路径对（staging / backup），点号前缀确保不会被技能列表读到。
+fn staging_paths(parent: &Path, name: &str) -> (PathBuf, PathBuf) {
+    let nonce = format!("{}-{}", std::process::id(), now_secs());
+    (
+        parent.join(format!(".octopus-{}-staging-{}", name, nonce)),
+        parent.join(format!(".octopus-{}-backup-{}", name, nonce)),
+    )
 }
 
 fn unique_skill_id(preferred: &str, lib: &Path) -> String {
@@ -981,19 +1060,30 @@ fn import_skill_dir(
                 .unwrap_or_else(|| format!("skill-{}", now_secs()))
         });
 
-    // If overwrite_id is provided, replace the existing skill directory in-place.
-    let id = if let Some(oid) = overwrite_id {
-        let dest = lib.join(oid);
-        // Remove existing dir before copying
-        if dest.exists() {
-            let _ = fs::remove_dir_all(&dest);
+    // 覆盖导入：id 必须是库内合法目录名；先复制到库内 staging，再原子替换，
+    // 复制失败时保留库里原有技能（不再“先删后拷”）。
+    let id = match overwrite_id {
+        Some(oid) => {
+            if !is_plain_entry_name(oid) {
+                return Err(format!("非法的技能标识: {}", oid));
+            }
+            oid.to_string()
         }
-        oid.to_string()
-    } else {
-        unique_skill_id(&preferred, &lib)
+        None => unique_skill_id(&preferred, &lib),
     };
     let dest = lib.join(&id);
-    copy_dir_recursive(src, &dest)?;
+    if dest.parent() != Some(lib.as_path()) {
+        return Err("非法的技能路径".into());
+    }
+    let (staging, backup) = staging_paths(&lib, &id);
+    if fs::symlink_metadata(&staging).is_ok() || fs::symlink_metadata(&backup).is_ok() {
+        return Err("技能导入临时路径已存在，请稍后重试".into());
+    }
+    if let Err(e) = copy_dir_recursive(src, &staging) {
+        let _ = remove_path_entry(&staging);
+        return Err(e);
+    }
+    replace_path_with_staged(&staging, &dest, &backup)?;
 
     let ts = now_secs();
     let entry = SkillMetaEntry {
@@ -1053,20 +1143,20 @@ fn library_identity_index(lib: &Path) -> HashMap<String, (String, String, SkillS
                 .unwrap_or_default();
             let version = doc.version.clone();
             let source = meta.source.clone();
-            // Index by dir id
-            existing_map.insert(
-                id.trim().to_lowercase(),
-                (id.clone(), version.clone(), source.clone()),
-            );
+            // Index by dir id（与判重键同口径，去掉首部保留前缀）
+            let id_key = identity_key_of(&id);
+            if !id_key.is_empty() {
+                existing_map.insert(id_key, (id.clone(), version.clone(), source.clone()));
+            }
             // Index by frontmatter name
-            if !doc.name.trim().is_empty() {
-                existing_map.insert(doc.name.trim().to_lowercase(), (id, version, source));
+            let name_key = identity_key_of(&doc.name);
+            if !name_key.is_empty() {
+                existing_map.insert(name_key, (id, version, source));
             }
         }
     }
     existing_map
 }
-
 /// 本地导入时单个技能的处理方式。
 #[derive(Debug, PartialEq, Eq)]
 enum LocalImportPlan<'a> {
@@ -1188,6 +1278,7 @@ pub fn add_skill_local(
     let src = expand_tilde(path.trim());
     if !src.exists() {
         return Ok(SkillActionResult {
+            errors: Vec::new(),
             ok: false,
             skill: None,
             message: format!("路径不存在: {}", src.display()),
@@ -1201,6 +1292,10 @@ pub fn add_skill_local(
         Some(ids) if !ids.is_empty() => {
             let mut map = HashMap::new();
             for id in ids {
+                // 覆盖目标只能是库内单层目录名，拒绝 `../` 之类的穿越标识。
+                if !is_plain_entry_name(id) {
+                    continue;
+                }
                 let dir = lib.join(id);
                 if is_skill_dir(&dir) {
                     map.insert(skill_identity_key(&dir), id.clone());
@@ -1223,6 +1318,7 @@ pub fn add_skill_local(
                 LocalImportPlan::Overwrite(id) => Some(id),
                 LocalImportPlan::Skip => {
                     return Ok(SkillActionResult {
+                        errors: Vec::new(),
                         ok: false,
                         skill: None,
                         message: format!("技能「{}」已存在于技能库，已跳过", display_name),
@@ -1231,6 +1327,7 @@ pub fn add_skill_local(
             };
         let skill = import_skill_dir(&src, None, SkillSource::Local, None, &tag, overwrite_id)?;
         return Ok(SkillActionResult {
+            errors: Vec::new(),
             ok: true,
             message: format!("已导入本地技能「{}」", skill.title),
             skill: Some(skill),
@@ -1241,6 +1338,8 @@ pub fn add_skill_local(
     if src.is_dir() {
         let mut imported = Vec::new();
         let mut skipped = 0usize;
+        // 更深层级的技能不会被导入，必须显式告诉用户，不能静默丢掉。
+        let nested = count_nested_skill_dirs(&src);
         for entry in fs::read_dir(&src).map_err(|e| format!("读取目录失败: {}", e))? {
             let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
             let p = entry.path();
@@ -1268,18 +1367,25 @@ pub fn add_skill_local(
             existing_keys.insert(key);
         }
         if imported.is_empty() {
-            let message = if skipped > 0 {
+            let mut message = if skipped > 0 {
                 format!("所选目录中的 {} 个技能均已存在，已跳过", skipped)
             } else {
                 "所选目录中未找到包含 SKILL.md 的技能".into()
             };
+            if nested > 0 {
+                message.push_str(&format!(
+                    "；发现 {} 个技能在更深层级，未导入（只扫描一层）",
+                    nested
+                ));
+            }
             return Ok(SkillActionResult {
+                errors: Vec::new(),
                 ok: false,
                 skill: None,
                 message,
             });
         }
-        let message = if skipped > 0 {
+        let mut message = if skipped > 0 {
             format!(
                 "已从本地导入 {} 个技能，跳过 {} 个重复技能",
                 imported.len(),
@@ -1288,7 +1394,14 @@ pub fn add_skill_local(
         } else {
             format!("已从本地导入 {} 个技能", imported.len())
         };
+        if nested > 0 {
+            message.push_str(&format!(
+                "；另有 {} 个技能在更深层级，未导入（只扫描一层）",
+                nested
+            ));
+        }
         return Ok(SkillActionResult {
+            errors: Vec::new(),
             ok: true,
             skill: imported.into_iter().next(),
             message,
@@ -1296,10 +1409,48 @@ pub fn add_skill_local(
     }
 
     Ok(SkillActionResult {
+        errors: Vec::new(),
         ok: false,
         skill: None,
         message: "请选择包含 SKILL.md 的技能目录".into(),
     })
+}
+
+/// 统计 `root` 下会被“只扫一层”忽略的技能目录数（深度 2..=3）。
+/// 一层子目录由导入逻辑处理，这里只数深层候选；跳过 VCS/依赖目录与符号链接。
+fn count_nested_skill_dirs(root: &Path) -> usize {
+    let mut count = 0usize;
+    let mut queue: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
+    while let Some((dir, depth)) = queue.pop() {
+        if depth >= 3 {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                // 文件与符号链接都不下探（软链可能成环）。
+                continue;
+            }
+            let name = entry.file_name();
+            if name == ".git" || name == "node_modules" || name == ".github" {
+                continue;
+            }
+            let path = entry.path();
+            if is_skill_dir(&path) {
+                if depth + 1 >= 2 {
+                    count += 1;
+                }
+                continue; // 已识别的技能目录不再下探
+            }
+            queue.push((path, depth + 1));
+        }
+    }
+    count
 }
 
 /// Native folder picker. Returns selected path or cancel.
@@ -1307,11 +1458,13 @@ pub fn pick_local_skill_folder(tag: String) -> Result<SkillActionResult, String>
     match crate::platform::pick_folder("选择 Skill 目录（需包含 SKILL.md）") {
         Ok(Some(path)) => add_skill_local(path.to_string_lossy().to_string(), tag, None),
         Ok(None) => Ok(SkillActionResult {
+            errors: Vec::new(),
             ok: false,
             skill: None,
             message: "已取消选择".into(),
         }),
         Err(e) => Ok(SkillActionResult {
+            errors: Vec::new(),
             ok: false,
             skill: None,
             message: e,
@@ -1376,16 +1529,22 @@ fn remove_skill_agent_copies(managed_names: &[String], errors: &mut Vec<String>)
 ///   避免删除库目录后残留悬空软链接。
 /// - 先在库目录仍存在时算出 `managed_names`（含 frontmatter 名），再删库目录，
 ///   最后按名清理各 Agent 副本，保证展示名安装也能被移除。
+/// - 返回是否真的存在并删除了库目录；`false` 表示该技能本就不存在（调用方据此
+///   区分「已删除」与「不存在」，不再把空操作报告成成功）。
 fn delete_skill_core(
     id: &str,
     delete_agent_copies: bool,
     errors: &mut Vec<String>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let lib = skills_library_dir()?;
     let dir = lib.join(id);
     // Ensure the resolved path stays within the library root.
     if !dir.starts_with(&lib) {
         return Err("非法的技能路径".into());
+    }
+    let existed = fs::symlink_metadata(&dir).is_ok();
+    if !existed {
+        return Ok(false);
     }
 
     // 库目录尚在时先解析受管条目名（含 frontmatter 名），删除后便无从读取。
@@ -1395,20 +1554,21 @@ fn delete_skill_core(
         None
     };
 
-    if dir.exists() {
-        fs::remove_dir_all(&dir).map_err(|e| format!("删除技能目录失败: {}", e))?;
-    }
+    fs::remove_dir_all(&dir).map_err(|e| format!("删除技能目录失败: {}", e))?;
     // Best-effort metadata cleanup; disk removal already succeeded.
     let _ = db::delete_skill_meta(id);
 
     if let Some(names) = managed {
         remove_skill_agent_copies(&names, errors);
     }
-    Ok(())
+    Ok(true)
 }
 
-/// 删除技能（可选一并清理各 Agent 副本）。副本清理为尽力而为：
-/// 库目录删除成功即视为 ok，副本清理失败仅并入消息提示。
+/// 删除技能（可选一并清理各 Agent 副本）。
+///
+/// - 技能不存在时返回 `ok:false` +「技能不存在」，不再把空操作报告成成功；
+/// - 副本清理为尽力而为：库目录删除成功即 `ok:true`，但失败项逐条进入 `errors`，
+///   不只是压进 message。
 pub fn delete_skill(
     skill_id: String,
     delete_agent_copies: bool,
@@ -1416,6 +1576,7 @@ pub fn delete_skill(
     let id = skill_id.trim().to_string();
     if id.is_empty() {
         return Ok(SkillActionResult {
+            errors: Vec::new(),
             ok: false,
             skill: None,
             message: "缺少技能标识".into(),
@@ -1424,6 +1585,7 @@ pub fn delete_skill(
     // Guard against path traversal: id must be a plain directory name.
     if !is_plain_entry_name(&id) {
         return Ok(SkillActionResult {
+            errors: Vec::new(),
             ok: false,
             skill: None,
             message: "非法的技能标识".into(),
@@ -1431,7 +1593,15 @@ pub fn delete_skill(
     }
 
     let mut errors: Vec<String> = Vec::new();
-    delete_skill_core(&id, delete_agent_copies, &mut errors)?;
+    let removed = delete_skill_core(&id, delete_agent_copies, &mut errors)?;
+    if !removed {
+        return Ok(SkillActionResult {
+            ok: false,
+            skill: None,
+            message: "技能不存在".into(),
+            errors: Vec::new(),
+        });
+    }
 
     let message = if errors.is_empty() {
         "已删除技能".into()
@@ -1442,6 +1612,7 @@ pub fn delete_skill(
         ok: true,
         skill: None,
         message,
+        errors,
     })
 }
 
@@ -1515,9 +1686,10 @@ fn ensure_skill_install(
         return Err("技能安装临时路径已存在，请稍后重试".into());
     }
 
+    // Copy 模式与导入/导出共用同一套复制语义（软链按链接保留，不跟随、不实体化）。
     let prepare = match mode {
         SkillInstallMode::Link => crate::platform::symlink_any(target, &staging),
-        SkillInstallMode::Copy => crate::platform::copy_dir_recursive(target, &staging),
+        SkillInstallMode::Copy => copy_dir_recursive(target, &staging),
     };
     if let Err(e) = prepare {
         let _ = remove_path_entry(&staging);
@@ -1771,21 +1943,24 @@ pub fn apply_skill_to_agents(
         });
     }
 
-    // 1) Persist the (possibly changed) tag first — independent of installation sync.
-    let mut meta = db::get_skill_meta(&id)
-        .unwrap_or_default()
-        .unwrap_or_else(default_local_meta);
-    meta.tag = tag.trim().to_string();
-    meta.updated_at = now_secs();
-    db::upsert_skill_meta(&id, &meta)?;
-
-    // 2) Sync installations to the desired final state (single-card semantics: replace).
+    // 1) Sync installations first: a failed install must not leave the tag changed
+    //    (the dialog is one action; partial failure keeps the old tag so a retry is safe).
     let desired: BTreeSet<String> = agents
         .iter()
         .map(|a| a.trim().to_string())
         .filter(|a| !a.is_empty())
         .collect();
     let outcome = sync_skill_installations(&id, &lib_skill_dir, &desired, &desired, install_mode);
+
+    // 2) Persist the tag only when the install step reported no errors.
+    let mut meta = db::get_skill_meta(&id)
+        .unwrap_or_default()
+        .unwrap_or_else(default_local_meta);
+    if outcome.errors.is_empty() {
+        meta.tag = tag.trim().to_string();
+        meta.updated_at = now_secs();
+        db::upsert_skill_meta(&id, &meta)?;
+    }
 
     // 3) Rebuild the record with a fresh applied scan.
     let applied = applied_after_for(&id, &lib_skill_dir);
@@ -1801,7 +1976,7 @@ pub fn apply_skill_to_agents(
         )
     } else {
         format!(
-            "「{}」部分完成：以{}应用 {} 个、解除 {} 个，{} 项未成功",
+            "「{}」部分完成：以{}应用 {} 个、解除 {} 个，{} 项未成功；标签未更新",
             record.title,
             install_mode.label(),
             outcome.linked,
@@ -1861,16 +2036,22 @@ pub fn batch_delete_skills(
 
     let mut succeeded = 0usize;
     let mut failed = 0usize;
+    let mut skipped = 0usize;
     let mut errors: Vec<String> = Vec::new();
     for id in &ids {
         let mut copy_errors: Vec<String> = Vec::new();
         match delete_skill_core(id, delete_agent_copies, &mut copy_errors) {
-            Ok(()) => {
+            Ok(true) => {
                 succeeded += 1;
-                // 副本清理失败不影响删除结果，但需提示。
+                // 副本清理失败不影响删除结果，但需逐条提示。
                 for e in copy_errors {
                     errors.push(format!("「{}」副本清理：{}", id, e));
                 }
+            }
+            Ok(false) => {
+                // 不存在不属于失败，也不算成功，单独计入 skipped。
+                skipped += 1;
+                errors.push(format!("「{}」：技能不存在", id));
             }
             Err(e) => {
                 failed += 1;
@@ -1880,19 +2061,21 @@ pub fn batch_delete_skills(
     }
 
     let list = list_skills()?;
-    let message = if failed == 0 {
-        format!("已删除 {} 个技能", succeeded)
-    } else {
-        format!("已删除 {} 个，{} 个失败", succeeded, failed)
-    };
+    let mut parts: Vec<String> = vec![format!("已删除 {} 个技能", succeeded)];
+    if skipped > 0 {
+        parts.push(format!("跳过 {} 个（不存在）", skipped));
+    }
+    if failed > 0 {
+        parts.push(format!("{} 个失败", failed));
+    }
     Ok(BatchSkillResult {
         missing_upstream: Vec::new(),
         ok: failed == 0,
         succeeded,
         failed,
-        skipped: 0,
+        skipped,
         skills: list.skills,
-        message,
+        message: parts.join("，"),
         errors,
     })
 }
@@ -1998,21 +2181,33 @@ pub fn batch_apply_skills_to_agents(
     }
 
     let list = list_skills()?;
-    let verb = if mode == BatchApplyMode::Replace {
-        "覆盖应用"
-    } else {
-        "追加应用"
-    };
-    let message = if failed == 0 {
-        format!("已以{}{} {} 个技能", install_mode.label(), verb, succeeded)
-    } else {
-        format!(
-            "以{}{} {} 个成功，{} 个失败",
-            install_mode.label(),
-            verb,
-            succeeded,
-            failed
-        )
+    // 覆盖模式 + 空 Agent 集合 = 从所有 Agent 解除，此时说「应用 N 个」与事实相反。
+    let clearing = mode == BatchApplyMode::Replace && selected_agents.is_empty();
+    let message = match (failed == 0, clearing) {
+        (true, true) => format!("已从所有 Agent 解除 {} 个技能", succeeded),
+        (true, false) => {
+            let verb = if mode == BatchApplyMode::Replace {
+                "覆盖应用"
+            } else {
+                "追加应用"
+            };
+            format!("已以{}{} {} 个技能", install_mode.label(), verb, succeeded)
+        }
+        (false, true) => format!("解除 {} 个成功，{} 个失败", succeeded, failed),
+        (false, false) => {
+            let verb = if mode == BatchApplyMode::Replace {
+                "覆盖应用"
+            } else {
+                "追加应用"
+            };
+            format!(
+                "以{}{} {} 个成功，{} 个失败",
+                install_mode.label(),
+                verb,
+                succeeded,
+                failed
+            )
+        }
     };
     Ok(BatchSkillResult {
         missing_upstream: Vec::new(),
@@ -2120,55 +2315,64 @@ fn pick_target_folder(prompt: &str) -> Result<Option<PathBuf>, String> {
     }
 }
 
+/// 单技能导出到目录的结果。目标已有同名条目属于“按用户选择跳过”，不是失败，
+/// 因此用枚举表达，调用方不得再靠错误文案分类。
+#[derive(Debug)]
+enum DirInstallOutcome {
+    Installed,
+    Exists {
+        existing_version: String,
+        import_version: String,
+    },
+}
+
 /// 在 `target_root` 下把库技能 `id` 安装为 `<target_root>/<id>`。
-/// 目标已存在同名条目一律不覆盖（避免误伤用户数据）。
+/// 未选择覆盖时遇到同名条目返回 `DirInstallOutcome::Exists`（不写盘）。
 fn install_skill_into_dir(
     id: &str,
     target_root: &Path,
     install_mode: SkillInstallMode,
     overwrite: bool,
-) -> Result<String, String> {
+) -> Result<DirInstallOutcome, String> {
+    if !is_plain_entry_name(id) {
+        return Err("非法的技能标识".into());
+    }
     let lib = skills_library_dir()?;
     let src = lib.join(id);
     if !src.starts_with(&lib) || !is_skill_dir(&src) {
         return Err("技能目录不存在或缺少 SKILL.md".into());
+    }
+    if !target_root.is_dir() {
+        return Err("目标目录不存在或不是目录".into());
     }
     let dest = target_root.join(id);
     // Defense in depth: resolved dest must stay directly under target_root.
     if dest.parent() != Some(target_root) {
         return Err("非法的技能路径".into());
     }
-    // 已存在同名条目：覆盖模式先删除旧条目再安装；非覆盖模式返回带版本信息的错误。
-    if fs::symlink_metadata(&dest).is_ok() {
-        if overwrite {
-            remove_path_entry(&dest).map_err(|e| format!("清理目标已有条目失败: {}", e))?;
-        } else {
-            // 读取已有条目和库中 skill 的版本，附带在错误信息中供前端展示。
-            let existing_ver = read_skill_doc(&dest).version;
-            let import_ver = read_skill_doc(&src).version;
-            return Err(format!(
-                "目标已存在同名条目：{}|existing_version={}|import_version={}",
-                dest.display(),
-                existing_ver,
-                import_ver
-            ));
-        }
+    // 已存在同名条目且未选择覆盖：跳过（带版本信息，供调用方汇总展示）。
+    if fs::symlink_metadata(&dest).is_ok() && !overwrite {
+        return Ok(DirInstallOutcome::Exists {
+            existing_version: read_skill_doc(&dest).version,
+            import_version: read_skill_doc(&src).version,
+        });
+    }
+    // 覆盖也走 staging：先准备好新条目，再原子替换，失败时保留用户已有目录。
+    let (staging, backup) = staging_paths(target_root, id);
+    if fs::symlink_metadata(&staging).is_ok() || fs::symlink_metadata(&backup).is_ok() {
+        return Err("导出临时路径已存在，请稍后重试".into());
     }
     let source = fs::canonicalize(&src).unwrap_or(src);
-    match install_mode {
-        SkillInstallMode::Link => {
-            crate::platform::symlink_any(&source, &dest)?;
-            Ok(format!(
-                "已创建软链接 {} → {}",
-                dest.display(),
-                source.display()
-            ))
-        }
-        SkillInstallMode::Copy => {
-            crate::platform::copy_dir_recursive(&source, &dest)?;
-            Ok(format!("已完整复制到 {}", dest.display()))
-        }
+    let prepared = match install_mode {
+        SkillInstallMode::Link => crate::platform::symlink_any(&source, &staging),
+        SkillInstallMode::Copy => copy_dir_recursive(&source, &staging),
+    };
+    if let Err(e) = prepared {
+        let _ = remove_path_entry(&staging);
+        return Err(format!("创建{}失败: {}", install_mode.label(), e));
     }
+    replace_path_with_staged(&staging, &dest, &backup)?;
+    Ok(DirInstallOutcome::Installed)
 }
 
 /// Pick a target folder and check for duplicate skills at the target.
@@ -2270,13 +2474,19 @@ pub fn export_skills_to_dir(
     for id in &ids {
         let overwrite = overwrite_set.contains(id);
         match install_skill_into_dir(id, &target_root, install_mode, overwrite) {
-            Ok(_) => succeeded += 1,
+            Ok(DirInstallOutcome::Installed) => succeeded += 1,
+            Ok(DirInstallOutcome::Exists {
+                existing_version,
+                import_version,
+            }) => {
+                skipped += 1;
+                errors.push(format!(
+                    "「{}」：目标已存在同名条目（existing_version={}|import_version={}）",
+                    id, existing_version, import_version
+                ));
+            }
             Err(msg) => {
-                if msg.contains("目标已存在同名") {
-                    skipped += 1;
-                } else {
-                    failed += 1;
-                }
+                failed += 1;
                 errors.push(format!("「{}」：{}", id, msg));
             }
         }
@@ -2290,9 +2500,10 @@ pub fn export_skills_to_dir(
     if failed > 0 {
         parts.push(format!("失败 {} 个", failed));
     }
+    // 跳过是用户“不勾选覆盖”的预期结果，不参与成败判定。
     Ok(BatchSkillResult {
         missing_upstream: Vec::new(),
-        ok: failed == 0 && skipped == 0,
+        ok: failed == 0,
         succeeded,
         failed,
         skipped,
@@ -2520,6 +2731,7 @@ fn add_skill_from_git(gh: GitRepoRef, tag: &str) -> Result<SkillActionResult, St
     if !search_root.exists() {
         let _ = fs::remove_dir_all(&tmp);
         return Ok(SkillActionResult {
+            errors: Vec::new(),
             ok: false,
             skill: None,
             message: format!("仓库中不存在路径: {}", gh.path),
@@ -2530,6 +2742,7 @@ fn add_skill_from_git(gh: GitRepoRef, tag: &str) -> Result<SkillActionResult, St
     if skill_dirs.is_empty() {
         let _ = fs::remove_dir_all(&tmp);
         return Ok(SkillActionResult {
+            errors: Vec::new(),
             ok: false,
             skill: None,
             message: "仓库中未找到包含 SKILL.md 的技能目录".into(),
@@ -2621,6 +2834,7 @@ fn add_skill_from_git(gh: GitRepoRef, tag: &str) -> Result<SkillActionResult, St
             "导入失败，请检查仓库内容".into()
         };
         return Ok(SkillActionResult {
+            errors: Vec::new(),
             ok: skipped_dupe > 0,
             skill: None,
             message,
@@ -2640,6 +2854,7 @@ fn add_skill_from_git(gh: GitRepoRef, tag: &str) -> Result<SkillActionResult, St
     };
 
     Ok(SkillActionResult {
+        errors: Vec::new(),
         ok: true,
         skill: last,
         message,
@@ -4017,6 +4232,7 @@ pub fn update_skill(skill_id: String) -> Result<SkillActionResult, String> {
     // Guard against path traversal: id must be a plain directory name.
     if !is_plain_entry_name(&id) {
         return Ok(SkillActionResult {
+            errors: Vec::new(),
             ok: false,
             skill: None,
             message: "非法的技能标识".into(),
@@ -4026,6 +4242,7 @@ pub fn update_skill(skill_id: String) -> Result<SkillActionResult, String> {
     let dest = lib.join(&id);
     if !dest.starts_with(&lib) || !is_skill_dir(&dest) {
         return Ok(SkillActionResult {
+            errors: Vec::new(),
             ok: false,
             skill: None,
             message: "技能不存在或缺少 SKILL.md".into(),
@@ -4034,6 +4251,7 @@ pub fn update_skill(skill_id: String) -> Result<SkillActionResult, String> {
     let meta = db::get_skill_meta(&id)?.ok_or_else(|| format!("技能元数据缺失: {}", id))?;
     if !meta.source.is_remote() {
         return Ok(SkillActionResult {
+            errors: Vec::new(),
             ok: false,
             skill: None,
             message: "仅支持更新来自 GitHub / GitCode 的技能".into(),
@@ -4041,6 +4259,7 @@ pub fn update_skill(skill_id: String) -> Result<SkillActionResult, String> {
     }
     if meta.github_owner.is_empty() || meta.github_repo.is_empty() {
         return Ok(SkillActionResult {
+            errors: Vec::new(),
             ok: false,
             skill: None,
             message: "缺少仓库信息，无法更新".into(),
@@ -4097,6 +4316,7 @@ pub fn update_skill(skill_id: String) -> Result<SkillActionResult, String> {
             None => {
                 cleanup_tmp(&tmp);
                 return Ok(SkillActionResult {
+                    errors: Vec::new(),
                     ok: false,
                     skill: None,
                     message: "远端仓库中未找到该技能目录（可能已被移动或删除）".into(),
@@ -4120,6 +4340,7 @@ pub fn update_skill(skill_id: String) -> Result<SkillActionResult, String> {
     let record = build_record(&id, &dest, &meta2, &applied, false);
     let title = record.title.clone();
     Ok(SkillActionResult {
+        errors: Vec::new(),
         ok: true,
         skill: Some(record),
         message: format!("已将「{}」更新到远端最新", title),
@@ -4955,5 +5176,499 @@ body
             local_import_plan("demo", &existing, &overwrite),
             LocalImportPlan::Overwrite("demo")
         );
+    }
+
+    /// D-002：覆盖导入失败时必须保留库里原有技能，且不留 staging/backup 残留。
+    #[cfg(not(windows))]
+    #[test]
+    fn overwrite_import_failure_keeps_original_skill() {
+        let home = TempHome::new("skill-overwrite-import-fail");
+        let lib = home.path.join(".octopus/skills");
+        fs::create_dir_all(lib.join("demo")).unwrap();
+        fs::write(lib.join("demo/SKILL.md"), "---\nname: demo\n---\n# v1\n").unwrap();
+        fs::write(lib.join("demo/keep.txt"), "keep").unwrap();
+
+        let src = home.path.join("incoming/demo");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("SKILL.md"), "---\nname: demo\n---\n# v2\n").unwrap();
+        fs::write(src.join("locked.bin"), "x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(src.join("locked.bin"), fs::Permissions::from_mode(0o000)).unwrap();
+        }
+
+        let err = add_skill_local(
+            src.to_string_lossy().to_string(),
+            String::new(),
+            Some(vec!["demo".to_string()]),
+        )
+        .unwrap_err();
+        assert!(err.contains("复制文件失败"), "{}", err);
+
+        assert!(fs::read_to_string(lib.join("demo/SKILL.md"))
+            .unwrap()
+            .contains("# v1"));
+        assert!(lib.join("demo/keep.txt").is_file());
+        assert!(
+            fs::read_dir(&lib)
+                .unwrap()
+                .flatten()
+                .all(|e| !e.file_name().to_string_lossy().starts_with(".octopus-")),
+            "不应残留 staging/backup 目录"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(src.join("locked.bin"), fs::Permissions::from_mode(0o600));
+        }
+    }
+
+    /// D-003：覆盖导出失败时必须保留目标目录里用户的原有内容。
+    #[cfg(not(windows))]
+    #[test]
+    fn overwrite_export_failure_keeps_target_dir() {
+        let home = TempHome::new("skill-overwrite-export-fail");
+        let lib = home.path.join(".octopus/skills");
+        fs::create_dir_all(lib.join("exp")).unwrap();
+        fs::write(lib.join("exp/SKILL.md"), "---\nname: exp\n---\n# lib\n").unwrap();
+        fs::write(lib.join("exp/locked.bin"), "x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                lib.join("exp/locked.bin"),
+                fs::Permissions::from_mode(0o000),
+            )
+            .unwrap();
+        }
+
+        let target = home.path.join("target");
+        fs::create_dir_all(target.join("exp")).unwrap();
+        fs::write(target.join("exp/SKILL.md"), "# user version\n").unwrap();
+        fs::write(target.join("exp/keep2.txt"), "keep2").unwrap();
+
+        let res = export_skills_to_dir(
+            vec!["exp".to_string()],
+            SkillInstallMode::Copy,
+            target.to_string_lossy().to_string(),
+            vec!["exp".to_string()],
+        )
+        .unwrap();
+        assert!(!res.ok, "{}", res.message);
+        assert_eq!(res.failed, 1, "{:?}", res.errors);
+
+        assert!(fs::read_to_string(target.join("exp/SKILL.md"))
+            .unwrap()
+            .contains("user version"));
+        assert!(target.join("exp/keep2.txt").is_file());
+        assert!(
+            fs::read_dir(&target)
+                .unwrap()
+                .flatten()
+                .all(|e| !e.file_name().to_string_lossy().starts_with(".octopus-")),
+            "不应残留 staging/backup 目录"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(
+                lib.join("exp/locked.bin"),
+                fs::Permissions::from_mode(0o600),
+            );
+        }
+    }
+
+    /// D-007/D-008：同名条目按「跳过」计数，不拉低 `ok`，也不靠错误文案分类。
+    #[cfg(not(windows))]
+    #[test]
+    fn export_skips_existing_without_failing() {
+        let home = TempHome::new("skill-export-skip");
+        let lib = home.path.join(".octopus/skills");
+        for (id, body) in [("exp", "# lib exp\n"), ("fresh", "# lib fresh\n")] {
+            fs::create_dir_all(lib.join(id)).unwrap();
+            fs::write(
+                lib.join(id).join("SKILL.md"),
+                format!("---\nname: {}\nversion: 2.0.0\n---\n{}", id, body),
+            )
+            .unwrap();
+        }
+
+        let target = home.path.join("target");
+        fs::create_dir_all(target.join("exp")).unwrap();
+        fs::write(
+            target.join("exp/SKILL.md"),
+            "---\nname: exp\nversion: 1.0.0\n---\n# user version\n",
+        )
+        .unwrap();
+        fs::write(target.join("exp/keep.txt"), "keep").unwrap();
+
+        let res = export_skills_to_dir(
+            vec!["exp".to_string(), "fresh".to_string()],
+            SkillInstallMode::Copy,
+            target.to_string_lossy().to_string(),
+            vec![],
+        )
+        .unwrap();
+        assert!(res.ok, "跳过不应把 ok 拉成 false：{}", res.message);
+        assert_eq!((res.succeeded, res.skipped, res.failed), (1, 1, 0));
+        assert!(res.message.contains("跳过 1 个"), "{}", res.message);
+        assert_eq!(res.errors.len(), 1);
+        assert!(
+            res.errors[0].contains("existing_version=1.0.0")
+                && res.errors[0].contains("import_version=2.0.0"),
+            "{:?}",
+            res.errors
+        );
+
+        // 跳过的目标保持用户原样，新技能正常落盘。
+        assert!(fs::read_to_string(target.join("exp/SKILL.md"))
+            .unwrap()
+            .contains("user version"));
+        assert!(target.join("exp/keep.txt").is_file());
+        assert!(target.join("fresh/SKILL.md").is_file());
+    }
+
+    /// D-001：首部点号的技能名落库时必须归一，导入后可见且能被判重。
+    #[cfg(not(windows))]
+    #[test]
+    fn dot_named_skill_import_is_visible_and_deduped() {
+        let home = TempHome::new("skill-dot-visible");
+        let lib = home.path.join(".octopus/skills");
+        let src = home.path.join("incoming/.hidden-skill");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("SKILL.md"), "no heading body\n").unwrap();
+
+        let res = add_skill_local(src.to_string_lossy().to_string(), String::new(), None).unwrap();
+        assert!(res.ok, "{}", res.message);
+        assert!(lib.join("hidden-skill").is_dir());
+        assert!(!lib.join(".hidden-skill").exists());
+        assert!(list_skills()
+            .unwrap()
+            .skills
+            .iter()
+            .any(|s| s.id == "hidden-skill"));
+
+        // 判重与写入同口径：再导入应被识别为重复并跳过。
+        let check = check_skill_local_duplicate(src.to_string_lossy().to_string()).unwrap();
+        assert_eq!(check.conflicts.len(), 1);
+        assert_eq!(check.conflicts[0].existing_id, "hidden-skill");
+
+        let again =
+            add_skill_local(src.to_string_lossy().to_string(), String::new(), None).unwrap();
+        assert!(!again.ok, "{}", again.message);
+        assert!(!lib.join("hidden-skill-2").exists());
+    }
+
+    /// D-004：导入按链接本体复制，不跟随软链，因此环不会递归、文件链不会实体化。
+    #[cfg(all(not(windows), unix))]
+    #[test]
+    fn import_preserves_symlinks_without_following_cycles() {
+        let home = TempHome::new("skill-symlink-import");
+        let lib = home.path.join(".octopus/skills");
+        let src = home.path.join("incoming/demo");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("SKILL.md"), "---\nname: demo\n---\n# demo\n").unwrap();
+        fs::write(src.join("real.txt"), "real").unwrap();
+        std::os::unix::fs::symlink("real.txt", src.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(".", src.join("loop")).unwrap();
+
+        let res = add_skill_local(src.to_string_lossy().to_string(), String::new(), None).unwrap();
+        assert!(res.ok, "{}", res.message);
+
+        let imported = lib.join("demo");
+        let loop_meta = fs::symlink_metadata(imported.join("loop")).unwrap();
+        assert!(loop_meta.file_type().is_symlink(), "目录软链应按链接保留");
+        let link_meta = fs::symlink_metadata(imported.join("link.txt")).unwrap();
+        assert!(link_meta.file_type().is_symlink(), "文件软链不应被实体化");
+        assert_eq!(
+            fs::read_link(imported.join("link.txt")).unwrap(),
+            PathBuf::from("real.txt")
+        );
+        // 环没有被展开：顶层只有源目录的四个条目，没有多出来的副本。
+        let mut names: Vec<String> = fs::read_dir(&imported)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["SKILL.md", "link.txt", "loop", "real.txt"]);
+    }
+
+    /// 覆盖目标 id 必须是库内单层目录名，`../` 不得触达库外目录。
+    #[cfg(not(windows))]
+    #[test]
+    fn overwrite_import_rejects_traversal_ids() {
+        let home = TempHome::new("skill-overwrite-traversal");
+        let outside = home.path.join("evil");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(
+            outside.join("SKILL.md"),
+            "---\nname: evil\n---\n# outside\n",
+        )
+        .unwrap();
+
+        let src = home.path.join("incoming/evil");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("SKILL.md"), "---\nname: evil\n---\n# incoming\n").unwrap();
+
+        // 直接调用导入内核：穿越 id 被拒，库外目录不受影响。
+        let err = import_skill_dir(&src, None, SkillSource::Local, None, "", Some("../../evil"))
+            .unwrap_err();
+        assert!(err.contains("非法的技能标识"), "{}", err);
+        assert!(outside.join("SKILL.md").is_file());
+
+        // 命令层：穿越 id 会被过滤掉，退化为普通导入，不触碰库外目录。
+        let res = add_skill_local(
+            src.to_string_lossy().to_string(),
+            String::new(),
+            Some(vec!["../../evil".to_string()]),
+        )
+        .unwrap();
+        assert!(res.ok, "{}", res.message);
+        assert!(fs::read_to_string(outside.join("SKILL.md"))
+            .unwrap()
+            .contains("outside"));
+        assert!(home.path.join(".octopus/skills/evil").is_dir());
+    }
+
+    /// D-005：删除不存在的技能必须报告失败，而不是「已删除技能」。
+    #[cfg(not(windows))]
+    #[test]
+    fn delete_missing_skill_reports_not_found() {
+        let home = TempHome::new("skill-delete-missing");
+        let lib = home.path.join(".octopus/skills");
+        fs::create_dir_all(&lib).unwrap();
+
+        let res = delete_skill("nope".to_string(), false).unwrap();
+        assert!(!res.ok, "{}", res.message);
+        assert_eq!(res.message, "技能不存在");
+        assert!(res.errors.is_empty());
+
+        // 批量入口把「不存在」计入 skipped，而不是成功或失败。
+        let batch = batch_delete_skills(vec!["nope".to_string()], false).unwrap();
+        assert!(batch.ok, "{}", batch.message);
+        assert_eq!((batch.succeeded, batch.skipped, batch.failed), (0, 1, 0));
+        assert!(
+            batch.message.contains("跳过 1 个（不存在）"),
+            "{}",
+            batch.message
+        );
+        assert_eq!(batch.errors.len(), 1);
+        assert!(batch.errors[0].contains("技能不存在"), "{:?}", batch.errors);
+    }
+
+    /// D-006：单条删除的副本清理失败必须进入结构化 errors，而不是只拼进 message。
+    #[cfg(all(not(windows), unix))]
+    #[test]
+    fn delete_skill_surfaces_copy_cleanup_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = TempHome::new("skill-delete-copy-errors");
+        let lib = home.path.join(".octopus/skills");
+        fs::create_dir_all(lib.join("demo")).unwrap();
+        fs::write(lib.join("demo/SKILL.md"), "---\nname: demo\n---\n# demo\n").unwrap();
+
+        // 让 codex 侧的副本无法删除：子目录去掉写权限后 remove_dir_all 会失败。
+        let agent_copy = home.path.join(".codex/skills/demo");
+        fs::create_dir_all(agent_copy.join("blocked")).unwrap();
+        fs::write(agent_copy.join("blocked/file.txt"), "x").unwrap();
+        fs::set_permissions(
+            agent_copy.join("blocked"),
+            fs::Permissions::from_mode(0o555),
+        )
+        .unwrap();
+
+        let res = delete_skill("demo".to_string(), true).unwrap();
+        assert!(res.ok, "{}", res.message);
+        assert!(!lib.join("demo").exists());
+        assert!(!res.errors.is_empty(), "副本清理失败应进入 errors");
+        assert!(res.message.contains("副本清理未成功"), "{}", res.message);
+        assert!(
+            res.errors.iter().any(|e| e.contains("codex")),
+            "{:?}",
+            res.errors
+        );
+
+        // 恢复权限，避免临时 HOME 清理失败。
+        fs::set_permissions(
+            agent_copy.join("blocked"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let _ = fs::remove_dir_all(&agent_copy);
+    }
+
+    /// D-009：更深层级的技能不会被静默忽略，导入消息必须给出数量。
+    #[cfg(not(windows))]
+    #[test]
+    fn nested_skill_dirs_are_reported() {
+        let home = TempHome::new("skill-nested-report");
+        let lib = home.path.join(".octopus/skills");
+        let parent = home.path.join("incoming");
+        fs::create_dir_all(parent.join("a")).unwrap();
+        fs::write(parent.join("a/SKILL.md"), "---\nname: a\n---\n# a\n").unwrap();
+        fs::create_dir_all(parent.join("group/c")).unwrap();
+        fs::write(parent.join("group/c/SKILL.md"), "---\nname: c\n---\n# c\n").unwrap();
+
+        let res =
+            add_skill_local(parent.to_string_lossy().to_string(), String::new(), None).unwrap();
+        assert!(res.ok, "{}", res.message);
+        assert!(
+            res.message.contains("另有 1 个技能在更深层级"),
+            "{}",
+            res.message
+        );
+        assert!(lib.join("a").is_dir());
+        assert!(!lib.join("c").is_dir());
+
+        // 只有深层候选、没有一层技能时，不能只说“未找到”。
+        let only_nested = home.path.join("only-nested");
+        fs::create_dir_all(only_nested.join("group/c")).unwrap();
+        fs::write(
+            only_nested.join("group/c/SKILL.md"),
+            "---\nname: c\n---\n# c\n",
+        )
+        .unwrap();
+        let res = add_skill_local(
+            only_nested.to_string_lossy().to_string(),
+            String::new(),
+            None,
+        )
+        .unwrap();
+        assert!(!res.ok, "{}", res.message);
+        assert!(
+            res.message.contains("发现 1 个技能在更深层级"),
+            "{}",
+            res.message
+        );
+    }
+
+    /// D-010：同一批内的同名技能要在预览阶段标出，而不是导入后才发现少了一个。
+    #[cfg(not(windows))]
+    #[test]
+    fn batch_duplicate_skills_are_previewed() {
+        let home = TempHome::new("skill-batch-dup-preview");
+        let lib = home.path.join(".octopus/skills");
+        let parent = home.path.join("incoming");
+        for dir in ["dup-one", "dup-two"] {
+            fs::create_dir_all(parent.join(dir)).unwrap();
+            fs::write(
+                parent.join(dir).join("SKILL.md"),
+                "---\nname: same\n---\n# same\n",
+            )
+            .unwrap();
+        }
+
+        let check = check_skill_local_duplicate(parent.to_string_lossy().to_string()).unwrap();
+        assert!(check.ok);
+        assert!(check.conflicts.is_empty());
+        assert_eq!(check.batch_duplicates, vec!["same".to_string()]);
+        assert_eq!(check.total_detected, 2);
+
+        let res =
+            add_skill_local(parent.to_string_lossy().to_string(), String::new(), None).unwrap();
+        assert!(res.ok, "{}", res.message);
+        assert!(lib.join("same").is_dir());
+        assert!(!lib.join("same-2").exists(), "批内重复不应生成副本");
+        assert!(res.message.contains("跳过 1 个重复技能"), "{}", res.message);
+
+        // 库内同名时：第一个进 conflicts，第二个仍归为批内重复。
+        let check = check_skill_local_duplicate(parent.to_string_lossy().to_string()).unwrap();
+        assert_eq!(check.conflicts.len(), 1);
+        assert_eq!(check.conflicts[0].existing_id, "same");
+        assert_eq!(check.batch_duplicates, vec!["same".to_string()]);
+    }
+
+    /// D-011：安装失败时标签不得被写入，失败文案要说明这一点。
+    #[cfg(not(windows))]
+    #[test]
+    fn apply_failure_keeps_tag_unchanged() {
+        let home = TempHome::new("skill-apply-tag-order");
+        let lib = home.path.join(".octopus/skills");
+        fs::create_dir_all(lib.join("demo")).unwrap();
+        fs::write(lib.join("demo/SKILL.md"), "---\nname: demo\n---\n# demo\n").unwrap();
+        batch_set_skill_tag(vec!["demo".to_string()], "old".to_string()).unwrap();
+
+        // claude-desktop 不支持本地 Skills，安装必然失败。
+        let res = apply_skill_to_agents(
+            "demo".to_string(),
+            vec!["claude-desktop".to_string()],
+            "new".to_string(),
+            SkillInstallMode::Link,
+        )
+        .unwrap();
+        assert!(!res.ok, "{}", res.message);
+        assert!(!res.errors.is_empty());
+        assert!(res.message.contains("标签未更新"), "{}", res.message);
+        let tag = list_skills()
+            .unwrap()
+            .skills
+            .into_iter()
+            .find(|s| s.id == "demo")
+            .map(|s| s.tag)
+            .unwrap();
+        assert_eq!(tag, "old", "失败时不应写入新标签");
+        assert!(res.skill.unwrap().applied_agents.is_empty());
+
+        // 成功路径仍然落标签。
+        let ok = apply_skill_to_agents(
+            "demo".to_string(),
+            vec!["codex".to_string()],
+            "new".to_string(),
+            SkillInstallMode::Link,
+        )
+        .unwrap();
+        assert!(ok.ok, "{}", ok.message);
+        let tag = list_skills()
+            .unwrap()
+            .skills
+            .into_iter()
+            .find(|s| s.id == "demo")
+            .map(|s| s.tag)
+            .unwrap();
+        assert_eq!(tag, "new");
+    }
+
+    /// D-012：覆盖模式清空 Agent 集合时，提示要说「解除」而不是「应用」。
+    #[cfg(not(windows))]
+    #[test]
+    fn batch_apply_clear_reports_unlink() {
+        let home = TempHome::new("skill-batch-clear-message");
+        let lib = home.path.join(".octopus/skills");
+        fs::create_dir_all(lib.join("m1")).unwrap();
+        fs::write(lib.join("m1/SKILL.md"), "---\nname: m1\n---\n# m1\n").unwrap();
+
+        let applied = batch_apply_skills_to_agents(
+            vec!["m1".to_string()],
+            vec!["codex".to_string()],
+            BatchApplyMode::Replace,
+            SkillInstallMode::Link,
+        )
+        .unwrap();
+        assert!(applied.ok, "{}", applied.message);
+        assert!(home.path.join(".codex/skills/m1").exists());
+
+        let cleared = batch_apply_skills_to_agents(
+            vec!["m1".to_string()],
+            vec![],
+            BatchApplyMode::Replace,
+            SkillInstallMode::Link,
+        )
+        .unwrap();
+        assert!(cleared.ok, "{}", cleared.message);
+        assert!(
+            cleared.message.contains("解除 1 个技能"),
+            "{}",
+            cleared.message
+        );
+        assert!(
+            !cleared.message.contains("应用 1 个"),
+            "{}",
+            cleared.message
+        );
+        assert!(!home.path.join(".codex/skills/m1").exists());
     }
 }

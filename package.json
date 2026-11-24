@@ -13,7 +13,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:format-path": "node --test src/lib/formatPath.test.mjs",
-    "postinstall": "lefthook install"
+    "postinstall": "lefthook install",
+    "test:batch-result": "node --test src/lib/batchResult.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.5.0",
