@@ -1457,6 +1457,8 @@ pub fn add_skill_local(
     if src.is_dir() {
         let mut imported = Vec::new();
         let mut skipped = 0usize;
+        let mut failed = 0usize;
+        let mut errors: Vec<String> = Vec::new();
         // 更深层级的技能不会被导入，必须显式告诉用户，不能静默丢掉。
         let nested = count_nested_skill_dirs(&src);
         for entry in fs::read_dir(&src).map_err(|e| format!("读取目录失败: {}", e))? {
@@ -1474,23 +1476,30 @@ pub fn add_skill_local(
                     continue;
                 }
             };
-            imported.push(import_skill_dir(
-                &p,
-                None,
-                SkillSource::Local,
-                None,
-                &tag,
-                overwrite_id,
-            )?);
-            // 同一批里重复出现的同名技能也按重复处理
-            existing_keys.insert(key);
+            // 单项失败不能中断整批：记入 failed/errors，其余技能照常导入。
+            match import_skill_dir(&p, None, SkillSource::Local, None, &tag, overwrite_id) {
+                Ok(record) => {
+                    imported.push(record);
+                    // 同一批里重复出现的同名技能也按重复处理
+                    existing_keys.insert(key);
+                }
+                Err(e) => {
+                    failed += 1;
+                    errors.push(format!("{}: {}", skill_display_name(&p), e));
+                }
+            }
         }
         if imported.is_empty() {
-            let mut message = if skipped > 0 {
+            let mut message = if failed > 0 {
+                format!("所选目录中没有技能导入成功，失败 {} 个", failed)
+            } else if skipped > 0 {
                 format!("所选目录中的 {} 个技能均已存在，已跳过", skipped)
             } else {
                 "所选目录中未找到包含 SKILL.md 的技能".into()
             };
+            if failed > 0 && skipped > 0 {
+                message.push_str(&format!("，跳过 {} 个重复技能", skipped));
+            }
             if nested > 0 {
                 message.push_str(&format!(
                     "；发现 {} 个技能在更深层级，未导入（只扫描一层）",
@@ -1498,21 +1507,19 @@ pub fn add_skill_local(
                 ));
             }
             return Ok(SkillActionResult {
-                errors: Vec::new(),
+                errors,
                 ok: false,
                 skill: None,
                 message,
             });
         }
-        let mut message = if skipped > 0 {
-            format!(
-                "已从本地导入 {} 个技能，跳过 {} 个重复技能",
-                imported.len(),
-                skipped
-            )
-        } else {
-            format!("已从本地导入 {} 个技能", imported.len())
-        };
+        let mut message = format!("已从本地导入 {} 个技能", imported.len());
+        if skipped > 0 {
+            message.push_str(&format!("，跳过 {} 个重复技能", skipped));
+        }
+        if failed > 0 {
+            message.push_str(&format!("，失败 {} 个", failed));
+        }
         if nested > 0 {
             message.push_str(&format!(
                 "；另有 {} 个技能在更深层级，未导入（只扫描一层）",
@@ -1520,8 +1527,8 @@ pub fn add_skill_local(
             ));
         }
         return Ok(SkillActionResult {
-            errors: Vec::new(),
-            ok: true,
+            errors,
+            ok: failed == 0,
             skill: imported.into_iter().next(),
             message,
         });
@@ -5949,5 +5956,81 @@ body
             "展示名命中时覆盖未生效"
         );
         assert!(!lib.join("Pretty-Name").exists());
+    }
+
+    /// D-018：批量导入里单项失败不能吞掉整批结果（不计失败数、只抛裸错误）。
+    #[cfg(not(windows))]
+    #[test]
+    fn batch_import_reports_partial_failure() {
+        let home = TempHome::new("batch-import-partial");
+        let lib = home.path.join(".octopus/skills");
+        let batch = home.path.join("batch");
+
+        let good = batch.join("good");
+        fs::create_dir_all(&good).unwrap();
+        fs::write(good.join("SKILL.md"), "---\nname: good-skill\n---\n# a\n").unwrap();
+
+        // 含不可读文件的技能：复制必然失败，用来制造单项失败。
+        let bad = batch.join("bad");
+        fs::create_dir_all(&bad).unwrap();
+        fs::write(bad.join("SKILL.md"), "---\nname: bad-skill\n---\n# b\n").unwrap();
+        let locked = bad.join("locked.bin");
+        fs::write(&locked, b"x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        }
+
+        let res = add_skill_local(batch.to_string_lossy().to_string(), String::new(), None);
+
+        // 先恢复权限，保证 TempHome 清理时不残留不可读文件。
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o644));
+        }
+
+        let res = res.expect("单项失败不应让整批返回 Err");
+        assert!(!res.ok, "有失败项时 ok 必须为 false: {}", res.message);
+        assert!(res.message.contains("导入 1"), "{}", res.message);
+        assert!(res.message.contains("失败 1"), "{}", res.message);
+        assert_eq!(
+            res.errors.len(),
+            1,
+            "逐项失败必须进 errors: {:?}",
+            res.errors
+        );
+        assert!(res.errors[0].contains("bad-skill"), "{:?}", res.errors);
+        assert!(lib.join("good-skill").is_dir());
+        assert!(!lib.join("bad-skill").exists());
+    }
+
+    /// D-018 附带回归：整批都是重名时仍应只报跳过，不出现「失败」也不置空 errors。
+    #[cfg(not(windows))]
+    #[test]
+    fn batch_import_all_skipped_reports_skip_only() {
+        let home = TempHome::new("batch-import-all-skip");
+        let lib = home.path.join(".octopus/skills");
+        let existing = lib.join("dup");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("SKILL.md"), "---\nname: dup\n---\n# v1\n").unwrap();
+
+        let batch = home.path.join("batch");
+        for name in ["a", "b"] {
+            let dir = batch.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("SKILL.md"), "---\nname: dup\n---\n# v2\n").unwrap();
+        }
+
+        let res = add_skill_local(batch.to_string_lossy().to_string(), String::new(), None)
+            .expect("全跳过不应返回 Err");
+        assert!(!res.ok, "整批跳过时 ok 应为 false: {}", res.message);
+        assert!(res.message.contains("均已存在"), "{}", res.message);
+        assert!(!res.message.contains("失败"), "{}", res.message);
+        assert!(res.errors.is_empty(), "{:?}", res.errors);
+        assert!(fs::read_to_string(existing.join("SKILL.md"))
+            .unwrap()
+            .contains("# v1"));
     }
 }

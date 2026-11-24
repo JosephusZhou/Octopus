@@ -629,7 +629,10 @@ export default function SkillsManage() {
           await reload({ quiet: true });
           setStatusMsg(res.message);
         } else {
-          setFormError(res.message);
+          // 批量导入的逐项失败要列出来，否则只剩「失败 K 个」的汇总。
+          setFormError(
+            res.errors.length > 0 ? `${res.message}：${res.errors.join("；")}` : res.message,
+          );
         }
       } catch (e) {
         setFormError(String(e));
