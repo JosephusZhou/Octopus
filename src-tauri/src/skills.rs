@@ -1395,7 +1395,10 @@ pub fn add_skill_local(
 
     let lib = skills_library_dir()?;
 
-    // Build overwrite lookup: map from lowercased skill name -> existing_id
+    // 覆盖表：身份键 -> 库内目录 id。前端勾选时传的是目录 id，但源技能的身份键
+    // 可能命中库内技能的「目录 id」或「frontmatter name」任意一个（扫描导入以目录名
+    // 落库时两者不同，见 D-017），所以两个键都要登记；同一 id 下 id 键后写，
+    // 因此优先命中 id 键。
     let overwrite_map: HashMap<String, String> = match &overwrite_ids {
         Some(ids) if !ids.is_empty() => {
             let mut map = HashMap::new();
@@ -1405,8 +1408,16 @@ pub fn add_skill_local(
                     continue;
                 }
                 let dir = lib.join(id);
-                if is_skill_dir(&dir) {
-                    map.insert(skill_identity_key(&dir), id.clone());
+                if !is_skill_dir(&dir) {
+                    continue;
+                }
+                let name_key = skill_identity_key(&dir);
+                if !name_key.is_empty() {
+                    map.insert(name_key, id.clone());
+                }
+                let id_key = identity_key_of(id);
+                if !id_key.is_empty() {
+                    map.insert(id_key, id.clone());
                 }
             }
             map
@@ -5877,5 +5888,66 @@ body
         assert!(report.renamed.is_empty());
         assert!(report.skipped.is_empty());
         assert!(staging.is_dir());
+    }
+
+    /// D-017：库内目录 id 与 frontmatter name 不一致时，按 id 勾选的覆盖必须生效。
+    /// 扫描导入以目录名落库，这类「id 与 name 不同」的技能是常态。
+    #[cfg(not(windows))]
+    #[test]
+    fn overwrite_import_matches_existing_dir_id_not_only_name() {
+        let home = TempHome::new("overwrite-by-dir-id");
+        let lib = home.path.join(".octopus/skills");
+        let existing = lib.join("demo-skill");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(
+            existing.join("SKILL.md"),
+            "---\nname: Demo Skill\n---\n# v1\n",
+        )
+        .unwrap();
+
+        // 源技能的名字恰好等于库内目录 id，而不是库内技能的展示名。
+        let src = home.path.join("incoming");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("SKILL.md"), "---\nname: demo-skill\n---\n# v2\n").unwrap();
+
+        let res = add_skill_local(
+            src.to_string_lossy().to_string(),
+            String::new(),
+            Some(vec!["demo-skill".to_string()]),
+        )
+        .unwrap();
+
+        assert!(res.ok, "勾选覆盖被跳过: {}", res.message);
+        assert!(
+            fs::read_to_string(existing.join("SKILL.md"))
+                .unwrap()
+                .contains("# v2"),
+            "覆盖未生效，库内仍是旧内容"
+        );
+        assert!(!lib.join("demo-skill-2").exists());
+
+        // 反向：源技能命中的是库内技能的展示名（目录 id 不同）时同样要覆盖，
+        // 且不能因为 id/name 不同而新建一个同名目录。
+        let odd = lib.join("odd-id");
+        fs::create_dir_all(&odd).unwrap();
+        fs::write(odd.join("SKILL.md"), "---\nname: Pretty Name\n---\n# v1\n").unwrap();
+        let src2 = home.path.join("incoming2");
+        fs::create_dir_all(&src2).unwrap();
+        fs::write(src2.join("SKILL.md"), "---\nname: Pretty Name\n---\n# v2\n").unwrap();
+
+        let res2 = add_skill_local(
+            src2.to_string_lossy().to_string(),
+            String::new(),
+            Some(vec!["odd-id".to_string()]),
+        )
+        .unwrap();
+        assert!(res2.ok, "按展示名勾选覆盖被跳过: {}", res2.message);
+        assert!(
+            fs::read_to_string(odd.join("SKILL.md"))
+                .unwrap()
+                .contains("# v2"),
+            "展示名命中时覆盖未生效"
+        );
+        assert!(!lib.join("Pretty-Name").exists());
     }
 }
