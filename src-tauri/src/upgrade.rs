@@ -156,8 +156,17 @@ fn migrate_v_0_4_0(root: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
+/// 0.7.2：把修复前落库的点号技能目录（`~/.octopus/skills/.name`）迁移成归一 id。
+///
+/// 这类目录在读取侧被当作内部条目跳过，导致技能导入后永久不可见（D-015）。
+/// 迁移本身幂等：目录已改名、目标已存在或无遗留目录时都不会重复改动。
+fn migrate_v_0_7_2(_root: &mut Value) -> Result<(), String> {
+    crate::skills::migrate_hidden_skill_dirs()?;
+    Ok(())
+}
+
 /// 适配步骤注册表：**必须按版本升序排列**。
-/// 当前登记的适配版本为 0.3.0、0.4.0；新增适配版本时，在末尾追加 `UpgradeStep`
+/// 当前登记的适配版本为 0.3.0、0.4.0、0.7.2；新增适配版本时，在末尾追加 `UpgradeStep`
 /// 并实现对应的 `migrate_v_*` 函数（版本号必须是真实发布的版本）。
 pub fn upgrade_steps() -> &'static [UpgradeStep] {
     let steps: &'static [UpgradeStep] = &[
@@ -168,6 +177,10 @@ pub fn upgrade_steps() -> &'static [UpgradeStep] {
         UpgradeStep {
             version: "0.4.0",
             apply: migrate_v_0_4_0,
+        },
+        UpgradeStep {
+            version: "0.7.2",
+            apply: migrate_v_0_7_2,
         },
     ];
     // 适配步骤必须登记在基石版本（BASELINE_VERSION）之后；
@@ -253,10 +266,11 @@ mod tests {
     fn steps_start_after_baseline_and_are_ascending() {
         use std::cmp::Ordering;
         let steps = upgrade_steps();
-        // 当前登记 0.3.0 和 0.4.0 两个适配版本
-        assert_eq!(steps.len(), 2);
+        // 当前登记 0.3.0、0.4.0、0.7.2 三个适配版本
+        assert_eq!(steps.len(), 3);
         assert_eq!(steps[0].version, "0.3.0");
         assert_eq!(steps[1].version, "0.4.0");
+        assert_eq!(steps[2].version, "0.7.2");
         // 首个步骤版本必须高于基石版本（0.2.1 之后才引入适配机制）
         assert_eq!(
             crate::config::compare_versions(steps[0].version, BASELINE_VERSION),
@@ -269,6 +283,45 @@ mod tests {
                 Ordering::Less
             );
         }
+    }
+
+    /// 端到端验证：0.7.1 的 config 启动后会执行 0.7.2 的点号技能目录迁移。
+    #[cfg(not(windows))]
+    #[test]
+    fn startup_upgrade_runs_hidden_skill_migration() {
+        let _guard = crate::config::lock_home_for_test();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let home = std::env::temp_dir().join(format!("octopus-upgrade-{nonce}"));
+        fs::create_dir_all(&home).unwrap();
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home);
+
+        let app = home.join(".octopus");
+        let lib = app.join("skills");
+        fs::create_dir_all(lib.join(".legacy")).unwrap();
+        fs::write(
+            lib.join(".legacy/SKILL.md"),
+            "---\nname: legacy\n---\n# legacy\n",
+        )
+        .unwrap();
+        fs::write(app.join("config.json"), "{\"version\":\"0.7.1\"}\n").unwrap();
+
+        crate::config::run_startup_config_upgrade().unwrap();
+
+        assert!(lib.join("legacy/SKILL.md").is_file());
+        assert!(!lib.join(".legacy").exists());
+        let raw = fs::read_to_string(app.join("config.json")).unwrap();
+        let root: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(root["version"], serde_json::json!("0.7.2"));
+
+        match prev_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = fs::remove_dir_all(&home);
     }
 
     #[test]
@@ -304,6 +357,16 @@ mod tests {
         assert_eq!(
             versions(pending_steps(Some("0.2.1"), "0.4.0", steps)),
             vec!["0.3.0", "0.4.0"]
+        );
+        // 存量 0.7.1 → 运行 0.7.2：只执行点号技能目录迁移
+        assert_eq!(
+            versions(pending_steps(Some("0.7.1"), "0.7.2", steps)),
+            vec!["0.7.2"]
+        );
+        // 存量 0.4.0 → 运行 0.7.2：只补 0.7.2 的迁移
+        assert_eq!(
+            versions(pending_steps(Some("0.4.0"), "0.7.2", steps)),
+            vec!["0.7.2"]
         );
     }
 }

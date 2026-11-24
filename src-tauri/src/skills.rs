@@ -1157,6 +1157,114 @@ fn library_identity_index(lib: &Path) -> HashMap<String, (String, String, SkillS
     }
     existing_map
 }
+
+/// 启动迁移结果：点号目录改名情况，供升级步骤记录日志。
+#[derive(Debug, Default)]
+pub struct HiddenSkillMigration {
+    pub renamed: Vec<(String, String)>,
+    pub skipped: Vec<String>,
+    /// 一并改名的 Agent 副本条目数（best-effort）。
+    pub agent_entries: usize,
+}
+
+/// 修复前，名字以 `.` 开头的技能会被原样落库成 `~/.octopus/skills/.name`，而读取侧
+/// 把所有 `.` 前缀目录当作内部条目跳过，于是这些技能在界面上永久不可见（D-015）。
+/// 本函数把它们改名成归一 id，并同步 DB meta 与各 Agent 下的同名副本；可重复执行。
+///
+/// 规则：
+/// - 只处理库根的直接子目录，且确实含 SKILL.md；
+/// - 跳过内部临时目录（`.octopus-*`）与 VCS 元数据；
+/// - 目标 id 已存在时不动任何数据，记入 `skipped`（自动合并有丢文件风险）；
+/// - 目录改名成功但 meta 写入失败时回滚目录名，避免“目录已改名、meta 孤立”。
+pub fn migrate_hidden_skill_dirs() -> Result<HiddenSkillMigration, String> {
+    let lib = skills_library_dir()?;
+    let entries: Vec<PathBuf> = fs::read_dir(&lib)
+        .map_err(|e| format!("读取 skills 目录失败: {}", e))?
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+
+    let mut report = HiddenSkillMigration::default();
+    for path in entries {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !is_migratable_hidden_skill(name) || !is_skill_dir(&path) {
+            continue;
+        }
+        let new_id = sanitize_skill_id(name);
+        if new_id == name {
+            continue;
+        }
+        let dest = lib.join(&new_id);
+        if fs::symlink_metadata(&dest).is_ok() {
+            report.skipped.push(name.to_string());
+            continue;
+        }
+
+        let old_meta =
+            db::get_skill_meta(name).map_err(|e| format!("读取技能元信息失败 {}: {}", name, e))?;
+        fs::rename(&path, &dest).map_err(|e| format!("迁移技能目录失败 {}: {}", name, e))?;
+
+        if let Some(meta) = old_meta {
+            if let Err(e) = db::upsert_skill_meta(&new_id, &meta) {
+                // 回滚目录名，保持“库目录与 meta 同名”的不变量。
+                let _ = fs::rename(&dest, &path);
+                eprintln!("[octopus] 技能目录迁移跳过 {}：{}", name, e);
+                report.skipped.push(name.to_string());
+                continue;
+            }
+            let _ = db::delete_skill_meta(name);
+        }
+
+        report.agent_entries += rename_agent_entries_for_legacy(name, &new_id);
+        report.renamed.push((name.to_string(), new_id));
+    }
+
+    if !report.renamed.is_empty() || !report.skipped.is_empty() {
+        eprintln!(
+            "[octopus] 技能目录迁移：改名 {} 个，跳过 {} 个，Agent 副本 {} 个",
+            report.renamed.len(),
+            report.skipped.len(),
+            report.agent_entries
+        );
+    }
+    Ok(report)
+}
+
+/// 遗留的“点号技能目录”判定：内部 staging/backup（`.octopus-*`）与 VCS 元数据不算。
+fn is_migratable_hidden_skill(name: &str) -> bool {
+    name.starts_with('.') && !name.starts_with(".octopus-") && name != ".git" && name != ".DS_Store"
+}
+
+/// 把各 Agent skills 根下的旧名字条目改名成新 id（best-effort，目标已存在则保留）。
+fn rename_agent_entries_for_legacy(old: &str, new: &str) -> usize {
+    let mut moved = 0usize;
+    let mut handled_roots: BTreeSet<PathBuf> = BTreeSet::new();
+    for target in agent_skills_targets() {
+        if !target.supported {
+            continue;
+        }
+        for root in &target.roots {
+            if !handled_roots.insert(root.clone()) {
+                continue;
+            }
+            let from = root.join(old);
+            if fs::symlink_metadata(&from).is_err() {
+                continue;
+            }
+            let to = root.join(new);
+            if fs::symlink_metadata(&to).is_ok() {
+                continue;
+            }
+            if fs::rename(&from, &to).is_ok() {
+                moved += 1;
+            }
+        }
+    }
+    moved
+}
+
 /// 本地导入时单个技能的处理方式。
 #[derive(Debug, PartialEq, Eq)]
 enum LocalImportPlan<'a> {
@@ -5670,5 +5778,104 @@ body
             cleared.message
         );
         assert!(!home.path.join(".codex/skills/m1").exists());
+    }
+
+    /// D-015：修复前落库的点号目录要在启动迁移里改成归一 id，并同步 meta 与 Agent 副本。
+    #[cfg(not(windows))]
+    #[test]
+    fn hidden_skill_dirs_migrate_on_upgrade() {
+        let home = TempHome::new("skill-hidden-migrate");
+        let lib = home.path.join(".octopus/skills");
+        fs::create_dir_all(lib.join(".ghost")).unwrap();
+        fs::write(
+            lib.join(".ghost/SKILL.md"),
+            "---\nname: ghost\n---\n# ghost\n",
+        )
+        .unwrap();
+
+        let mut meta = default_local_meta();
+        meta.tag = "legacy".to_string();
+        meta.source = SkillSource::Github;
+        db::upsert_skill_meta(".ghost", &meta).unwrap();
+
+        let agent_copy = home.path.join(".codex/skills/.ghost");
+        fs::create_dir_all(&agent_copy).unwrap();
+        fs::write(
+            agent_copy.join("SKILL.md"),
+            "---\nname: ghost\n---\n# ghost\n",
+        )
+        .unwrap();
+
+        // 修复前：列表里看不到这个技能。
+        assert!(!list_skills()
+            .unwrap()
+            .skills
+            .iter()
+            .any(|s| s.id == ".ghost"));
+
+        let report = migrate_hidden_skill_dirs().unwrap();
+        assert_eq!(
+            report.renamed,
+            vec![(".ghost".to_string(), "ghost".to_string())]
+        );
+        assert_eq!(report.agent_entries, 1);
+        assert!(lib.join("ghost/SKILL.md").is_file());
+        assert!(!lib.join(".ghost").exists());
+        assert!(home.path.join(".codex/skills/ghost").exists());
+        assert!(!home.path.join(".codex/skills/.ghost").exists());
+
+        let skill = list_skills()
+            .unwrap()
+            .skills
+            .into_iter()
+            .find(|s| s.id == "ghost")
+            .unwrap();
+        assert_eq!(skill.tag, "legacy");
+        assert_eq!(skill.source, SkillSource::Github);
+        assert_eq!(skill.applied_agents, vec!["codex".to_string()]);
+        assert!(db::get_skill_meta(".ghost").unwrap().is_none());
+
+        // 幂等：再跑一次不应有变化。
+        let again = migrate_hidden_skill_dirs().unwrap();
+        assert!(again.renamed.is_empty());
+        assert!(again.skipped.is_empty());
+    }
+
+    /// D-015：目标 id 已被占用时不动数据，只记录冲突。
+    #[cfg(not(windows))]
+    #[test]
+    fn hidden_skill_migration_keeps_conflicts() {
+        let home = TempHome::new("skill-hidden-conflict");
+        let lib = home.path.join(".octopus/skills");
+        for id in [".dup", "dup"] {
+            fs::create_dir_all(lib.join(id)).unwrap();
+            fs::write(
+                lib.join(id).join("SKILL.md"),
+                format!("---\nname: {}\n---\n# {}\n", id.trim_start_matches('.'), id),
+            )
+            .unwrap();
+        }
+
+        let report = migrate_hidden_skill_dirs().unwrap();
+        assert!(report.renamed.is_empty());
+        assert_eq!(report.skipped, vec![".dup".to_string()]);
+        assert!(lib.join(".dup").is_dir());
+        assert!(lib.join("dup").is_dir());
+    }
+
+    /// D-015：内部 staging/backup 临时目录不能被当成遗留技能迁移。
+    #[cfg(not(windows))]
+    #[test]
+    fn hidden_skill_migration_skips_internal_dirs() {
+        let home = TempHome::new("skill-hidden-internal");
+        let lib = home.path.join(".octopus/skills");
+        let staging = lib.join(".octopus-demo-staging-1-2");
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("SKILL.md"), "# staging\n").unwrap();
+
+        let report = migrate_hidden_skill_dirs().unwrap();
+        assert!(report.renamed.is_empty());
+        assert!(report.skipped.is_empty());
+        assert!(staging.is_dir());
     }
 }
