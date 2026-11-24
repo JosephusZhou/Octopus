@@ -2084,10 +2084,11 @@ export default function SkillsManage() {
                 type="button"
                 className="btn btn-secondary"
                 onClick={() => {
-                  // Skip all conflicts, import only non-conflicting skills
+                  // 不勾选覆盖：后端只导入非重名技能，重名的一律跳过
+                  const path = dupCheckedPath;
                   setDupConflicts(null);
                   setDupSelectedOverwrite(new Set());
-                  setStatusMsg("已跳过全部重复技能");
+                  void doImportLocal(path, addTag.trim());
                 }}
                 disabled={isAdding}
               >

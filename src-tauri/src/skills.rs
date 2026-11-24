@@ -2,7 +2,7 @@
 //! Spec: docs/AGENT_MCP_SKILLS_MAP.md (dir.SKILL.md dialect).
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -560,6 +560,23 @@ fn is_skill_dir(path: &Path) -> bool {
     path.is_dir() && (path.join("SKILL.md").exists() || path.join("skill.md").exists())
 }
 
+/// 技能展示名：frontmatter `name`，缺省回落到目录名。
+fn skill_display_name(skill_dir: &Path) -> String {
+    let doc = read_skill_doc(skill_dir);
+    if !doc.name.trim().is_empty() {
+        return doc.name.trim().to_string();
+    }
+    skill_dir
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// 判重用的技能身份键（展示名小写），与 `check_skill_local_duplicate` 的比对口径一致。
+fn skill_identity_key(skill_dir: &Path) -> String {
+    skill_display_name(skill_dir).trim().to_lowercase()
+}
+
 /// Resolve a library skill directory by id: the id must be a single plain path
 /// component, stay inside the skills library, and contain a SKILL.md.
 /// Used by project-level init to install library skills into `<repo>/.agents/skills`.
@@ -1014,6 +1031,65 @@ fn import_skill_dir(
 
 /* ===== Add: local ===== */
 
+/// 技能库身份索引：小写 frontmatter `name` 与目录 id → (id, version, source)。
+/// 本地导入的判重与重名检测共用同一口径。
+fn library_identity_index(lib: &Path) -> HashMap<String, (String, String, SkillSource)> {
+    let mut existing_map: HashMap<String, (String, String, SkillSource)> = HashMap::new();
+    if let Ok(entries) = fs::read_dir(lib) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !is_skill_dir(&path) {
+                continue;
+            }
+            let id = entry.file_name().to_string_lossy().to_string();
+            if id.starts_with('.') {
+                continue;
+            }
+            let doc = read_skill_doc(&path);
+            let meta = db::get_skill_meta(&id)
+                .unwrap_or_default()
+                .unwrap_or_default();
+            let version = doc.version.clone();
+            let source = meta.source.clone();
+            // Index by dir id
+            existing_map.insert(
+                id.trim().to_lowercase(),
+                (id.clone(), version.clone(), source.clone()),
+            );
+            // Index by frontmatter name
+            if !doc.name.trim().is_empty() {
+                existing_map.insert(doc.name.trim().to_lowercase(), (id, version, source));
+            }
+        }
+    }
+    existing_map
+}
+
+/// 本地导入时单个技能的处理方式。
+#[derive(Debug, PartialEq, Eq)]
+enum LocalImportPlan<'a> {
+    /// 库内无同名技能，正常导入。
+    Import,
+    /// 库内已有同名技能，用户勾选了覆盖：替换该 id 的目录。
+    Overwrite(&'a str),
+    /// 库内已有同名技能且用户未勾选覆盖：跳过，不再生成 `name-2` 副本。
+    Skip,
+}
+
+fn local_import_plan<'a>(
+    key: &str,
+    existing_keys: &HashSet<String>,
+    overwrite_ids: &'a HashMap<String, String>,
+) -> LocalImportPlan<'a> {
+    if !existing_keys.contains(key) {
+        return LocalImportPlan::Import;
+    }
+    match overwrite_ids.get(key) {
+        Some(id) => LocalImportPlan::Overwrite(id.as_str()),
+        None => LocalImportPlan::Skip,
+    }
+}
+
 /// Check a local path for skill dirs and detect duplicates against the library.
 /// Returns a list of conflicts (by frontmatter `name` or dir name match).
 pub fn check_skill_local_duplicate(path: String) -> Result<SkillDuplicateCheckResult, String> {
@@ -1061,48 +1137,14 @@ pub fn check_skill_local_duplicate(path: String) -> Result<SkillDuplicateCheckRe
 
     let total = skill_dirs.len();
 
-    // Build identity map from existing library: lowercased name/dir-id -> (id, version, source)
     let lib = skills_library_dir()?;
-    let mut existing_map: HashMap<String, (String, String, SkillSource)> = HashMap::new();
-    if let Ok(entries) = fs::read_dir(&lib) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !is_skill_dir(&path) {
-                continue;
-            }
-            let id = entry.file_name().to_string_lossy().to_string();
-            if id.starts_with('.') {
-                continue;
-            }
-            let doc = read_skill_doc(&path);
-            let meta = db::get_skill_meta(&id)
-                .unwrap_or_default()
-                .unwrap_or_default();
-            let version = doc.version.clone();
-            let source = meta.source.clone();
-            // Index by dir id
-            existing_map.insert(
-                id.trim().to_lowercase(),
-                (id.clone(), version.clone(), source.clone()),
-            );
-            // Index by frontmatter name
-            if !doc.name.trim().is_empty() {
-                existing_map.insert(doc.name.trim().to_lowercase(), (id, version, source));
-            }
-        }
-    }
+    let existing_map = library_identity_index(&lib);
 
     let mut conflicts = Vec::new();
     for dir in &skill_dirs {
         let doc = read_skill_doc(dir);
-        let name = if !doc.name.is_empty() {
-            doc.name.clone()
-        } else {
-            dir.file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default()
-        };
-        let key = name.trim().to_lowercase();
+        let name = skill_display_name(dir);
+        let key = skill_identity_key(dir);
         if key.is_empty() {
             continue;
         }
@@ -1139,21 +1181,16 @@ pub fn add_skill_local(
         });
     }
 
+    let lib = skills_library_dir()?;
+
     // Build overwrite lookup: map from lowercased skill name -> existing_id
     let overwrite_map: HashMap<String, String> = match &overwrite_ids {
         Some(ids) if !ids.is_empty() => {
-            let lib = skills_library_dir()?;
             let mut map = HashMap::new();
             for id in ids {
                 let dir = lib.join(id);
                 if is_skill_dir(&dir) {
-                    let doc = read_skill_doc(&dir);
-                    let name_key = if !doc.name.is_empty() {
-                        doc.name.trim().to_lowercase()
-                    } else {
-                        id.trim().to_lowercase()
-                    };
-                    map.insert(name_key, id.clone());
+                    map.insert(skill_identity_key(&dir), id.clone());
                 }
             }
             map
@@ -1161,17 +1198,24 @@ pub fn add_skill_local(
         _ => HashMap::new(),
     };
 
+    // 库里已有同名技能且未勾选覆盖时跳过，而不是生成 `name-2` 副本。
+    let mut existing_keys: HashSet<String> = library_identity_index(&lib).into_keys().collect();
+
     // If path itself is a skill dir
     if is_skill_dir(&src) {
-        let doc = read_skill_doc(&src);
-        let name_key = if !doc.name.is_empty() {
-            doc.name.trim().to_lowercase()
-        } else {
-            src.file_name()
-                .map(|s| s.to_string_lossy().trim().to_lowercase())
-                .unwrap_or_default()
-        };
-        let overwrite_id = overwrite_map.get(&name_key).map(|s| s.as_str());
+        let display_name = skill_display_name(&src);
+        let overwrite_id =
+            match local_import_plan(&skill_identity_key(&src), &existing_keys, &overwrite_map) {
+                LocalImportPlan::Import => None,
+                LocalImportPlan::Overwrite(id) => Some(id),
+                LocalImportPlan::Skip => {
+                    return Ok(SkillActionResult {
+                        ok: false,
+                        skill: None,
+                        message: format!("技能「{}」已存在于技能库，已跳过", display_name),
+                    });
+                }
+            };
         let skill = import_skill_dir(&src, None, SkillSource::Local, None, &tag, overwrite_id)?;
         return Ok(SkillActionResult {
             ok: true,
@@ -1183,41 +1227,58 @@ pub fn add_skill_local(
     // If path contains nested skill dirs (one level)
     if src.is_dir() {
         let mut imported = Vec::new();
+        let mut skipped = 0usize;
         for entry in fs::read_dir(&src).map_err(|e| format!("读取目录失败: {}", e))? {
             let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
             let p = entry.path();
-            if is_skill_dir(&p) {
-                let doc = read_skill_doc(&p);
-                let name_key = if !doc.name.is_empty() {
-                    doc.name.trim().to_lowercase()
-                } else {
-                    p.file_name()
-                        .map(|s| s.to_string_lossy().trim().to_lowercase())
-                        .unwrap_or_default()
-                };
-                let overwrite_id = overwrite_map.get(&name_key).map(|s| s.as_str());
-                imported.push(import_skill_dir(
-                    &p,
-                    None,
-                    SkillSource::Local,
-                    None,
-                    &tag,
-                    overwrite_id,
-                )?);
+            if !is_skill_dir(&p) {
+                continue;
             }
+            let key = skill_identity_key(&p);
+            let overwrite_id = match local_import_plan(&key, &existing_keys, &overwrite_map) {
+                LocalImportPlan::Import => None,
+                LocalImportPlan::Overwrite(id) => Some(id),
+                LocalImportPlan::Skip => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            imported.push(import_skill_dir(
+                &p,
+                None,
+                SkillSource::Local,
+                None,
+                &tag,
+                overwrite_id,
+            )?);
+            // 同一批里重复出现的同名技能也按重复处理
+            existing_keys.insert(key);
         }
         if imported.is_empty() {
+            let message = if skipped > 0 {
+                format!("所选目录中的 {} 个技能均已存在，已跳过", skipped)
+            } else {
+                "所选目录中未找到包含 SKILL.md 的技能".into()
+            };
             return Ok(SkillActionResult {
                 ok: false,
                 skill: None,
-                message: "所选目录中未找到包含 SKILL.md 的技能".into(),
+                message,
             });
         }
-        let n = imported.len();
+        let message = if skipped > 0 {
+            format!(
+                "已从本地导入 {} 个技能，跳过 {} 个重复技能",
+                imported.len(),
+                skipped
+            )
+        } else {
+            format!("已从本地导入 {} 个技能", imported.len())
+        };
         return Ok(SkillActionResult {
             ok: true,
             skill: imported.into_iter().next(),
-            message: format!("已从本地导入 {} 个技能", n),
+            message,
         });
     }
 
@@ -4798,5 +4859,88 @@ body
             outcome.errors
         );
         assert!(!home.path.join(".omo/agent/skills/demo").exists());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn local_import_skips_existing_without_overwrite() {
+        let home = TempHome::new("local-import-skip");
+        let lib = home.path.join(".octopus/skills");
+        let existing = lib.join("demo");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(
+            existing.join("SKILL.md"),
+            "---\nname: demo\n---\n# Demo v1\n",
+        )
+        .unwrap();
+
+        // 待导入目录：一个与库内同名（未勾选覆盖），一个全新技能。
+        let src = home.path.join("incoming");
+        let dup = src.join("demo-copy");
+        fs::create_dir_all(&dup).unwrap();
+        fs::write(dup.join("SKILL.md"), "---\nname: demo\n---\n# Demo v2\n").unwrap();
+        let fresh = src.join("fresh");
+        fs::create_dir_all(&fresh).unwrap();
+        fs::write(fresh.join("SKILL.md"), "# fresh\n").unwrap();
+
+        let res = add_skill_local(src.to_string_lossy().to_string(), String::new(), None).unwrap();
+        assert!(res.ok, "{}", res.message);
+        assert!(res.message.contains("跳过 1"), "{}", res.message);
+        assert!(lib.join("fresh").is_dir());
+        // 未勾选覆盖的重名技能被跳过，不再生成 name-2 副本
+        assert!(!lib.join("demo-2").exists());
+        assert!(fs::read_to_string(existing.join("SKILL.md"))
+            .unwrap()
+            .contains("Demo v1"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn local_import_overwrites_selected_duplicate() {
+        let home = TempHome::new("local-import-overwrite");
+        let lib = home.path.join(".octopus/skills");
+        let existing = lib.join("demo");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(
+            existing.join("SKILL.md"),
+            "---\nname: demo\n---\n# Demo v1\n",
+        )
+        .unwrap();
+
+        let src = home.path.join("incoming");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("SKILL.md"), "---\nname: demo\n---\n# Demo v2\n").unwrap();
+
+        let res = add_skill_local(
+            src.to_string_lossy().to_string(),
+            String::new(),
+            Some(vec!["demo".to_string()]),
+        )
+        .unwrap();
+        assert!(res.ok, "{}", res.message);
+        assert!(fs::read_to_string(existing.join("SKILL.md"))
+            .unwrap()
+            .contains("Demo v2"));
+        assert!(!lib.join("demo-2").exists());
+    }
+
+    #[test]
+    fn local_import_plan_skips_unchecked_duplicates() {
+        let mut existing = HashSet::new();
+        existing.insert("demo".to_string());
+        let mut overwrite = HashMap::new();
+        assert_eq!(
+            local_import_plan("demo", &existing, &overwrite),
+            LocalImportPlan::Skip
+        );
+        assert_eq!(
+            local_import_plan("other", &existing, &overwrite),
+            LocalImportPlan::Import
+        );
+        overwrite.insert("demo".to_string(), "demo".to_string());
+        assert_eq!(
+            local_import_plan("demo", &existing, &overwrite),
+            LocalImportPlan::Overwrite("demo")
+        );
     }
 }
