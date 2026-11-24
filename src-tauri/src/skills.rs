@@ -1076,6 +1076,9 @@ fn import_skill_dir(
         return Err("非法的技能路径".into());
     }
     let (staging, backup) = staging_paths(&lib, &id);
+    // 覆盖前记下旧 meta：内容会被替换，但「标签 + 远端来源」描述的是这个技能的归属，
+    // 不该因为一次本地覆盖就丢失（D-019）。
+    let old_meta = overwrite_id.and_then(|oid| db::get_skill_meta(oid).ok().flatten());
     if fs::symlink_metadata(&staging).is_ok() || fs::symlink_metadata(&backup).is_ok() {
         return Err("技能导入临时路径已存在，请稍后重试".into());
     }
@@ -1086,7 +1089,7 @@ fn import_skill_dir(
     replace_path_with_staged(&staging, &dest, &backup)?;
 
     let ts = now_secs();
-    let entry = SkillMetaEntry {
+    let mut entry = SkillMetaEntry {
         source: source.clone(),
         repo_url: git.as_ref().map(|g| g.repo_url.clone()).unwrap_or_default(),
         github_owner: git.as_ref().map(|g| g.owner.clone()).unwrap_or_default(),
@@ -1100,6 +1103,22 @@ fn import_skill_dir(
         // Best-effort baseline; empty on failure is fine (checks recompute).
         content_hash: hash_skill_dir(&dest).unwrap_or_default(),
     };
+    if let Some(old) = old_meta {
+        // 本次没给标签 → 沿用原标签；本地覆盖不携带远端定位 → 沿用原来源与仓库信息，
+        // 否则「检查更新 / 更新技能」会静默失效。
+        if entry.tag.is_empty() {
+            entry.tag = old.tag;
+        }
+        if !source.is_remote() {
+            entry.source = old.source;
+            entry.repo_url = old.repo_url;
+            entry.github_owner = old.github_owner;
+            entry.github_repo = old.github_repo;
+            entry.github_path = old.github_path;
+            entry.remote_ref = old.remote_ref;
+            entry.local_ref = old.local_ref;
+        }
+    }
     db::upsert_skill_meta(&id, &entry)?;
 
     let applied_map = scan_applied_agents();
@@ -6032,5 +6051,106 @@ body
         assert!(fs::read_to_string(existing.join("SKILL.md"))
             .unwrap()
             .contains("# v1"));
+    }
+
+    /// D-019：覆盖导入只替换内容，不能丢掉标签与远端来源信息。
+    #[cfg(not(windows))]
+    #[test]
+    fn overwrite_import_keeps_tag_and_remote_meta() {
+        let home = TempHome::new("overwrite-keeps-meta");
+        let lib = home.path.join(".octopus/skills");
+        let existing = lib.join("demo");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("SKILL.md"), "---\nname: demo\n---\n# v1\n").unwrap();
+
+        // 模拟一个从 GitHub 导入、带标签且有远端基线的技能。
+        let mut meta = default_local_meta();
+        meta.source = SkillSource::Github;
+        meta.repo_url = "https://github.com/acme/demo".to_string();
+        meta.github_owner = "acme".to_string();
+        meta.github_repo = "demo".to_string();
+        meta.github_path = "skills/demo".to_string();
+        meta.tag = "legacy".to_string();
+        meta.remote_ref = "abc123".to_string();
+        meta.local_ref = "abc123".to_string();
+        db::upsert_skill_meta("demo", &meta).unwrap();
+
+        let src = home.path.join("v2");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("SKILL.md"), "---\nname: demo\n---\n# v2\n").unwrap();
+
+        let res = add_skill_local(
+            src.to_string_lossy().to_string(),
+            String::new(),
+            Some(vec!["demo".to_string()]),
+        )
+        .unwrap();
+        assert!(res.ok, "{}", res.message);
+
+        let after = db::get_skill_meta("demo").unwrap().unwrap();
+        assert_eq!(after.tag, "legacy", "覆盖不应清空标签");
+        assert_eq!(after.source, SkillSource::Github, "覆盖不应丢掉远端来源");
+        assert_eq!(after.repo_url, "https://github.com/acme/demo");
+        assert_eq!(after.github_owner, "acme");
+        assert_eq!(after.github_repo, "demo");
+        assert_eq!(after.github_path, "skills/demo");
+        assert_eq!(after.remote_ref, "abc123");
+        assert_eq!(after.local_ref, "abc123");
+        // 内容基线必须按新内容重算，不能沿用旧 hash
+        assert_eq!(after.content_hash, hash_skill_dir(&existing).unwrap());
+        // 内容确实被覆盖
+        assert!(fs::read_to_string(existing.join("SKILL.md"))
+            .unwrap()
+            .contains("# v2"));
+
+        // 显式给新标签时以新标签为准。
+        let src2 = home.path.join("v3");
+        fs::create_dir_all(&src2).unwrap();
+        fs::write(src2.join("SKILL.md"), "---\nname: demo\n---\n# v3\n").unwrap();
+        add_skill_local(
+            src2.to_string_lossy().to_string(),
+            "fresh".to_string(),
+            Some(vec!["demo".to_string()]),
+        )
+        .unwrap();
+        assert_eq!(db::get_skill_meta("demo").unwrap().unwrap().tag, "fresh");
+    }
+
+    /// D-019 反向保护：远端导入覆盖本地技能时，应以新的仓库信息为准（不沿用旧值）。
+    #[cfg(not(windows))]
+    #[test]
+    fn overwrite_from_remote_replaces_repo_meta() {
+        let home = TempHome::new("overwrite-remote-meta");
+        let lib = home.path.join(".octopus/skills");
+        let existing = lib.join("demo");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("SKILL.md"), "---\nname: demo\n---\n# v1\n").unwrap();
+        let mut meta = default_local_meta();
+        meta.tag = "legacy".to_string();
+        db::upsert_skill_meta("demo", &meta).unwrap();
+
+        let src = home.path.join("incoming");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("SKILL.md"), "---\nname: demo\n---\n# v2\n").unwrap();
+
+        let gh = GitRepoRef {
+            host: GitHost::Github,
+            owner: "acme".to_string(),
+            repo: "demo".to_string(),
+            path: "skills/demo".to_string(),
+            repo_url: "https://github.com/acme/demo".to_string(),
+            branch: String::new(),
+        };
+        let rec =
+            import_skill_dir(&src, None, SkillSource::Github, Some(gh), "", Some("demo")).unwrap();
+        assert_eq!(rec.source, SkillSource::Github);
+
+        let after = db::get_skill_meta("demo").unwrap().unwrap();
+        assert_eq!(after.source, SkillSource::Github);
+        assert_eq!(after.repo_url, "https://github.com/acme/demo");
+        assert_eq!(after.github_owner, "acme");
+        assert_eq!(after.github_path, "skills/demo");
+        // 未给标签时仍沿用旧标签
+        assert_eq!(after.tag, "legacy");
     }
 }
