@@ -592,6 +592,19 @@ fn identity_key_of(name: &str) -> String {
         .to_lowercase()
 }
 
+/// 导入前的身份键校验：键为空说明名字只由 `.`/`-` 组成，无法判重，
+/// 继续导入会每次都生成新的 `skill-<ts>` 副本（D-020）。
+fn skill_key_for_import(skill_dir: &Path) -> Result<String, String> {
+    let key = skill_identity_key(skill_dir);
+    if key.is_empty() {
+        return Err(format!(
+            "「{}」缺少可用的 name（frontmatter name 与目录名去掉首部 . / - 后为空），无法判重，请先补 frontmatter name",
+            skill_display_name(skill_dir)
+        ));
+    }
+    Ok(key)
+}
+
 /// Resolve a library skill directory by id: the id must be a single plain path
 /// component, stay inside the skills library, and contain a SKILL.md.
 /// Used by project-level init to install library skills into `<repo>/.agents/skills`.
@@ -1450,19 +1463,31 @@ pub fn add_skill_local(
     // If path itself is a skill dir
     if is_skill_dir(&src) {
         let display_name = skill_display_name(&src);
-        let overwrite_id =
-            match local_import_plan(&skill_identity_key(&src), &existing_keys, &overwrite_map) {
-                LocalImportPlan::Import => None,
-                LocalImportPlan::Overwrite(id) => Some(id),
-                LocalImportPlan::Skip => {
-                    return Ok(SkillActionResult {
-                        errors: Vec::new(),
-                        ok: false,
-                        skill: None,
-                        message: format!("技能「{}」已存在于技能库，已跳过", display_name),
-                    });
-                }
-            };
+        let key = match skill_key_for_import(&src) {
+            Ok(key) => key,
+            Err(e) => {
+                return Ok(SkillActionResult {
+                    // 单目录场景 message 本身就是明细，重复放进 errors 会让前端
+                    // 「消息：明细」拼出两遍同一句话。
+                    errors: Vec::new(),
+                    ok: false,
+                    skill: None,
+                    message: e,
+                });
+            }
+        };
+        let overwrite_id = match local_import_plan(&key, &existing_keys, &overwrite_map) {
+            LocalImportPlan::Import => None,
+            LocalImportPlan::Overwrite(id) => Some(id),
+            LocalImportPlan::Skip => {
+                return Ok(SkillActionResult {
+                    errors: Vec::new(),
+                    ok: false,
+                    skill: None,
+                    message: format!("技能「{}」已存在于技能库，已跳过", display_name),
+                });
+            }
+        };
         let skill = import_skill_dir(&src, None, SkillSource::Local, None, &tag, overwrite_id)?;
         return Ok(SkillActionResult {
             errors: Vec::new(),
@@ -1486,7 +1511,14 @@ pub fn add_skill_local(
             if !is_skill_dir(&p) {
                 continue;
             }
-            let key = skill_identity_key(&p);
+            let key = match skill_key_for_import(&p) {
+                Ok(key) => key,
+                Err(e) => {
+                    failed += 1;
+                    errors.push(e);
+                    continue;
+                }
+            };
             let overwrite_id = match local_import_plan(&key, &existing_keys, &overwrite_map) {
                 LocalImportPlan::Import => None,
                 LocalImportPlan::Overwrite(id) => Some(id),
@@ -6152,5 +6184,51 @@ body
         assert_eq!(after.github_path, "skills/demo");
         // 未给标签时仍沿用旧标签
         assert_eq!(after.tag, "legacy");
+    }
+
+    /// D-020：身份键为空的技能（名字只由 `.`/`-` 组成）不允许导入，
+    /// 否则每次导入都会新增一份 `skill-<ts>` 副本且前台看不见冲突。
+    #[cfg(not(windows))]
+    #[test]
+    fn import_rejects_empty_identity_key() {
+        let home = TempHome::new("empty-identity");
+        let lib = home.path.join(".octopus/skills");
+
+        // 目录名 "-"，SKILL.md 没有 frontmatter name → 身份键为空。
+        let src = home.path.join("-");
+        fs::create_dir_all(&src).unwrap();
+        // 既无 frontmatter name 也无 `# 标题`：身份名回落到目录名 "-"，键被清空。
+        fs::write(src.join("SKILL.md"), "only a description line\n").unwrap();
+
+        for _ in 0..3 {
+            let res = add_skill_local(src.to_string_lossy().to_string(), String::new(), None)
+                .expect("拒绝导入不应返回 Err");
+            assert!(!res.ok, "空身份键必须拒绝: {}", res.message);
+            assert!(res.message.contains("缺少可用的 name"), "{}", res.message);
+        }
+        let created = fs::read_dir(&lib).map(|d| d.flatten().count()).unwrap_or(0);
+        assert_eq!(created, 0, "拒绝导入后技能库不应出现任何目录");
+
+        // 批量场景：坏技能记失败，好技能照常导入。
+        let batch = home.path.join("batch");
+        let bad = batch.join("---");
+        fs::create_dir_all(&bad).unwrap();
+        fs::write(bad.join("SKILL.md"), "only a description line\n").unwrap();
+        let good = batch.join("good");
+        fs::create_dir_all(&good).unwrap();
+        fs::write(good.join("SKILL.md"), "---\nname: good-skill\n---\n# ok\n").unwrap();
+
+        let res = add_skill_local(batch.to_string_lossy().to_string(), String::new(), None)
+            .expect("批量导入不应返回 Err");
+        assert!(!res.ok, "{}", res.message);
+        assert!(res.message.contains("导入 1"), "{}", res.message);
+        assert!(res.message.contains("失败 1"), "{}", res.message);
+        assert_eq!(res.errors.len(), 1, "{:?}", res.errors);
+        assert!(
+            res.errors[0].contains("缺少可用的 name"),
+            "{:?}",
+            res.errors
+        );
+        assert!(lib.join("good-skill").is_dir());
     }
 }
