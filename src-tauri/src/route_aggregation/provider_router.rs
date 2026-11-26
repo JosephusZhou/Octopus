@@ -18,6 +18,8 @@ pub const CONTEXT_1M_SUFFIX: &str = "[1m]";
 
 /// ProviderRouter manages the provider pool and circuit breaker state.
 pub struct ProviderRouter {
+    /// Serialize DB snapshots and pool replacement so a slow old refresh cannot overwrite a restored pool.
+    refresh_lock: tokio::sync::Mutex<()>,
     /// Provider pools: (group) → list of providers (with decrypted API keys).
     pools: RwLock<HashMap<RouteGroup, Vec<RouteProvider>>>,
     /// Circuit breakers: (provider_id, group) → breaker.
@@ -40,6 +42,7 @@ struct ProviderBuild {
 impl ProviderRouter {
     pub fn new() -> Self {
         Self {
+            refresh_lock: tokio::sync::Mutex::new(()),
             pools: RwLock::new(HashMap::new()),
             breakers: RwLock::new(HashMap::new()),
         }
@@ -47,11 +50,11 @@ impl ProviderRouter {
 
     /// Refresh the provider pool from DB rows. Every provider's
     /// `supported_model_ids` is filled synchronously from
-    /// `custom_models_json` (non-empty → `Some(list)`, empty → `None`
-    /// to allow manually specified model IDs).
+    /// `custom_models_json` (including an explicit empty set).
     ///
     /// 适用于热路径：启动、状态轮询、provider toggle、路由聚合重启等。
     pub async fn refresh_pool_fast(&self, group: RouteGroup) -> Result<usize, String> {
+        let _refresh = self.refresh_lock.lock().await;
         let providers = self.build_pool_from_db(group).await?;
         let count = providers.len();
         let mut pools = self.pools.write().await;
@@ -69,7 +72,7 @@ impl ProviderRouter {
 
     /// Build the provider list for a group from the DB, decrypting API keys
     /// and applying toggles. `supported_model_ids` is filled synchronously from
-    /// `custom_models_json` (non-empty → `Some(list)`, empty → `None`).
+    /// `custom_models_json` (including an explicit empty set).
     async fn build_pool_from_db(&self, group: RouteGroup) -> Result<Vec<RouteProvider>, String> {
         let provider_rows = crate::db::load_ai_provider_rows()?;
         let toggles = crate::db::load_provider_route_toggles()?;
@@ -130,19 +133,12 @@ impl ProviderRouter {
 
             // Find toggle for this provider
             let toggle = toggles.iter().find(|t| t.provider_id == row.id);
-            let (enabled, sort_order) = match toggle {
-                Some(t) => (t.enabled, t.sort_order),
-                None => (true, row.sort_order as i32), // default enabled
-            };
-
-            // Effective model IDs from the provider's custom model list.
-            // Each entry is {model, aliasId}; aliasId takes precedence.
-            let model_ids = crate::ai_provider::effective_custom_model_ids(
-                serde_json::from_str::<Vec<crate::ai_provider::CustomModel>>(
-                    &row.custom_models_json,
-                )
-                .unwrap_or_default(),
-            );
+            let enabled = toggle.map(|t| t.enabled).unwrap_or(true);
+            let sort_order = row.sort_order as i32;
+            let custom: Vec<crate::ai_provider::CustomModel> =
+                serde_json::from_str(&row.custom_models_json)
+                    .map_err(|_| format!("供应商 {} 的模型列表格式无效", row.id))?;
+            let model_ids = crate::ai_provider::effective_custom_model_ids(custom);
 
             // ClaudeCode 组用 Anthropic 侧 Base URL（Anthropic Messages 端点在
             // `{base}/v1/messages`）；Codex / OpenAiChat 组用 OpenAI 侧 Base URL
@@ -166,7 +162,7 @@ impl ProviderRouter {
         }
 
         // Sort by sort_order so the in-memory order matches the user's intent.
-        builds.sort_by_key(|b| b.sort_order);
+        builds.sort_by(|a, b| (a.sort_order, &a.id).cmp(&(b.sort_order, &b.id)));
 
         let providers: Vec<RouteProvider> = builds
             .iter()
@@ -179,12 +175,8 @@ impl ProviderRouter {
                 model_ids: b.model_ids.clone(),
                 enabled: b.enabled,
                 // 模型列表唯一来源：用户在供应商编辑页配置的 `custom_models_json`。
-                // 非空时直接作为 supported_model_ids；空列表保持 None（failover 不按模型过滤）。
-                supported_model_ids: if b.model_ids.is_empty() {
-                    None
-                } else {
-                    Some(b.model_ids.clone())
-                },
+                // 空集合不匹配任何模型，不能作为任意模型兜底。
+                supported_model_ids: Some(b.model_ids.clone()),
             })
             .collect();
 
@@ -297,21 +289,34 @@ impl ProviderRouter {
         }
     }
 
+    pub(crate) async fn clear_pool(&self, group: RouteGroup) {
+        let _refresh = self.refresh_lock.lock().await;
+        self.pools.write().await.insert(group, Vec::new());
+    }
+
     /// Get the union of custom model IDs for all enabled providers.
     pub async fn get_enabled_model_ids(&self) -> Vec<String> {
         let pools = self.pools.read().await;
-        let mut model_ids = std::collections::BTreeSet::new();
-        // 合并三个入口的启用 provider 模型；BTreeSet 自动去重。
-        for group in RouteGroup::ALL {
-            let pool = match pools.get(&group) {
-                Some(p) => p,
-                None => continue,
-            };
-            for p in pool.iter().filter(|p| p.enabled) {
-                model_ids.extend(p.model_ids.iter().cloned());
-            }
-        }
-        model_ids.into_iter().collect()
+        let mut providers: Vec<_> = pools
+            .values()
+            .flat_map(|pool| pool.iter())
+            .filter(|p| p.enabled)
+            .collect();
+        // Pool order alone depends on protocol; use the shared database source order.
+        let order: std::collections::HashMap<String, usize> = crate::db::load_ai_provider_rows()
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| (p.id, i))
+            .collect();
+        providers.sort_by_key(|p| order.get(&p.id).copied().unwrap_or(usize::MAX));
+        let mut seen = std::collections::HashSet::new();
+        providers
+            .into_iter()
+            .flat_map(|p| &p.model_ids)
+            .filter(|id| seen.insert((*id).clone()))
+            .cloned()
+            .collect()
     }
 
     /// Get status snapshots for all providers in a group.

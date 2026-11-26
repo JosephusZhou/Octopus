@@ -525,6 +525,32 @@ pub fn save_network_settings(settings: NetworkSettings) -> Result<NetworkSetting
 }
 
 /// Save route aggregation config to config.json under the `routeAggregation` key.
+/// Restore must not turn a malformed route section into a default/anonymous listener.
+/// Read strictly, without ensuring/re-writing the restored file.
+pub(crate) fn load_route_aggregation_config_strict(
+) -> Result<crate::route_aggregation::RouteAggregationConfig, String> {
+    let _guard = lock_config_file()?;
+    let path = config_path()?;
+    let raw = fs::read_to_string(&path).map_err(|_| "恢复后的 config.json 无法读取".to_string())?;
+    let root: Value =
+        serde_json::from_str(&raw).map_err(|_| "恢复后的 config.json 格式无效".to_string())?;
+    if !root.is_object() {
+        return Err("恢复后的 config.json 根节点必须是对象".into());
+    }
+    parse_restored_route_config(&root)
+}
+
+fn parse_restored_route_config(
+    root: &Value,
+) -> Result<crate::route_aggregation::RouteAggregationConfig, String> {
+    let route = root
+        .get("routeAggregation")
+        .ok_or("恢复后的配置缺少路由聚合设置，未更改运行中的服务")?;
+    let config = serde_json::from_value(route.clone())
+        .map_err(|_| "恢复后的路由聚合设置格式无效".to_string())?;
+    crate::route_aggregation::config::normalize_config(config)
+}
+
 pub fn save_route_aggregation_config(
     config: &crate::route_aggregation::RouteAggregationConfig,
 ) -> Result<(), String> {
@@ -802,6 +828,20 @@ pub fn run_startup_config_upgrade() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restored_route_config_rejects_missing_or_malformed_section() {
+        assert!(parse_restored_route_config(&json!({})).is_err());
+        assert!(
+            parse_restored_route_config(&json!({"routeAggregation": {"listenPort": "wrong"}}))
+                .is_err()
+        );
+        let loaded = parse_restored_route_config(&json!({"routeAggregation":{"listenAddress":" 127.0.0.1 ","listenPort":18889,"apiKeys":["test-placeholder"],"autoStart":true}})).unwrap();
+        assert_eq!(loaded.listen_address, "127.0.0.1");
+        assert_eq!(loaded.listen_port, 18889);
+        assert_eq!(loaded.api_keys, vec!["test-placeholder"]);
+        assert!(loaded.auto_start);
+    }
 
     #[test]
     fn accepts_system_light_dark() {

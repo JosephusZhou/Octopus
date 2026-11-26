@@ -142,6 +142,8 @@ pub fn load_config() -> Result<super::RouteAggregationConfig, String> {
 
 /// Save route aggregation config to config.json.
 pub fn save_config(config: &super::RouteAggregationConfig) -> Result<(), String> {
+    let _guard = crate::provider_sync::lock()?;
+    crate::db::mark_provider_sync(crate::provider_sync::ROUTE_ID, false)?;
     crate::config::save_route_aggregation_config(config)
 }
 

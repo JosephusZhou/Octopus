@@ -1,3 +1,5 @@
+import { useLatestRequest } from "@/lib/useLatestRequest";
+import { getProviderSource, useProviderSourceChanges } from "@/lib/providerSource";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useStatusMessage } from "@/lib/useStatusMessage";
 import { formatDisplayPath } from "@/lib/formatPath";
@@ -34,7 +36,6 @@ import {
   fetchRouteAggregationProvider,
   isRouteAggregationProvider,
   openaiProviderBaseUrl,
-  resolveProviderSecret,
 } from "../route-aggregation/virtual-provider";
 import {
   ChevronDown,
@@ -756,6 +757,7 @@ function ModelChip({
   smallLabel,
   onEdit,
   onDelete,
+  bound = false,
 }: {
   providerId: string;
   model: AgentModelView;
@@ -764,6 +766,7 @@ function ModelChip({
   smallLabel?: string;
   onEdit: () => void;
   onDelete: () => void;
+  bound?: boolean;
 }) {
   const thinking =
     model.reasoningEffort ||
@@ -795,7 +798,13 @@ function ModelChip({
         <button type="button" className="btn-icon-action" data-tooltip="编辑模型" onClick={onEdit}>
           <IconEdit />
         </button>
-        <button type="button" className="btn-delete" data-tooltip="删除模型" onClick={onDelete}>
+        <button
+          type="button"
+          className="btn-delete"
+          data-tooltip={bound ? "模型列表由供应商维护" : "删除模型"}
+          disabled={bound}
+          onClick={onDelete}
+        >
           <IconTrash />
         </button>
       </div>
@@ -846,6 +855,7 @@ export function ModelConfigAgentPage({
   const [providerForm, setProviderForm] = useState<ProviderForm | null>(null);
   // 供应商弹窗内的「选择供应商」：候选列表 + 当前选中 ID（"" = 未选择）
   const [aiProviders, setAiProviders] = useState<AiProvider[]>([]);
+  const [sourcePreview, setSourcePreview] = useState<{ count: number; error: string } | null>(null);
   const [formAiProviderId, setFormAiProviderId] = useState("");
   const [modelForm, setModelForm] = useState<ModelForm | null>(null);
   const [showApiKey, setShowApiKey] = useState(false);
@@ -880,15 +890,48 @@ export function ModelConfigAgentPage({
   const providerIdRef = useRef<HTMLInputElement>(null);
   const modelIdRef = useRef<HTMLInputElement>(null);
 
+  const configRequest = useLatestRequest(agent);
+  const catalogRequest = useLatestRequest(agent);
+  const providerListRequest = useLatestRequest(
+    `${agent}:${providerForm?.previousId ?? "new"}:${!!providerForm}`,
+  );
+  const providerSecretRequest = useLatestRequest(
+    `${agent}:${providerForm?.previousId ?? "new"}:${!!providerForm}:${formAiProviderId}`,
+  );
+  const modelPickRequest = useLatestRequest(
+    `${agent}:${modelForm?.providerId}:${modelForm?.previousId}:${!!modelForm}`,
+  );
+  const configContext = useRef(agent);
+  configContext.current = agent;
+  const [sourceRevision, setSourceRevision] = useState(0);
+
+  const providerSaveRequest = useLatestRequest(
+    `${agent}:${providerForm?.previousId}:${!!providerForm}`,
+  );
+  const modelSaveRequest = useLatestRequest(
+    `${agent}:${modelForm?.providerId}:${modelForm?.previousId}:${!!modelForm}`,
+  );
+  const closeProviderForm = () => {
+    providerListRequest.invalidate();
+    providerSecretRequest.invalidate();
+    setProviderForm(null);
+  };
+  const closeModelForm = () => {
+    modelPickRequest.invalidate();
+    providerPickRequest.current += 1;
+    setProviderPickLoading(false);
+    setModelForm(null);
+  };
+
   const providerDismiss = useOverlayDismiss(() => {
     if (!busy) {
-      setProviderForm(null);
+      closeProviderForm();
       setFormError("");
     }
   }, !busy);
   const modelDismiss = useOverlayDismiss(() => {
     if (!busy) {
-      setModelForm(null);
+      closeModelForm();
       setFormError("");
       setProviderPickOpen(false);
     }
@@ -897,38 +940,49 @@ export function ModelConfigAgentPage({
   const deleteModelDismiss = useOverlayDismiss(() => !busy && setDeleteModelTarget(null), !busy);
   const defaultsDismiss = useOverlayDismiss(() => !busy && setDefaultsOpen(false), !busy);
 
-  const applyView = useCallback((next: AgentModelConfigView) => {
-    setView(next);
-  }, []);
+  const applyView = useCallback(
+    (next: AgentModelConfigView) => {
+      if (next.agent !== configContext.current) return;
+      configRequest.invalidate();
+      setView(next);
+    },
+    [configRequest],
+  );
 
   const loadConfig = useCallback(
     async (quiet = false) => {
+      const current = configRequest.begin();
       if (!quiet) setLoading(true);
       try {
         const next = await invokeGetConfig(agent);
+        if (!current()) return null;
+        setLoading(false);
         applyView(next);
         return next;
       } catch (e) {
-        setStatusMsg(`加载失败: ${e}`);
+        if (current()) setStatusMsg(`加载失败: ${e}`);
         return null;
       } finally {
-        setLoading(false);
+        if (current()) setLoading(false);
       }
     },
     [agent, applyView, setStatusMsg],
   );
 
   const loadCatalog = useCallback(async (force = false) => {
+    const current = catalogRequest.begin();
     setCatalogLoading(true);
     setCatalogError("");
     try {
       const cat = await invokeFetchCatalog(force);
+      if (!current()) return;
       setCatalog(cat);
     } catch (e) {
+      if (!current()) return;
       setCatalog(null);
       setCatalogError(String(e));
     } finally {
-      setCatalogLoading(false);
+      if (current()) setCatalogLoading(false);
     }
   }, []);
 
@@ -945,8 +999,8 @@ export function ModelConfigAgentPage({
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || busy) return;
-      setProviderForm(null);
-      setModelForm(null);
+      closeProviderForm();
+      closeModelForm();
       setDeleteProvider(null);
       setDeleteModelTarget(null);
       setDefaultsOpen(false);
@@ -983,29 +1037,64 @@ export function ModelConfigAgentPage({
     }));
   }, [providerPickHits, catalog, modelForm?.providerId]);
 
-  /** 加载已配置的供应商（仅 OpenAI / 通用类型可对接本页面）；编辑时按 Base URL 预选。
-   * 路由聚合运行时将虚拟供应商「路由聚合」置顶。 */
-  const loadAiProviders = useCallback(async (presetBaseUrl?: string) => {
-    setFormAiProviderId("");
+  useProviderSourceChanges(
+    useCallback(() => {
+      setSourceRevision((v) => v + 1);
+      void loadConfig(true);
+    }, [loadConfig]),
+  );
+
+  /** Refresh candidates only: never infer or clear the saved source binding from a URL. */
+  const loadAiProviders = useCallback(async () => {
+    const current = providerListRequest.begin();
     try {
       const rows = await invokeAiProviderList();
-      const eligible = rows.filter((p) => hasAnyOpenaiType(p.providerTypes));
       const routeAgg = await fetchRouteAggregationProvider();
-      const all = routeAgg ? [routeAgg, ...eligible] : eligible;
-      setAiProviders(all);
-      if (presetBaseUrl) {
-        const normalizedPreset = presetBaseUrl.replace(/\/+$/, "");
-        const match = all.find((p) =>
-          [p.baseUrl, aiProviderOpenaiBaseUrl(p)]
-            .filter(Boolean)
-            .some((url) => url.replace(/\/+$/, "") === normalizedPreset),
-        );
-        setFormAiProviderId(match?.id ?? "");
-      }
-    } catch {
-      setAiProviders([]);
+      if (!current()) return false;
+      setAiProviders(routeAgg ? [routeAgg, ...rows] : rows);
+      return true;
+    } catch (e) {
+      if (current()) setFormError(`读取供应商列表失败，已保留原绑定：${String(e)}`);
+      return false;
     }
-  }, []);
+  }, [providerListRequest]);
+
+  useEffect(() => {
+    if (providerForm) void loadAiProviders();
+  }, [sourceRevision, !!providerForm, loadAiProviders]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSourcePreview(null);
+    if (formAiProviderId && providerForm) {
+      const protocol = isOpenCode
+        ? providerForm.npm.includes("anthropic")
+          ? "anthropic"
+          : "openai_chat"
+        : providerForm.api === "anthropic-messages"
+          ? "anthropic"
+          : providerForm.api === "openai-responses"
+            ? "openai_responses"
+            : "openai_chat";
+      void getProviderSource(formAiProviderId, protocol)
+        .then((source) => {
+          if (!cancelled) setSourcePreview({ count: source.models.length, error: "" });
+        })
+        .catch((e) => {
+          if (!cancelled) setSourcePreview({ count: 0, error: String(e) });
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    formAiProviderId,
+    providerForm?.npm,
+    providerForm?.api,
+    !!providerForm,
+    isOpenCode,
+    sourceRevision,
+  ]);
 
   const aiProviderOptions = useMemo<AppSelectOption[]>(
     () => [
@@ -1024,6 +1113,7 @@ export function ModelConfigAgentPage({
   /** 选中已配置供应商：自动回填显示名称 / Base URL / API Key（类似 Claude 环境页）。 */
   const pickAiProvider = async (v: string) => {
     if (!providerForm) return;
+    providerSecretRequest.invalidate();
     setFormAiProviderId(v);
     if (!v) return;
     const p = aiProviders.find((x) => x.id === v);
@@ -1036,21 +1126,17 @@ export function ModelConfigAgentPage({
       name: p.name || providerForm.name,
       baseUrl: normalizeBaseUrlForProtocol(providerBaseUrlForProtocol(p, protocol), protocol),
     });
-    if (p.hasApiKey) {
-      try {
-        const secret = await resolveProviderSecret(p);
-        setProviderForm((prev) => (prev ? { ...prev, apiKey: secret, apiKeyTouched: true } : prev));
-      } catch {
-        // 拉取失败则保持现值，用户可手动填写
-      }
-    }
+    // Credentials are resolved by Rust when saving the binding, not copied into this draft.
+    setProviderForm((prev) => (prev ? { ...prev, apiKey: "", apiKeyTouched: false } : prev));
   };
 
   const openAddProvider = () => {
     setFormError("");
     setShowApiKey(false);
+    providerListRequest.setScope(`${agent}:new:true`);
+    providerSecretRequest.invalidate();
     setProviderForm(emptyProviderForm());
-    void loadAiProviders();
+    setFormAiProviderId("");
     setTimeout(() => providerIdRef.current?.focus(), 80);
   };
 
@@ -1073,11 +1159,17 @@ export function ModelConfigAgentPage({
       apiKeyTouched: false,
       isNew: false,
     };
+    providerListRequest.invalidate();
+    providerSecretRequest.invalidate();
+    setFormAiProviderId(p.sourceId ?? "");
     setProviderForm(form);
-    void loadAiProviders(form.baseUrl);
-    if (p.hasApiKey) {
+    // Bound credentials are resolved by Rust; do not fetch them into this draft.
+    if (p.hasApiKey && !p.sourceId) {
+      providerSecretRequest.setScope(`${agent}:${p.id}:true:`);
+      const current = providerSecretRequest.begin();
       try {
         const secret = await invokeGetSecret(agent, p.id);
+        if (!current()) return;
         setProviderForm((prev) =>
           prev ? { ...prev, apiKey: secret, apiKeyTouched: false } : prev,
         );
@@ -1087,7 +1179,10 @@ export function ModelConfigAgentPage({
     }
   };
 
+  const providerPickRequest = useRef(0);
   const resetProviderPick = () => {
+    providerPickRequest.current += 1;
+    setProviderPickLoading(false);
     setProviderPickOpen(false);
     setProviderPickQuery("");
     setProviderPickModels([]);
@@ -1155,9 +1250,39 @@ export function ModelConfigAgentPage({
    * 唯一来源，**不**触发远端拉取。
    */
   const loadProviderModels = async (providerId: string) => {
+    const current = modelPickRequest.begin();
+    const request = ++providerPickRequest.current;
     setProviderPickOpen(true);
     setProviderPickMsg("");
     const p = view?.providers.find((x) => x.id === providerId);
+    if (p?.sourceId) {
+      setProviderPickLoading(true);
+      try {
+        const selectedProtocol = isOpenCode
+          ? p.api === "anthropic"
+            ? "anthropic"
+            : "openai_chat"
+          : p.api === "anthropic-messages"
+            ? "anthropic"
+            : p.api === "openai-responses"
+              ? "openai_responses"
+              : "openai_chat";
+        const source = await getProviderSource(p.sourceId, selectedProtocol);
+        if (!current() || request !== providerPickRequest.current) return;
+        setProviderPickModels(source.models.map((m) => m.id));
+        setProviderPickMsg(
+          source.models.length
+            ? `已加载 ${source.models.length} 个已配置模型`
+            : "来源未配置模型，请到供应商管理中配置",
+        );
+      } catch (e) {
+        if (current() && request === providerPickRequest.current)
+          setProviderPickMsg(`加载已配置模型失败：${String(e)}`);
+      } finally {
+        if (current() && request === providerPickRequest.current) setProviderPickLoading(false);
+      }
+      return;
+    }
     const baseUrl = (p?.baseUrl ?? "").trim();
     if (!baseUrl) {
       setProviderPickModels([]);
@@ -1175,15 +1300,17 @@ export function ModelConfigAgentPage({
         }
       }
       const models = await invokeFetchRemoteModels(baseUrl, apiKey || undefined);
+      if (!current() || request !== providerPickRequest.current) return;
       setProviderPickModels(models);
       setProviderPickMsg(
         models.length === 0 ? "远端未返回可用模型，仍可手动填写" : `已加载 ${models.length} 个模型`,
       );
     } catch (e) {
+      if (!current() || request !== providerPickRequest.current) return;
       setProviderPickModels([]);
       setProviderPickMsg(`拉取模型列表失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
-      setProviderPickLoading(false);
+      if (current() && request === providerPickRequest.current) setProviderPickLoading(false);
     }
   };
 
@@ -1204,11 +1331,16 @@ export function ModelConfigAgentPage({
 
   const saveProvider = async () => {
     if (!providerForm) return;
+    if (formAiProviderId && (!sourcePreview || sourcePreview.error)) {
+      setFormError(sourcePreview?.error || "来源模型正在读取，请稍后保存");
+      return;
+    }
     const id = providerForm.id.trim();
     if (!id) {
       setFormError("请填写供应商 ID");
       return;
     }
+    const current = providerSaveRequest.begin();
     setBusy(true);
     setFormError("");
     try {
@@ -1236,15 +1368,18 @@ export function ModelConfigAgentPage({
       if (providerForm.apiKeyTouched) {
         payload.apiKey = providerForm.apiKey;
       }
-      const res = await invokeUpsertProvider(agent, payload);
+      const res = await invokeUpsertProvider(agent, payload, formAiProviderId);
+      if (!current()) return;
       if (res.view) applyView(res.view);
       else await loadConfig(true);
-      setProviderForm(null);
+      setBusy(false);
+      closeProviderForm();
       setStatusMsg(res.message || "供应商已保存");
     } catch (e) {
+      if (!current()) return;
       setFormError(String(e));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   };
 
@@ -1275,6 +1410,7 @@ export function ModelConfigAgentPage({
       }
     }
 
+    const current = modelSaveRequest.begin();
     setBusy(true);
     setFormError("");
     try {
@@ -1304,16 +1440,19 @@ export function ModelConfigAgentPage({
         extraOptions,
         replaceExtraOptions: extraOptions != null,
       });
+      if (!current()) return;
       if (res.view) applyView(res.view);
       else await loadConfig(true);
       // 保存成功后再展开该供应商，取消弹窗不会改变列表状态。
       expandProvider(modelForm.providerId);
-      setModelForm(null);
+      setBusy(false);
+      closeModelForm();
       setStatusMsg(res.message || "模型已保存");
     } catch (e) {
+      if (!current()) return;
       setFormError(String(e));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   };
 
@@ -1641,6 +1780,13 @@ export function ModelConfigAgentPage({
                           <span className="oc-pill">无密钥</span>
                         )}
                       </div>
+                      {p.sourceId && (
+                        <div className="oc-form-hint">
+                          绑定来源：
+                          {p.sourceId === "__route_aggregation__" ? "路由聚合" : p.sourceId} ·
+                          模型列表自动跟随
+                        </div>
+                      )}
                       <div className="oc-provider-meta">
                         {p.package ? <span>package: {p.package}</span> : null}
                         {p.baseUrl ? (
@@ -1668,10 +1814,33 @@ export function ModelConfigAgentPage({
                           <IconChevron open={!collapsed} />
                         </button>
                       )}
+                      {p.sourceId && (
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          disabled={busy}
+                          onClick={async () => {
+                            setBusy(true);
+                            try {
+                              const { invoke } = await import("@tauri-apps/api/core");
+                              await invoke("unbind_agent_provider", { agent, providerId: p.id });
+                              await loadConfig(true);
+                              setStatusMsg("已解绑，当前配置保留，可手动编辑");
+                            } catch (e) {
+                              setStatusMsg(`解绑失败：${String(e)}`);
+                            } finally {
+                              setBusy(false);
+                            }
+                          }}
+                        >
+                          解绑
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="btn-icon-action mcp-card-action"
-                        data-tooltip="添加模型"
+                        data-tooltip={p.sourceId ? "绑定列表由供应商管理维护" : "添加模型"}
+                        disabled={!!p.sourceId}
                         onClick={() => openAddModel(p.id)}
                       >
                         <IconPlus />
@@ -1740,11 +1909,16 @@ export function ModelConfigAgentPage({
                             key={m.id}
                             providerId={p.id}
                             model={m}
+                            bound={!!p.sourceId}
                             isDefault={view.model === ref}
                             isSmall={view.smallModel === ref}
                             smallLabel={secondarySlot(agent)?.badge}
                             onEdit={() => openEditModel(p.id, m)}
-                            onDelete={() => setDeleteModelTarget({ providerId: p.id, model: m })}
+                            onDelete={() =>
+                              p.sourceId
+                                ? setStatusMsg("绑定模型请在供应商管理中删除")
+                                : setDeleteModelTarget({ providerId: p.id, model: m })
+                            }
                           />
                         );
                       })}
@@ -1765,7 +1939,7 @@ export function ModelConfigAgentPage({
             <button
               type="button"
               className="modal-close"
-              onClick={() => !busy && setProviderForm(null)}
+              onClick={() => !busy && closeProviderForm()}
               disabled={busy}
             >
               <IconClose />
@@ -1793,7 +1967,12 @@ export function ModelConfigAgentPage({
                       placeholder="未选择（自行填写）"
                     />
                     <p className="oc-form-hint">
-                      从已配置的供应商中选择，自动回填显示名称、Base URL 与 API Key。
+                      选择后绑定该来源，保存时一次性导入全部模型；后续模型和连接信息自动跟随。未识别模型的上下文和能力参数请核对；运行中的
+                      Agent 可能需要重启。
+                      {formAiProviderId &&
+                        (sourcePreview
+                          ? sourcePreview.error || ` 本次将导入 ${sourcePreview.count} 个模型。`
+                          : " 正在读取来源模型…")}
                     </p>
                   </div>
                 )}
@@ -1822,6 +2001,7 @@ export function ModelConfigAgentPage({
                     className="form-input"
                     placeholder="可选"
                     value={providerForm.name}
+                    readOnly={!!formAiProviderId}
                     onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })}
                     disabled={busy}
                   />
@@ -1893,6 +2073,7 @@ export function ModelConfigAgentPage({
                     className="form-input"
                     placeholder="https://api.example.com/v1"
                     value={providerForm.baseUrl}
+                    readOnly={!!formAiProviderId}
                     onChange={(e) => setProviderForm({ ...providerForm, baseUrl: e.target.value })}
                     disabled={busy}
                     spellCheck={false}
@@ -1949,13 +2130,15 @@ export function ModelConfigAgentPage({
                           : "留空且不改动；清空并保存可删除密钥"
                       }
                       value={providerForm.apiKey}
-                      onChange={(e) =>
+                      readOnly={!!formAiProviderId}
+                      onChange={(e) => {
+                        providerSecretRequest.invalidate();
                         setProviderForm({
                           ...providerForm,
                           apiKey: e.target.value,
                           apiKeyTouched: true,
-                        })
-                      }
+                        });
+                      }}
                       disabled={busy}
                       autoComplete="new-password"
                       spellCheck={false}
@@ -1997,7 +2180,7 @@ export function ModelConfigAgentPage({
                 <button
                   type="button"
                   className="btn btn-secondary"
-                  onClick={() => setProviderForm(null)}
+                  onClick={() => closeProviderForm()}
                   disabled={busy}
                 >
                   取消
@@ -2024,7 +2207,7 @@ export function ModelConfigAgentPage({
             <button
               type="button"
               className="modal-close"
-              onClick={() => !busy && setModelForm(null)}
+              onClick={() => !busy && closeModelForm()}
               disabled={busy}
             >
               <IconClose />
@@ -2037,7 +2220,11 @@ export function ModelConfigAgentPage({
                   <button
                     type="button"
                     className="btn btn-secondary"
-                    disabled={busy || providerPickLoading}
+                    disabled={
+                      busy ||
+                      providerPickLoading ||
+                      !!view?.providers.find((p) => p.id === modelForm.providerId)?.sourceId
+                    }
                     onClick={() => {
                       if (providerPickOpen) {
                         setProviderPickOpen(false);
@@ -2149,6 +2336,9 @@ export function ModelConfigAgentPage({
                     className="form-input"
                     placeholder="例如 grok-4.5"
                     value={modelForm.id}
+                    readOnly={
+                      !!view?.providers.find((p) => p.id === modelForm.providerId)?.sourceId
+                    }
                     onChange={(e) => {
                       const newId = e.target.value;
                       setModelForm((prev) => {
@@ -2433,7 +2623,7 @@ export function ModelConfigAgentPage({
                 <button
                   type="button"
                   className="btn btn-secondary"
-                  onClick={() => setModelForm(null)}
+                  onClick={() => closeModelForm()}
                   disabled={busy}
                 >
                   取消

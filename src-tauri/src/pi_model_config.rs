@@ -151,10 +151,11 @@ fn parse_root_text(path: &Path, raw: &str, yaml: bool) -> Result<Value, String> 
 }
 
 fn load_models_root(paths: &FamilyPaths) -> Result<(Value, bool), String> {
+    crate::config_sync_io::observe(&paths.models)?;
     if !paths.models.exists() {
         return Ok((json!({}), false));
     }
-    let raw = fs::read_to_string(&paths.models)
+    let raw = crate::config_sync_io::read_to_string(&paths.models)
         .map_err(|e| format!("读取 {} 失败: {e}", paths.models.display()))?;
     let v = parse_root_text(&paths.models, &raw, paths.yaml)?;
     match v {
@@ -266,6 +267,7 @@ fn parse_provider(id: &str, raw: &Value, auth: &Map<String, Value>) -> AgentProv
         .unwrap_or_default();
 
     AgentProviderView {
+        source_id: None,
         id: id.to_string(),
         name: str_opt(raw, "name"),
         package: None,
@@ -289,7 +291,7 @@ fn read_defaults(paths: &FamilyPaths) -> (Option<String>, Option<String>) {
     if !sp.exists() {
         return (None, None);
     }
-    let Ok(raw) = fs::read_to_string(sp) else {
+    let Ok(raw) = crate::config_sync_io::read_to_string(sp) else {
         return (None, None);
     };
     if paths.settings_yaml {
@@ -352,7 +354,7 @@ fn omo_container_display_key(root: &Value) -> &'static str {
 /// 读取 OmO 固定 `model_profile`；兼容容器键与顶层键。
 fn read_omo_model_profile() -> Option<(PathBuf, String)> {
     let path = omo_profile_file()?;
-    let raw = fs::read_to_string(&path).ok()?;
+    let raw = crate::config_sync_io::read_to_string(&path).ok()?;
     let root: Value = json5::from_str(&raw).ok()?;
     let value = omo_container_key(&root)
         .and_then(|key| root.get(key))
@@ -370,7 +372,7 @@ fn read_omo_model_profile() -> Option<(PathBuf, String)> {
 /// 只读 typed harness 块（`[native]` / `native` / `[senpi]`），不做顶层回退。
 fn read_omo_quick_model() -> Option<(&'static str, String)> {
     let path = omo_profile_file()?;
-    let raw = fs::read_to_string(&path).ok()?;
+    let raw = crate::config_sync_io::read_to_string(&path).ok()?;
     let root: Value = json5::from_str(&raw).ok()?;
     let key = omo_container_key(&root)?;
     let value = root
@@ -398,12 +400,13 @@ fn write_omo_aux(
     // 让「首次设置 quick 模型」不必先去手工建 omo.jsonc。
     let (path, raw) = match omo_profile_file() {
         Some(path) => {
-            let raw = fs::read_to_string(&path)
+            let raw = crate::config_sync_io::read_to_string(&path)
                 .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
             (path, raw)
         }
         None => (home_dir()?.join(".omo").join("omo.jsonc"), "{}".to_string()),
     };
+    crate::config_sync_io::observe(&path)?;
     let mut root: Value =
         json5::from_str(&raw).map_err(|e| format!("解析 {} 失败: {e}", path.display()))?;
     if !root.is_object() {
@@ -559,6 +562,15 @@ fn migrate_omp_legacy_auth(paths: &FamilyPaths, root: &mut Value) -> Result<bool
 /* ===== Public API ===== */
 
 pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, String> {
+    get_config_inner(agent, true)
+}
+pub(crate) fn get_config_for_sync(agent: ModelConfigAgent) -> Result<AgentModelConfigView, String> {
+    get_config_inner(agent, false)
+}
+fn get_config_inner(
+    agent: ModelConfigAgent,
+    check_installation: bool,
+) -> Result<AgentModelConfigView, String> {
     let paths = family_paths(agent)?;
     let installed = crate::sniff::is_agent_installed(agent.id());
     let exists = paths.models.exists();
@@ -570,6 +582,26 @@ pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, Strin
     .to_string_lossy()
     .into_owned();
 
+    if crate::config_sync_io::active() {
+        if let Some(path) = paths.settings.as_ref().filter(|p| p.exists()) {
+            let raw = crate::config_sync_io::read_to_string(path)
+                .map_err(|_| format!("读取默认模型配置失败：{}", path.display()))?;
+            let root = parse_root_text(path, &raw, paths.settings_yaml)?;
+            if !root.is_object() {
+                return Err(format!("默认模型配置根节点必须是对象：{}", path.display()));
+            }
+        }
+        if agent == ModelConfigAgent::Omo {
+            if let Some(path) = omo_profile_file() {
+                let raw = crate::config_sync_io::read_to_string(&path)
+                    .map_err(|_| format!("读取 OmO 配置失败：{}", path.display()))?;
+                let root = parse_root_text(&path, &raw, false)?;
+                if !root.is_object() {
+                    return Err(format!("OmO 配置根节点必须是对象：{}", path.display()));
+                }
+            }
+        }
+    }
     let (model, defaults_small_model) = read_defaults(&paths);
 
     // OmO 另有一个固定 model_profile（headless / desktop 会话会覆盖默认模型），
@@ -630,7 +662,7 @@ pub fn get_config(agent: ModelConfigAgent) -> Result<AgentModelConfigView, Strin
         // Pi 家族没有 1.x → 2.x 的迁移场景，前端不会渲染「迁移」按钮。
         legacy_migration: None,
     };
-    if !installed {
+    if check_installation && !installed {
         return Ok(not_installed_view());
     }
 
@@ -790,7 +822,7 @@ pub fn delete_provider(
     }
     let paths = family_paths(agent)?;
     let (mut root, exists) = load_models_root(&paths)?;
-    if !exists {
+    if !exists && !crate::config_sync_io::active() {
         return Err("配置文件不存在".into());
     }
     let removed = root
@@ -799,10 +831,12 @@ pub fn delete_provider(
         .and_then(|p| p.as_object_mut())
         .and_then(|m| m.remove(&id))
         .is_some();
-    if !removed {
+    if !removed && !crate::config_sync_io::active() {
         return Err(format!("未找到供应商 `{id}`"));
     }
-    write_models_root(&paths, &root)?;
+    if exists && removed {
+        write_models_root(&paths, &root)?;
+    }
     if delete_auth {
         let mut auth = load_auth_file(&paths.auth)?;
         auth.remove(&id);
@@ -1025,13 +1059,14 @@ pub fn set_defaults(
                 .settings
                 .as_ref()
                 .ok_or_else(|| "settings.json 路径缺失".to_string())?;
+            crate::config_sync_io::observe(sp)?;
             let mut root = if sp.exists() {
                 crate::opencode_config::read_json_value(sp)?
             } else {
                 json!({})
             };
             if !root.is_object() {
-                root = json!({});
+                return Err("默认模型配置根节点必须是对象".into());
             }
             // payload.model: None=不改动；Some("")=删除；Some("provider/model")=拆分写入
             if let Some(ref m) = payload.model {
@@ -1088,6 +1123,9 @@ pub fn set_defaults(
                         );
                     }
                     Err(e) => {
+                        if crate::config_sync_io::active() {
+                            return Err(e);
+                        }
                         message = format!("默认模型已更新；同步 omo.jsonc 失败：{e}");
                     }
                 }
@@ -1106,20 +1144,24 @@ pub fn set_defaults(
                 .settings
                 .as_ref()
                 .ok_or_else(|| "Oh-My-Pi config.yml 路径缺失".to_string())?;
+            crate::config_sync_io::observe(sp)?;
             let mut root = if sp.exists() {
-                let raw = fs::read_to_string(sp)
+                let raw = crate::config_sync_io::read_to_string(sp)
                     .map_err(|e| format!("读取 {} 失败: {e}", sp.display()))?;
                 parse_root_text(sp, &raw, true)?
             } else {
                 json!({})
             };
             if !root.is_object() {
-                root = json!({});
+                return Err("默认模型配置根节点必须是对象".into());
             }
             // payload.model / small_model: None=不改动；Some("")=删除；
             // 有值时原样写入（模型 id 可含 `/`），保留其它角色与顶层键。
             if payload.model.is_some() || payload.small_model.is_some() {
                 let obj = root.as_object_mut().unwrap();
+                if obj.get("modelRoles").is_some_and(|v| !v.is_object()) {
+                    return Err("modelRoles 必须是对象".into());
+                }
                 if !obj
                     .get("modelRoles")
                     .map(|r| r.is_object())
@@ -1301,7 +1343,8 @@ mod tests {
         )
         .unwrap();
 
-        let raw: Value = serde_json::from_str(&fs::read_to_string(&models).unwrap()).unwrap();
+        let raw: Value =
+            serde_json::from_str(&crate::config_sync_io::read_to_string(&models).unwrap()).unwrap();
         let m0 = &raw.pointer("/providers/deepseek/models/0").unwrap();
         assert_eq!(m0.get("id").and_then(|x| x.as_str()), Some("deepseek-v3"));
         assert_eq!(
@@ -1338,9 +1381,10 @@ mod tests {
         )
         .unwrap();
 
-        let auth: Value =
-            serde_json::from_str(&fs::read_to_string(h.path.join(".pi/agent/auth.json")).unwrap())
-                .unwrap();
+        let auth: Value = serde_json::from_str(
+            &crate::config_sync_io::read_to_string(h.path.join(".pi/agent/auth.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             auth.pointer("/deepseek/type").and_then(|x| x.as_str()),
             Some("api_key")
@@ -1362,7 +1406,7 @@ mod tests {
         )
         .unwrap();
         let settings: Value = serde_json::from_str(
-            &fs::read_to_string(h.path.join(".pi/agent/settings.json")).unwrap(),
+            &crate::config_sync_io::read_to_string(h.path.join(".pi/agent/settings.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -1379,9 +1423,10 @@ mod tests {
 
         // Clear secret removes auth entry
         set_provider_secret(ModelConfigAgent::Pi, "deepseek".into(), String::new()).unwrap();
-        let auth: Value =
-            serde_json::from_str(&fs::read_to_string(h.path.join(".pi/agent/auth.json")).unwrap())
-                .unwrap();
+        let auth: Value = serde_json::from_str(
+            &crate::config_sync_io::read_to_string(h.path.join(".pi/agent/auth.json")).unwrap(),
+        )
+        .unwrap();
         assert!(auth.get("deepseek").is_none());
     }
 
@@ -1469,7 +1514,8 @@ providers:
         )
         .unwrap();
 
-        let raw: Value = serde_yaml::from_str(&fs::read_to_string(&models).unwrap()).unwrap();
+        let raw: Value =
+            serde_yaml::from_str(&crate::config_sync_io::read_to_string(&models).unwrap()).unwrap();
         let m0 = raw.pointer("/providers/magpie/models/0").unwrap();
         assert_eq!(m0.get("id").and_then(|x| x.as_str()), Some("magpie-opus-4"));
         assert_eq!(
@@ -1527,7 +1573,8 @@ providers:
         let beta = view.providers.iter().find(|p| p.id == "beta").unwrap();
         assert_eq!(beta.api_key_source, "auth");
 
-        let raw: Value = serde_yaml::from_str(&fs::read_to_string(&models).unwrap()).unwrap();
+        let raw: Value =
+            serde_yaml::from_str(&crate::config_sync_io::read_to_string(&models).unwrap()).unwrap();
         assert_eq!(
             raw.pointer("/providers/alpha/apiKey")
                 .and_then(|x| x.as_str()),
@@ -1537,7 +1584,9 @@ providers:
         #[cfg(unix)]
         assert_owner_only(&models);
 
-        let auth: Value = serde_json::from_str(&fs::read_to_string(&auth_path).unwrap()).unwrap();
+        let auth: Value =
+            serde_json::from_str(&crate::config_sync_io::read_to_string(&auth_path).unwrap())
+                .unwrap();
         assert!(auth.get("alpha").is_none());
         assert!(auth.get("beta").is_some());
 
@@ -1553,13 +1602,16 @@ providers:
             "sk-beta-new".to_string(),
         )
         .unwrap();
-        let raw: Value = serde_yaml::from_str(&fs::read_to_string(&models).unwrap()).unwrap();
+        let raw: Value =
+            serde_yaml::from_str(&crate::config_sync_io::read_to_string(&models).unwrap()).unwrap();
         assert_eq!(
             raw.pointer("/providers/beta/apiKey")
                 .and_then(|x| x.as_str()),
             Some("sk-beta-new")
         );
-        let auth: Value = serde_json::from_str(&fs::read_to_string(&auth_path).unwrap()).unwrap();
+        let auth: Value =
+            serde_json::from_str(&crate::config_sync_io::read_to_string(&auth_path).unwrap())
+                .unwrap();
         assert!(auth.get("beta").is_none());
         // 无关 provider 的旧条目保持不动。
         assert!(auth.get("gamma").is_some());
@@ -1594,7 +1646,8 @@ providers:
             },
         )
         .unwrap();
-        let raw: Value = serde_yaml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+        let raw: Value =
+            serde_yaml::from_str(&crate::config_sync_io::read_to_string(&config).unwrap()).unwrap();
         assert_eq!(
             raw.pointer("/modelRoles/default").and_then(|x| x.as_str()),
             Some("magpie/magpie-opus-4")
@@ -1618,7 +1671,8 @@ providers:
             },
         )
         .unwrap();
-        let raw: Value = serde_yaml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+        let raw: Value =
+            serde_yaml::from_str(&crate::config_sync_io::read_to_string(&config).unwrap()).unwrap();
         assert_eq!(
             raw.pointer("/modelRoles/default").and_then(|x| x.as_str()),
             Some("magpie/magpie-opus-4")
@@ -1637,7 +1691,8 @@ providers:
             },
         )
         .unwrap();
-        let raw: Value = serde_yaml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+        let raw: Value =
+            serde_yaml::from_str(&crate::config_sync_io::read_to_string(&config).unwrap()).unwrap();
         assert!(raw.pointer("/modelRoles/default").is_none());
         assert!(raw.pointer("/modelRoles/fast").is_none());
         let view = get_config(ModelConfigAgent::OhMyPi).unwrap();
@@ -1689,9 +1744,11 @@ providers:
         assert!(res.message.contains("categories.quick.model"));
 
         // 上游优先 settings.jsonc；两者都不存在时 pick_existing 也落到该文件名。
-        let settings: Value =
-            json5::from_str(&fs::read_to_string(h.path.join(".omo/agent/settings.jsonc")).unwrap())
-                .unwrap();
+        let settings: Value = json5::from_str(
+            &crate::config_sync_io::read_to_string(h.path.join(".omo/agent/settings.jsonc"))
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             settings.get("defaultProvider").and_then(Value::as_str),
             Some("magpie")
@@ -1701,7 +1758,8 @@ providers:
             Some("opus-2")
         );
 
-        let raw: Value = json5::from_str(&fs::read_to_string(&omo).unwrap()).unwrap();
+        let raw: Value =
+            json5::from_str(&crate::config_sync_io::read_to_string(&omo).unwrap()).unwrap();
         assert_eq!(
             raw.pointer("/[native]/model_profile")
                 .and_then(Value::as_str),
@@ -1739,7 +1797,8 @@ providers:
             },
         )
         .unwrap();
-        let raw: Value = json5::from_str(&fs::read_to_string(&omo).unwrap()).unwrap();
+        let raw: Value =
+            json5::from_str(&crate::config_sync_io::read_to_string(&omo).unwrap()).unwrap();
         assert!(raw.pointer("/[native]/categories/quick/model").is_none());
         assert_eq!(
             raw.pointer("/[native]/categories/quick/reasoning")
@@ -1777,7 +1836,8 @@ providers:
         )
         .unwrap();
 
-        let raw: Value = json5::from_str(&fs::read_to_string(&omo).unwrap()).unwrap();
+        let raw: Value =
+            json5::from_str(&crate::config_sync_io::read_to_string(&omo).unwrap()).unwrap();
         assert!(raw.pointer("/[native]/categories").is_none());
         assert!(raw.get("[native]").is_some());
     }
@@ -1811,7 +1871,8 @@ providers:
         )
         .unwrap();
 
-        let raw: Value = json5::from_str(&fs::read_to_string(&omo).unwrap()).unwrap();
+        let raw: Value =
+            json5::from_str(&crate::config_sync_io::read_to_string(&omo).unwrap()).unwrap();
         assert!(raw.get("[native]").is_none());
         assert_eq!(
             raw.pointer("/[senpi]/categories/quick/model")
@@ -1839,7 +1900,8 @@ providers:
 
         // 两个候选文件都不存在时，按空配置在标准路径创建并写入 quick。
         let omo = h.path.join(".omo/omo.jsonc");
-        let raw: Value = json5::from_str(&fs::read_to_string(&omo).unwrap()).unwrap();
+        let raw: Value =
+            json5::from_str(&crate::config_sync_io::read_to_string(&omo).unwrap()).unwrap();
         assert_eq!(
             raw.pointer("/[native]/categories/quick/model")
                 .and_then(Value::as_str),
@@ -1873,7 +1935,8 @@ providers:
         )
         .unwrap();
         assert!(res.message.contains("categories.quick 必须是对象"));
-        let raw: Value = json5::from_str(&fs::read_to_string(&omo).unwrap()).unwrap();
+        let raw: Value =
+            json5::from_str(&crate::config_sync_io::read_to_string(&omo).unwrap()).unwrap();
         assert_eq!(
             raw.pointer("/[native]/categories/quick")
                 .and_then(Value::as_str),
@@ -1894,7 +1957,8 @@ providers:
         )
         .unwrap();
         assert!(res.message.contains("[native] 必须是对象"));
-        let raw: Value = json5::from_str(&fs::read_to_string(&omo).unwrap()).unwrap();
+        let raw: Value =
+            json5::from_str(&crate::config_sync_io::read_to_string(&omo).unwrap()).unwrap();
         assert_eq!(raw.get("[native]").and_then(Value::as_str), Some("oops"));
     }
 
@@ -1913,4 +1977,41 @@ providers:
         assert!(view.providers.is_empty());
         assert!(view.warnings.iter().any(|w| w.contains("迁移失败")));
     }
+}
+
+pub(crate) fn sync_model_set(
+    agent: ModelConfigAgent,
+    provider: &str,
+    models: &[crate::provider_sync::SourceModel],
+) -> Result<(), String> {
+    let paths = family_paths(agent)?;
+    let (mut root, _) = load_models_root(&paths)?;
+    let p = provider_object_mut(&mut root, provider)?;
+    if p.get("models").is_some_and(|v| !v.is_array()) {
+        return Err("models 必须是数组，未覆盖原配置".into());
+    }
+    let previous = p
+        .get("models")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let next: Vec<Value> = models.iter().map(|model| {
+        previous.iter().find(|v| v.get("id").and_then(Value::as_str) == Some(&model.id)).cloned().unwrap_or_else(|| {
+            let mut value = json!({"id": model.id, "name": model.id, "input": ["text"], "reasoning": false});
+            if let Some(hit) = crate::provider_sync::catalog_model(provider, &model.original) {
+                value["name"] = json!(hit.name);
+                value["reasoning"] = json!(hit.reasoning);
+                value["input"] = json!(normalize_input_modalities(&hit.modalities_input));
+                if let Some(v) = hit.limit_context { value["contextWindow"] = json!(v); }
+                if let Some(v) = hit.limit_output { value["maxTokens"] = json!(v); }
+            }
+            value
+        })
+    }).collect();
+    p.insert("models".into(), Value::Array(next));
+    write_models_root(&paths, &root)
+}
+
+pub(crate) fn sync_omo_profile(value: &str) -> Result<(), String> {
+    write_omo_aux(Some(value), None).map(|_| ())
 }

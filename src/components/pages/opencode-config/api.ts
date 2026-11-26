@@ -21,15 +21,22 @@ export async function invokeSetDefaults(
   payload: SetDefaultsPayload,
 ): Promise<AgentActionResult> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke("set_agent_model_defaults", { agent, payload }) as Promise<AgentActionResult>;
+  const result = await invoke<AgentActionResult>("set_agent_model_defaults", { agent, payload });
+  if (result.view) result.view = await invokeGetConfig(agent);
+  return result;
 }
 
 export async function invokeUpsertProvider(
   agent: ModelConfigAgentId,
   payload: UpsertProviderPayload,
+  sourceId?: string,
 ): Promise<AgentActionResult> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke("upsert_agent_provider", { agent, payload }) as Promise<AgentActionResult>;
+  return invoke("upsert_agent_provider", {
+    agent,
+    payload,
+    sourceId,
+  }) as Promise<AgentActionResult>;
 }
 
 export async function invokeDeleteProvider(
@@ -38,11 +45,13 @@ export async function invokeDeleteProvider(
   deleteAuth: boolean,
 ): Promise<AgentActionResult> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke("delete_agent_provider", {
+  const result = await invoke<AgentActionResult>("delete_agent_provider", {
     agent,
     providerId,
     deleteAuth,
-  }) as Promise<AgentActionResult>;
+  });
+  if (result.view) result.view = await invokeGetConfig(agent);
+  return result;
 }
 
 export async function invokeUpsertModel(
@@ -50,7 +59,9 @@ export async function invokeUpsertModel(
   payload: UpsertModelPayload,
 ): Promise<AgentActionResult> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke("upsert_agent_model", { agent, payload }) as Promise<AgentActionResult>;
+  const result = await invoke<AgentActionResult>("upsert_agent_model", { agent, payload });
+  if (result.view) result.view = await invokeGetConfig(agent);
+  return result;
 }
 
 export async function invokeDeleteModel(
@@ -59,11 +70,13 @@ export async function invokeDeleteModel(
   modelId: string,
 ): Promise<AgentActionResult> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke("delete_agent_model", {
+  const result = await invoke<AgentActionResult>("delete_agent_model", {
     agent,
     providerId,
     modelId,
-  }) as Promise<AgentActionResult>;
+  });
+  if (result.view) result.view = await invokeGetConfig(agent);
+  return result;
 }
 
 export async function invokeGetSecret(
@@ -80,11 +93,13 @@ export async function invokeSetSecret(
   apiKey: string,
 ): Promise<AgentActionResult> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke("set_agent_provider_secret", {
+  const result = await invoke<AgentActionResult>("set_agent_provider_secret", {
     agent,
     providerId,
     apiKey,
-  }) as Promise<AgentActionResult>;
+  });
+  if (result.view) result.view = await invokeGetConfig(agent);
+  return result;
 }
 
 export async function invokeFetchCatalog(force: boolean): Promise<ModelsDevCatalog> {

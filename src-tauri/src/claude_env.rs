@@ -606,8 +606,8 @@ fn read_mcp_servers(path: &Path) -> Result<Map<String, Value>, String> {
     if !path.is_file() {
         return Ok(Map::new());
     }
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("读取 {} 失败: {}", path.display(), e))?;
+    let raw = crate::config_sync_io::read_to_string(path)
+        .map_err(|e| format!("读取 {} 失败: {}", path.display(), e))?;
     if raw.trim().is_empty() {
         return Ok(Map::new());
     }
@@ -674,8 +674,8 @@ fn mcp_status_for_row(
 /// Write top-level mcpServers, preserving all other keys. Creates file if missing.
 fn write_mcp_servers(path: &Path, servers: &Map<String, Value>) -> Result<(), String> {
     let mut doc: Value = if path.is_file() {
-        let raw =
-            fs::read_to_string(path).map_err(|e| format!("读取 {} 失败: {}", path.display(), e))?;
+        let raw = crate::config_sync_io::read_to_string(path)
+            .map_err(|e| format!("读取 {} 失败: {}", path.display(), e))?;
         if raw.trim().is_empty() {
             Value::Object(Map::new())
         } else {
@@ -745,7 +745,7 @@ fn copy_claude_state_without_mcp(
     if !source_path.is_file() {
         return Ok(());
     }
-    let raw = fs::read_to_string(&source_path)
+    let raw = crate::config_sync_io::read_to_string(&source_path)
         .map_err(|e| format!("读取 {} 失败: {}", source_path.display(), e))?;
     if raw.trim().is_empty() {
         return Ok(());
@@ -758,7 +758,7 @@ fn copy_claude_state_without_mcp(
 
     let dest_path = env_mcp_path(dest_config_dir);
     let mut dest_doc = if dest_path.is_file() {
-        let raw = fs::read_to_string(&dest_path)
+        let raw = crate::config_sync_io::read_to_string(&dest_path)
             .map_err(|e| format!("读取 {} 失败: {}", dest_path.display(), e))?;
         if raw.trim().is_empty() {
             Value::Object(Map::new())
@@ -1066,7 +1066,7 @@ fn read_settings_env(config_dir: &Path) -> (String, String, String, ModelTierOve
             ModelTierOverrides::default(),
         );
     }
-    let Ok(raw) = fs::read_to_string(&path) else {
+    let Ok(raw) = crate::config_sync_io::read_to_string(&path) else {
         return (
             String::new(),
             String::new(),
@@ -1137,8 +1137,8 @@ fn apply_settings_env_edit(
 
     let path = config_dir.join("settings.json");
     let mut root: serde_json::Value = if path.is_file() {
-        let raw =
-            fs::read_to_string(&path).map_err(|e| format!("读取 settings.json 失败: {}", e))?;
+        let raw = crate::config_sync_io::read_to_string(&path)
+            .map_err(|e| format!("读取 settings.json 失败: {}", e))?;
         if raw.trim().is_empty() {
             serde_json::json!({})
         } else {
@@ -1680,31 +1680,47 @@ fn parse_aliases_from_block(content: &str) -> Vec<String> {
 }
 
 fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("无效路径: {}", path.display()))?;
-    fs::create_dir_all(parent).map_err(|e| format!("创建目录 {} 失败: {}", parent.display(), e))?;
-    // Per-call atomic sequence keeps the temp path unique even for concurrent writers
-    // in the same process, so they never share a temp file and corrupt each other's write.
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-    let tmp = parent.join(format!(
-        ".{}.agentbuddy-{}-{}.tmp",
-        path.file_name().and_then(|s| s.to_str()).unwrap_or("tmp"),
-        std::process::id(),
-        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    {
-        let mut f = fs::File::create(&tmp).map_err(|e| format!("创建临时文件失败: {}", e))?;
-        f.write_all(content.as_bytes())
-            .map_err(|e| format!("写入临时文件失败: {}", e))?;
-        f.sync_all().ok();
+    let result = (|| -> Result<(), String> {
+        if crate::config_sync_io::unchanged(path, content)? {
+            return Ok(());
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("无效路径: {}", path.display()))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("创建目录 {} 失败: {}", parent.display(), e))?;
+        // Per-call atomic sequence keeps the temp path unique even for concurrent writers
+        // in the same process, so they never share a temp file and corrupt each other's write.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+        let tmp = parent.join(format!(
+            ".{}.agentbuddy-{}-{}.tmp",
+            path.file_name().and_then(|s| s.to_str()).unwrap_or("tmp"),
+            std::process::id(),
+            TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        {
+            let mut f = fs::File::create(&tmp).map_err(|e| format!("创建临时文件失败: {}", e))?;
+            f.write_all(content.as_bytes())
+                .map_err(|e| format!("写入临时文件失败: {}", e))?;
+            f.sync_all().ok();
+        }
+        if let Err(error) = crate::config_sync_io::before_replace(path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(error);
+        }
+        match fs::rename(&tmp, path) {
+            Ok(()) => crate::config_sync_io::replaced(path),
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                Err(format!("写入 {} 失败: {}", path.display(), e))
+            }
+        }
+    })();
+    if result.is_err() {
+        crate::config_sync_io::record(path, result.clone());
     }
-    fs::rename(&tmp, path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        format!("写入 {} 失败: {}", path.display(), e)
-    })?;
-    Ok(())
+    result
 }
 
 /* ===== Public API ===== */
@@ -1875,6 +1891,10 @@ pub fn import_environment(
 }
 
 pub fn clone_environment(payload: ClaudeEnvClonePayload) -> Result<ClaudeEnvActionResult, String> {
+    let _guard = crate::provider_sync::lock()?;
+    if let Some(id) = payload.provider_id.as_deref().filter(|s| !s.is_empty()) {
+        crate::provider_sync::resolve(id, "anthropic", false)?;
+    }
     ensure_default_environment()?;
     let source = db::get_claude_environment_row(&payload.source_id)?
         .ok_or_else(|| format!("源环境不存在: {}", payload.source_id))?;
@@ -2053,6 +2073,20 @@ pub fn clone_environment(payload: ClaudeEnvClonePayload) -> Result<ClaudeEnvActi
         message.push_str("新环境不含会话历史，首次启动可能需要重新登录。");
     }
 
+    db::mark_binding_migrated(&format!("claude:{}", row.id))?;
+    if !row.provider_id.is_empty() {
+        db::mark_provider_sync(&row.provider_id, false)?;
+        let items = crate::provider_sync::run_source(&row.provider_id)?;
+        let errors: Vec<_> = items
+            .iter()
+            .filter(|r| !r.ok)
+            .map(|r| format!("{}：{}", r.target, r.message))
+            .collect();
+        if !errors.is_empty() {
+            message.push_str(&format!("；部分同步失败（将重试）：{}", errors.join("；")));
+        }
+    }
+
     let env = row_to_public(row);
     Ok(ClaudeEnvActionResult {
         ok: true,
@@ -2064,6 +2098,10 @@ pub fn clone_environment(payload: ClaudeEnvClonePayload) -> Result<ClaudeEnvActi
 pub fn upsert_environment(
     payload: ClaudeEnvUpsertPayload,
 ) -> Result<ClaudeEnvActionResult, String> {
+    let _guard = crate::provider_sync::lock()?;
+    if let Some(id) = payload.provider_id.as_deref().filter(|s| !s.is_empty()) {
+        crate::provider_sync::resolve(id, "anthropic", false)?;
+    }
     ensure_default_environment()?;
     let name = validate_name(&payload.name)?;
     let notes = payload.notes.unwrap_or_default().trim().to_string();
@@ -2076,6 +2114,10 @@ pub fn upsert_environment(
 
     let existing =
         db::get_claude_environment_row(&id)?.ok_or_else(|| format!("环境不存在: {}", id))?;
+
+    if payload.provider_id.is_none() && !existing.provider_id.is_empty() {
+        crate::provider_sync::resolve(&existing.provider_id, "anthropic", false)?;
+    }
 
     // 提前留存旧路径：默认分支会把 existing.config_dir move 进 tuple，
     // 之后判断"是否发生迁移"和回滚都需要它，故先克隆一份稳定副本。
@@ -2254,6 +2296,20 @@ pub fn upsert_environment(
         }
     }
 
+    db::mark_binding_migrated(&format!("claude:{}", row.id))?;
+    if !row.provider_id.is_empty() {
+        db::mark_provider_sync(&row.provider_id, false)?;
+        let items = crate::provider_sync::run_source(&row.provider_id)?;
+        let errors: Vec<_> = items
+            .iter()
+            .filter(|r| !r.ok)
+            .map(|r| format!("{}：{}", r.target, r.message))
+            .collect();
+        if !errors.is_empty() {
+            message.push_str(&format!("；部分同步失败（将重试）：{}", errors.join("；")));
+        }
+    }
+
     let env = row_to_public(row);
     Ok(ClaudeEnvActionResult {
         ok: true,
@@ -2262,42 +2318,8 @@ pub fn upsert_environment(
     })
 }
 
-/// 反向同步：将供应商最新的 baseUrl / apiKey / model / 档位模型写入所有关联此供应商的环境（含默认）。
-/// 由 ai_provider::upsert_provider 在更新路径调用。
-/// 返回 (已同步数量, 失败列表)。
-///
-/// 目录不存在的环境视为「尚未初始化」：跳过而不记失败，避免默认环境目录
-/// （如 `~/.claude` 尚未创建）给用户报一条无法消除的噪音。此时也不计入同步数量。
-pub fn sync_provider_to_envs(
-    provider_id: &str,
-    base_url: &str,
-    api_key: &str,
-    model: Option<&str>,
-) -> Result<(usize, Vec<String>), String> {
-    let envs = db::load_claude_envs_by_provider(provider_id)?;
-    let mut synced = 0usize;
-    let mut errors = Vec::new();
-    for env in &envs {
-        let dir = PathBuf::from(&env.config_dir);
-        if !dir.is_dir() {
-            // 目录不存在 = 该环境尚未初始化，跳过（不写、不计失败、不计入同步数量）。
-            continue;
-        }
-        // 供应商库不再保存模型/档位：只回写 baseUrl/apiKey，模型与现有档位保持不动。
-        match apply_settings_env_edit(&dir, Some(base_url), Some(api_key), model, None) {
-            Ok(_) => {
-                let _ = ensure_model_env_companions(&dir);
-                synced += 1;
-            }
-            Err(e) => {
-                errors.push(format!("{}（{}）", env.name, e));
-            }
-        }
-    }
-    Ok((synced, errors))
-}
-
 pub fn delete_environment(id: String, delete_files: bool) -> Result<ClaudeEnvActionResult, String> {
+    let _guard = crate::provider_sync::lock()?;
     ensure_default_environment()?;
     let existing =
         db::get_claude_environment_row(&id)?.ok_or_else(|| format!("环境不存在: {}", id))?;
@@ -2343,7 +2365,8 @@ fn rewrite_shell_block_from_db() -> Result<ClaudeEnvShellStatus, String> {
     let aliases: Vec<String> = items.iter().map(|(a, _)| a.clone()).collect();
     let zshrc_exists = zshrc.is_file();
     let current = if zshrc_exists {
-        fs::read_to_string(&zshrc).map_err(|e| format!("读取 shell 配置失败: {}", e))?
+        crate::config_sync_io::read_to_string(&zshrc)
+            .map_err(|e| format!("读取 shell 配置失败: {}", e))?
     } else {
         String::new()
     };
@@ -2493,7 +2516,8 @@ pub fn remove_all_aliases() -> Result<ClaudeEnvShellStatus, String> {
             ),
         ));
     }
-    let current = fs::read_to_string(&zshrc).map_err(|e| format!("读取 shell 配置失败: {}", e))?;
+    let current = crate::config_sync_io::read_to_string(&zshrc)
+        .map_err(|e| format!("读取 shell 配置失败: {}", e))?;
     let (next, removed) = remove_marker_block(&current);
     if removed {
         atomic_write(&zshrc, &next)?;
@@ -2533,8 +2557,8 @@ pub fn get_shell_status() -> Result<ClaudeEnvShellStatus, String> {
     };
     let zshrc_exists = zshrc.is_file();
     let (block_present, aliases) = if zshrc_exists {
-        let content =
-            fs::read_to_string(&zshrc).map_err(|e| format!("读取 shell 配置失败: {}", e))?;
+        let content = crate::config_sync_io::read_to_string(&zshrc)
+            .map_err(|e| format!("读取 shell 配置失败: {}", e))?;
         let present = content.contains(MARKER_BEGIN) && content.contains(MARKER_END);
         let aliases = if present {
             parse_aliases_from_block(&content)
@@ -2953,147 +2977,78 @@ fn real_path_for_msg(abs: &str) -> String {
 
 /* ===== Tests ===== */
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 与既有 db / ai_provider 测试同款：持 HOME 锁 + 唯一 id + 结束（含 panic）清理，
-    /// **不交换 HOME**。交换 HOME 会与未持锁的 HOME 读取者（如 agent_open）产生竞态，
-    /// 使整套测试间歇性失败（该竞态在本次修改前已存在）。
-    ///
-    /// 本测试不需要换 HOME：`sync_provider_to_envs` 按每行自己的 `config_dir` 写入。
-    fn unique_tag(tag: &str) -> String {
-        format!(
-            "__agentbuddy_test_{}_{}",
-            tag,
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+/// 反向同步：按绑定来源重写环境的连接、模型有效性与档位回退。
+///
+/// 与旧的“只回写 URL/Key”不同：这里校验环境当前主模型与各档位是否仍在来源模型
+/// 列表内，失效的回退到来源第一项，来源为空则清除模型设置；无关键与仍有效的档位
+/// 保持不变。目录未初始化的环境由调用方挂待办，不在这里创建目录。
+pub(crate) fn sync_bound_source(
+    config_dir: &str,
+    source: Option<&crate::provider_sync::Source>,
+) -> Result<(), String> {
+    let dir = Path::new(config_dir);
+    let path = dir.join("settings.json");
+    if path.exists() {
+        let _: Value = serde_json::from_str(
+            &crate::config_sync_io::read_to_string(&path).map_err(|e| e.to_string())?,
         )
+        .map_err(|_| "settings.json 格式无效".to_string())?;
     }
-
-    /// Drop 时删除本测试插入的环境行（panic 展开也会执行）。
-    struct EnvRowsGuard(Vec<String>);
-
-    impl Drop for EnvRowsGuard {
-        fn drop(&mut self) {
-            for id in &self.0 {
-                let _ = db::delete_claude_environment_row(id);
+    let Some(source) = source else {
+        apply_settings_env_edit(dir, Some(""), Some(""), Some(""), None)?;
+        return Ok(());
+    };
+    let (_, _, current, mut tiers) = read_settings_env(dir);
+    let valid = |v: &str| source.models.iter().any(|m| m.id == v);
+    let first = source
+        .models
+        .first()
+        .map(|m| m.id.clone())
+        .unwrap_or_default();
+    let model = if source.models.is_empty() {
+        Some(String::new())
+    } else if !current.is_empty() && !valid(&current) {
+        Some(first.clone())
+    } else {
+        None
+    };
+    for tier in [
+        &mut tiers.haiku,
+        &mut tiers.sonnet,
+        &mut tiers.opus,
+        &mut tiers.fable,
+    ] {
+        *tier = tier
+            .as_ref()
+            .filter(|v| !v.is_empty() && !valid(v))
+            .map(|_| first.clone());
+    }
+    if model.as_ref().is_some_and(|m| !m.is_empty()) {
+        let (_, _, _, original) = read_settings_env(dir);
+        for (next, old) in [
+            (&mut tiers.haiku, original.haiku),
+            (&mut tiers.sonnet, original.sonnet),
+            (&mut tiers.opus, original.opus),
+            (&mut tiers.fable, original.fable),
+        ] {
+            if next.is_none() && old.as_ref().is_some_and(|v| !v.is_empty()) {
+                *next = old;
             }
         }
     }
+    apply_settings_env_edit(
+        dir,
+        Some(&source.base_url),
+        Some(&source.key),
+        model.as_deref(),
+        Some(&tiers),
+    )?;
+    Ok(())
+}
 
-    fn env_row(
-        id: &str,
-        config_dir: &Path,
-        is_default: bool,
-        provider_id: &str,
-    ) -> ClaudeEnvironmentRow {
-        ClaudeEnvironmentRow {
-            id: id.into(),
-            name: format!("环境-{}", id),
-            slug: id.into(),
-            config_dir: config_dir.to_string_lossy().to_string(),
-            alias_name: format!("claude-{}", id),
-            is_default,
-            source: "managed".into(),
-            notes: String::new(),
-            alias_installed: false,
-            provider_id: provider_id.into(),
-            created_at: 0,
-            updated_at: 0,
-        }
-    }
-
-    /// 回归：供应商被编辑时，默认环境必须与非默认环境一起被反向同步。
-    /// 旧实现按 `is_default = 0` 查找环境，导致默认环境被静默跳过。
-    #[test]
-    fn sync_provider_to_envs_includes_default_environment() {
-        let _home_guard = crate::config::lock_home_for_test();
-        let tag = unique_tag("claude_sync_provider");
-        let provider_id = format!("{}-prov", tag);
-        let base = std::env::temp_dir().join(&tag);
-        let default_dir = base.join("default");
-        let work_dir = base.join("work");
-        let missing_dir = base.join("missing");
-        let mut rows = EnvRowsGuard(Vec::new());
-
-        for dir in [&default_dir, &work_dir] {
-            fs::create_dir_all(dir).unwrap();
-            fs::write(
-                dir.join("settings.json"),
-                r#"{"env":{"ANTHROPIC_BASE_URL":"https://old.example","ANTHROPIC_AUTH_TOKEN":"old-token","ANTHROPIC_MODEL":"claude-old","ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-old-opus","KEEP_ME":"yes"}}"#,
-            )
-            .unwrap();
-        }
-
-        let default_id = format!("{}-default", tag);
-        let work_id = format!("{}-work", tag);
-        let missing_id = format!("{}-missing", tag);
-        for (id, dir, is_default) in [
-            (&default_id, &default_dir, true),
-            (&work_id, &work_dir, false),
-            // 目录不存在的环境（例如默认环境尚未初始化）不得计入同步数量或失败列表。
-            (&missing_id, &missing_dir, false),
-        ] {
-            db::upsert_claude_environment_row(&env_row(id, dir, is_default, &provider_id)).unwrap();
-            rows.0.push(id.clone());
-        }
-
-        // 供应商库不再保存模型/档位：同步只回写 URL/Key，主模型与现有档位保持不动。
-        let (synced, errors) = sync_provider_to_envs(
-            &provider_id,
-            "https://new.example/v1",
-            "new-secret-token",
-            None,
-        )
-        .unwrap();
-
-        assert_eq!(
-            synced, 2,
-            "默认 + 非默认环境都应被同步；errors={:?}",
-            errors
-        );
-        assert!(
-            errors.is_empty(),
-            "不应有失败项（含目录不存在）: {:?}",
-            errors
-        );
-
-        for dir in [&default_dir, &work_dir] {
-            let (base_url, key, model, tier_values) = read_settings_env(dir);
-            assert_eq!(
-                base_url,
-                "https://new.example/v1",
-                "{} 未同步 Base URL",
-                dir.display()
-            );
-            assert_eq!(key, "new-secret-token", "{} 未同步 API Key", dir.display());
-            // 模型与档位不由供应商同步，保留环境里已有的值。
-            assert_eq!(model, "claude-old", "{} 不应覆盖主模型", dir.display());
-            assert_eq!(
-                tier_values.opus.as_deref(),
-                Some("claude-old-opus"),
-                "{} 不应覆盖档位模型",
-                dir.display()
-            );
-            // 无关键保留。
-            let raw = fs::read_to_string(dir.join("settings.json")).unwrap();
-            let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-            assert_eq!(v["env"]["KEEP_ME"].as_str(), Some("yes"));
-        }
-
-        // 未关联任何环境时保持无副作用：清空关联后再同步，不写不报错。
-        db::clear_provider_id_on_envs(&provider_id).unwrap();
-        let (synced, errors) =
-            sync_provider_to_envs(&provider_id, "https://other.example", "other-token", None)
-                .unwrap();
-        assert_eq!(synced, 0, "无关联环境时不应同步");
-        assert!(errors.is_empty(), "无关联环境时不应报错: {:?}", errors);
-
-        let _ = fs::remove_dir_all(&base);
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     #[cfg(unix)]
     #[test]
@@ -3245,7 +3200,7 @@ mod tests {
         // Empty overrides → no change
         let changed = apply_settings_overrides(&dir, Some("  "), Some(""), None, None).unwrap();
         assert!(changed.is_empty());
-        let raw = fs::read_to_string(dir.join("settings.json")).unwrap();
+        let raw = crate::config_sync_io::read_to_string(dir.join("settings.json")).unwrap();
         assert!(raw.contains("http://old.example"));
         assert!(raw.contains("old-token"));
 
@@ -3266,8 +3221,10 @@ mod tests {
                 "模型".to_string()
             ]
         );
-        let v: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(
+            &crate::config_sync_io::read_to_string(dir.join("settings.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             v["env"]["ANTHROPIC_BASE_URL"].as_str(),
             Some("https://new.example/v1")
@@ -3339,8 +3296,10 @@ mod tests {
                 "模型".to_string()
             ]
         );
-        let v: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(
+            &crate::config_sync_io::read_to_string(dir.join("settings.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             v["env"]["ANTHROPIC_BASE_URL"].as_str(),
             Some("https://new.example/v1")
@@ -3376,8 +3335,10 @@ mod tests {
         // Delete model → clears primary + all DEFAULT_* companions.
         let changed = apply_settings_env_edit(&dir, None, None, Some(""), None).unwrap();
         assert_eq!(changed, vec!["模型".to_string()]);
-        let v: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(
+            &crate::config_sync_io::read_to_string(dir.join("settings.json")).unwrap(),
+        )
+        .unwrap();
         for k in MODEL_ENV_KEYS {
             assert!(
                 v["env"].get(k).is_none(),
@@ -3414,8 +3375,10 @@ mod tests {
         let changed =
             apply_settings_env_edit(&dir, None, None, Some("only-primary"), None).unwrap();
         assert_eq!(changed, vec!["模型".to_string()]);
-        let v: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(
+            &crate::config_sync_io::read_to_string(dir.join("settings.json")).unwrap(),
+        )
+        .unwrap();
         for k in MODEL_ENV_KEYS {
             assert_eq!(v["env"][k].as_str(), Some("only-primary"));
         }
@@ -3453,8 +3416,10 @@ mod tests {
         // Save without model payload → companions filled from primary.
         let changed = ensure_model_env_companions(&dir).unwrap();
         assert_eq!(changed, vec!["模型".to_string()]);
-        let v: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(
+            &crate::config_sync_io::read_to_string(dir.join("settings.json")).unwrap(),
+        )
+        .unwrap();
         for k in MODEL_ENV_KEYS {
             assert_eq!(
                 v["env"][k].as_str(),
@@ -3477,8 +3442,10 @@ mod tests {
         .unwrap();
         let changed = ensure_model_env_companions(&dir).unwrap();
         assert!(changed.is_empty());
-        let v: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(
+            &crate::config_sync_io::read_to_string(dir.join("settings.json")).unwrap(),
+        )
+        .unwrap();
         assert!(v["env"].get("ANTHROPIC_MODEL").is_none());
         assert_eq!(v["env"]["KEEP_ME"].as_str(), Some("yes"));
 
@@ -3515,7 +3482,8 @@ mod tests {
         );
         write_mcp_servers(&target, &servers).unwrap();
 
-        let v: Value = serde_json::from_str(&fs::read_to_string(&target).unwrap()).unwrap();
+        let v: Value =
+            serde_json::from_str(&crate::config_sync_io::read_to_string(&target).unwrap()).unwrap();
         assert_eq!(v["numStartups"], 3);
         assert!(v["projects"]["/tmp/x"].is_object());
         assert!(v["mcpServers"]["demo"].is_object());
@@ -3529,7 +3497,8 @@ mod tests {
 
         // Empty map clears servers but keeps other keys
         write_mcp_servers(&target, &Map::new()).unwrap();
-        let v2: Value = serde_json::from_str(&fs::read_to_string(&target).unwrap()).unwrap();
+        let v2: Value =
+            serde_json::from_str(&crate::config_sync_io::read_to_string(&target).unwrap()).unwrap();
         assert_eq!(v2["numStartups"], 3);
         assert_eq!(v2["mcpServers"], serde_json::json!({}));
 
@@ -3538,7 +3507,9 @@ mod tests {
         fs::create_dir_all(target2.parent().unwrap()).unwrap();
         write_mcp_servers(&target2, &servers).unwrap();
         assert!(target2.is_file());
-        let v3: Value = serde_json::from_str(&fs::read_to_string(&target2).unwrap()).unwrap();
+        let v3: Value =
+            serde_json::from_str(&crate::config_sync_io::read_to_string(&target2).unwrap())
+                .unwrap();
         assert!(v3["mcpServers"]["demo"].is_object());
 
         let _ = fs::remove_dir_all(&dir);
@@ -3571,9 +3542,10 @@ mod tests {
         .unwrap();
 
         copy_claude_state_without_mcp(&source, false, &target).unwrap();
-        let value: Value =
-            serde_json::from_str(&fs::read_to_string(target.join(".claude.json")).unwrap())
-                .unwrap();
+        let value: Value = serde_json::from_str(
+            &crate::config_sync_io::read_to_string(target.join(".claude.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(value["numStartups"], 12);
         assert_eq!(value["projects"]["/tmp/demo"]["allowedTools"][0], "Read");
         assert_eq!(value["mcpServers"]["target-only"]["command"], "keep");
@@ -3611,7 +3583,7 @@ mod tests {
             .file_type()
             .is_symlink());
         assert_eq!(
-            fs::read_to_string(full.join("session.json")).unwrap(),
+            crate::config_sync_io::read_to_string(full.join("session.json")).unwrap(),
             "session"
         );
 
@@ -3630,7 +3602,7 @@ mod tests {
             .file_type()
             .is_symlink());
         assert_eq!(
-            fs::read_to_string(links.join("session.json")).unwrap(),
+            crate::config_sync_io::read_to_string(links.join("session.json")).unwrap(),
             "session"
         );
 

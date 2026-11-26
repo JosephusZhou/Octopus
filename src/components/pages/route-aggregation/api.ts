@@ -76,9 +76,9 @@ export async function getRouteProviderModels(providerId: string): Promise<string
  *
  * = 所有已勾选供应商的有效自定义模型 ID 的去重并集（与 `GET /v1/models`
  * 暴露的列表一致）。来源仍是各供应商的自定义模型列表，不向远端拉取。 */
-export async function getRouteAggregatedModels(): Promise<string[]> {
+export async function getRouteAggregatedModels(protocol?: string): Promise<string[]> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke("get_route_aggregation_models");
+  return invoke("get_route_aggregation_models", { protocol });
 }
 
 /** 获取路由聚合服务近期的进出日志（内存中最新的在后）。 */

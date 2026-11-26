@@ -267,7 +267,6 @@ mod passthrough_tests {
         // 回归：响应侧工具名恢复必须与请求侧重映射对称。真实 CC 透传请求
         // 不做重映射，full_cloak_applies 必须为 false，否则 forwarder 会把
         // 上游真实返回的官方工具名（"Bash" 等）错误转成小写。
-        let never_config = RouteAggregationConfig::default();
 
         // 真实客户端：即使 always 也不伪装 → 不得开恢复
         assert!(!full_cloak_applies(

@@ -52,6 +52,7 @@ export interface AiProviderActionResult {
   ok: boolean;
   message: string;
   provider: AiProvider | null;
+  syncResults: Array<{ target: string; ok: boolean; message: string }>;
 }
 
 /** Claude 环境自身的四档模型（haiku/sonnet/opus/fable），由环境页配置，与供应商库无关。 */

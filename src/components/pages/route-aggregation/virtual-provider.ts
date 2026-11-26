@@ -38,12 +38,12 @@ export function openaiProviderBaseUrl(p: AiProvider): string {
  * 环境弹窗把它当普通供应商读取模型下拉时，拿到的是真实可路由的模型集合；
  * 拉取失败不阻塞供应商本身的选择，仅模型列表为空。
  */
-export async function fetchRouteAggregationProvider(): Promise<AiProvider | null> {
+export async function fetchRouteAggregationProvider(protocol?: string): Promise<AiProvider | null> {
   try {
     const [status, config, aggregatedModels] = await Promise.all([
       getStatus(),
       getConfig(),
-      getRouteAggregatedModels().catch(() => [] as string[]),
+      getRouteAggregatedModels(protocol),
     ]);
     const base = `http://${status.listenAddress}:${status.listenPort}`;
     const primaryKey = config.apiKeys[0] ?? "";

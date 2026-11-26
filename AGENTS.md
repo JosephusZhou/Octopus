@@ -25,10 +25,19 @@ pnpm build:renderer      # 仅前端构建
 
 cargo test --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml --lib route_aggregation
+cargo test --manifest-path src-tauri/Cargo.toml --lib provider_sync
+cargo test --manifest-path src-tauri/Cargo.toml --lib backup
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+pnpm test:web            # Node 纯逻辑单测 + Vitest 组件测试
+pnpm test:components     # 仅组件测试（src/test/*.component.test.tsx）
+pnpm test:request-gate   # 仅异步请求防护单测
 ```
 
-没有 ESLint 或前端测试脚本；前端格式由 Prettier（`pnpm format` / `pnpm format:check`）、
+前端有 Node 内置 test runner 的纯逻辑单测（`src/lib/*.test.mjs`）与 Vitest + Testing Library
+组件测试（`src/test/*.component.test.tsx`，用 `src/test/tauriBridge.ts` 的 webview IPC shim，
+不用 `vi.mock("@tauri-apps/api/core")`：该模块被大量并发动态 import，mock 注册表会把其中一次
+解析成真实模块导致测试不稳定）。没有 ESLint；前端格式由 Prettier（`pnpm format` / `pnpm format:check`）、
 后端由 rustfmt（`cargo fmt`）管理，并由 lefthook pre-commit 在提交时自动执行（前端 write 修正、
 Rust `--check` 校验）。构建需要 Node、pnpm、Rust 和对应平台的 Tauri 系统依赖。
 
@@ -39,6 +48,10 @@ src/
   App.tsx                         视图状态与页面路由
   components/pages/               功能页面与 Tauri API helper
   components/ui.tsx               页面无关的共享 UI
+  lib/providerSource.ts           来源候选读取与 provider-sources-changed 事件订阅
+  lib/latestRequest.ts            异步请求防回填门控（配合 lib/useLatestRequest.ts）
+  test/tauriBridge.ts             组件测试的 webview IPC shim
+  test/*.component.test.tsx       供应商绑定与同步的页面交互测试
   index.css                       主题和全局样式
 
 src-tauri/src/
@@ -54,6 +67,8 @@ src-tauri/src/
   agent_model_config.rs           OpenCode / Pi / Oh-My-Pi 的统一模型分派
   project_config.rs               项目级 AI 骨架、MCP 和共享 Skills
   ai_provider.rs                  供应商、加密 API Key 和 custom models
+  provider_sync.rs                供应商/路由来源解析、绑定同步、批量模型合并、恢复与影响预览
+  config_sync_io.rs               同步写入的文件指纹检查、冲突重试与逐文件结果
   agent_open.rs                  打开 Agent 配置文件的 command
   db.rs                            SQLite 持久化
   config.rs                        app config.json、主题、代理和 secretsKey
@@ -247,7 +262,7 @@ CLIProxyAPI 只提供行为同步参考，不是运行时依赖。上游变更�
 2. `src-tauri/src/agents.rs`：Agent 注册表
 3. `src-tauri/src/mcp_config.rs` + `docs/AGENT_MCP_SKILLS_MAP.md`：MCP 方言和路径
 4. `src-tauri/src/project_config.rs`：项目级骨架、MCP 和 Skills
-5. `src-tauri/src/ai_provider.rs` + `agent_model_config.rs`：供应商和模型
+5. `src-tauri/src/ai_provider.rs` + `agent_model_config.rs` + `provider_sync.rs`：供应商、模型
 6. `src-tauri/src/claude_env.rs` + `codex_env.rs`：多环境及同步
 7. `src-tauri/src/route_aggregation/` + `sync/SYNC_PLAYBOOK.md`：本地路由和 cloaking
 8. `src/App.tsx` + 对应页面：前端视图与交互

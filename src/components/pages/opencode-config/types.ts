@@ -38,6 +38,7 @@ export interface AgentModelView {
 }
 
 export interface AgentProviderView {
+  sourceId?: string | null;
   id: string;
   name?: string | null;
   /** OpenCode 2.x `package`（可能带 `aisdk:` 前缀）；Pi 家族为 null。 */

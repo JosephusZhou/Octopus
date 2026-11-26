@@ -12,6 +12,7 @@ mod backup_schedule;
 mod claude_env;
 mod codex_env;
 mod config;
+mod config_sync_io;
 mod crypto;
 mod db;
 mod http_client;
@@ -20,6 +21,7 @@ mod opencode_config;
 mod pi_model_config;
 mod platform;
 mod project_config;
+mod provider_sync;
 mod route_aggregation;
 mod skills;
 mod sniff;
@@ -454,11 +456,42 @@ async fn list_remote_backups(
 #[tauri::command]
 async fn restore_remote_backup(
     app: tauri::AppHandle,
+    state: tauri::State<'_, route_aggregation::RouteAggregationState>,
     payload: backup::RestoreBackupPayload,
 ) -> Result<backup::RestoreBackupResult, String> {
-    tauri::async_runtime::spawn_blocking(move || backup::restore_remote_backup(app, payload))
-        .await
-        .map_err(|e| format!("恢复备份任务失败: {}", e))?
+    // Lock before extraction as well, so a user start/stop/key edit cannot race the
+    // restored disk snapshot and its subsequent in-memory application.
+    let _lifecycle = state.lifecycle.lock().await;
+    let event_app = app.clone();
+    let mut result =
+        tauri::async_runtime::spawn_blocking(move || backup::restore_remote_backup(app, payload))
+            .await
+            .map_err(|e| format!("恢复备份任务失败: {e}"))??;
+    if result.restored_files > 0 {
+        let loaded =
+            tauri::async_runtime::spawn_blocking(config::load_route_aggregation_config_strict)
+                .await
+                .map_err(|e| format!("重载恢复配置任务失败: {e}"));
+        match loaded {
+            Ok(Ok(config)) => {
+                if let Err(error) = state.apply_runtime_config(config).await {
+                    result.warnings.push(error);
+                }
+            }
+            Ok(Err(error)) | Err(error) => result.warnings.push(error),
+        }
+        result.warnings.extend(state.refresh_restored_pools().await);
+        if !result.warnings.is_empty() {
+            result
+                .message
+                .push_str("；部分重载或同步未完成，请查看下方警告");
+        }
+    }
+    {
+        use tauri::Emitter;
+        let _ = event_app.emit("provider-sources-changed", ());
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -879,11 +912,12 @@ async fn fetch_claude_env_remote_models(
 async fn get_agent_model_config(
     agent: String,
 ) -> Result<opencode_config::AgentModelConfigView, String> {
-    use agent_model_config::ModelConfigAgent;
-    match ModelConfigAgent::parse(&agent)? {
-        ModelConfigAgent::Opencode => opencode_config::get_config(),
-        a => pi_model_config::get_config(a),
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = provider_sync::lock()?;
+        provider_sync::get_agent(agent_model_config::ModelConfigAgent::parse(&agent)?)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -891,6 +925,7 @@ async fn set_agent_model_defaults(
     agent: String,
     payload: opencode_config::SetDefaultsPayload,
 ) -> Result<opencode_config::AgentActionResult, String> {
+    let _guard = provider_sync::lock()?;
     use agent_model_config::ModelConfigAgent;
     match ModelConfigAgent::parse(&agent)? {
         ModelConfigAgent::Opencode => opencode_config::set_defaults(payload),
@@ -900,14 +935,25 @@ async fn set_agent_model_defaults(
 
 #[tauri::command]
 async fn upsert_agent_provider(
+    app: tauri::AppHandle,
     agent: String,
     payload: opencode_config::UpsertProviderPayload,
+    source_id: Option<String>,
 ) -> Result<opencode_config::AgentActionResult, String> {
-    use agent_model_config::ModelConfigAgent;
-    match ModelConfigAgent::parse(&agent)? {
-        ModelConfigAgent::Opencode => opencode_config::upsert_provider(payload),
-        a => pi_model_config::upsert_provider(a, payload),
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        provider_sync::save_agent_provider(
+            agent_model_config::ModelConfigAgent::parse(&agent)?,
+            payload,
+            source_id,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    {
+        use tauri::Emitter;
+        let _ = app.emit("provider-sources-changed", ());
     }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -916,11 +962,15 @@ async fn delete_agent_provider(
     provider_id: String,
     delete_auth: bool,
 ) -> Result<opencode_config::AgentActionResult, String> {
+    let _guard = provider_sync::lock()?;
     use agent_model_config::ModelConfigAgent;
-    match ModelConfigAgent::parse(&agent)? {
+    let target = provider_id.clone();
+    let result = match ModelConfigAgent::parse(&agent)? {
         ModelConfigAgent::Opencode => opencode_config::delete_provider(provider_id, delete_auth),
         a => pi_model_config::delete_provider(a, provider_id, delete_auth),
-    }
+    }?;
+    db::clear_agent_target_binding(&agent, &target)?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -928,6 +978,31 @@ async fn upsert_agent_model(
     agent: String,
     payload: opencode_config::UpsertModelPayload,
 ) -> Result<opencode_config::AgentActionResult, String> {
+    let _guard = provider_sync::lock()?;
+    if db::agent_target_source(&agent, &payload.provider_id)?.is_some() {
+        let view = provider_sync::get_agent(agent_model_config::ModelConfigAgent::parse(&agent)?)?;
+        let exists = view
+            .providers
+            .iter()
+            .find(|p| p.id == payload.provider_id)
+            .map(|p| p.models.iter().any(|m| m.id == payload.id))
+            .unwrap_or(false);
+        if payload
+            .extra_options
+            .as_ref()
+            .is_some_and(|options| options.contains_key("id"))
+        {
+            return Err("绑定模型的额外参数不能覆盖模型 ID".into());
+        }
+        if !exists
+            || payload
+                .previous_id
+                .as_ref()
+                .is_some_and(|id| id != &payload.id)
+        {
+            return Err("绑定模型列表由供应商维护，不能单独新增或重命名模型".into());
+        }
+    }
     use agent_model_config::ModelConfigAgent;
     match ModelConfigAgent::parse(&agent)? {
         ModelConfigAgent::Opencode => opencode_config::upsert_model(payload),
@@ -941,6 +1016,10 @@ async fn delete_agent_model(
     provider_id: String,
     model_id: String,
 ) -> Result<opencode_config::AgentActionResult, String> {
+    let _guard = provider_sync::lock()?;
+    if db::agent_target_source(&agent, &provider_id)?.is_some() {
+        return Err("绑定模型请在供应商管理中删除".into());
+    }
     use agent_model_config::ModelConfigAgent;
     match ModelConfigAgent::parse(&agent)? {
         ModelConfigAgent::Opencode => opencode_config::delete_model(provider_id, model_id),
@@ -963,6 +1042,10 @@ async fn set_agent_provider_secret(
     provider_id: String,
     api_key: String,
 ) -> Result<opencode_config::AgentActionResult, String> {
+    let _guard = provider_sync::lock()?;
+    if db::agent_target_source(&agent, &provider_id)?.is_some() {
+        return Err("绑定供应商凭据请在供应商管理中修改".into());
+    }
     use agent_model_config::ModelConfigAgent;
     match ModelConfigAgent::parse(&agent)? {
         ModelConfigAgent::Opencode => opencode_config::set_provider_secret(provider_id, api_key),
@@ -1005,6 +1088,7 @@ async fn reveal_agent_model_config(
 async fn migrate_agent_model_config(
     agent: String,
 ) -> Result<opencode_config::AgentActionResult, String> {
+    let _guard = provider_sync::lock()?;
     use agent_model_config::ModelConfigAgent;
     match ModelConfigAgent::parse(&agent)? {
         ModelConfigAgent::Opencode => opencode_config::migrate_legacy_config(),
@@ -1148,27 +1232,6 @@ async fn fetch_codex_env_remote_models(
 
 /* ===== AI providers (上游模型供应商库) ===== */
 
-/// 写操作后异步触发路由聚合内存池刷新，避免「刚加/改了供应商 → 下游
-/// `/v1/models` 或 OpenCode 配置、Pi 配置页的虚拟供应商看到的还是旧 pool」这种隐性脏数据。
-///
-/// 用后台 spawn 而不是 inline await：
-/// - 不阻塞供应商主命令的返回（用户操作的 UX 优先）；
-/// - 即使刷新失败也不影响供应商写入的最终一致性，下次任一相关命令会兜底刷一次。
-fn spawn_route_aggregation_pool_refresh(
-    router: std::sync::Arc<route_aggregation::provider_router::ProviderRouter>,
-) {
-    // Refresh the provider pool from DB rows without network I/O. This keeps
-    // provider changes visible immediately without blocking on remote calls.
-    tauri::async_runtime::spawn(async move {
-        for group in route_aggregation::RouteGroup::ALL {
-            if let Err(e) = router.refresh_pool_fast(group).await {
-                eprintln!("[ai-provider] 刷新路由聚合 {:?} pool 失败: {}", group, e);
-                continue;
-            }
-        }
-    });
-}
-
 #[tauri::command]
 async fn list_ai_providers() -> Result<Vec<ai_provider::AiProvider>, String> {
     tauri::async_runtime::spawn_blocking(ai_provider::list_providers)
@@ -1178,26 +1241,58 @@ async fn list_ai_providers() -> Result<Vec<ai_provider::AiProvider>, String> {
 
 #[tauri::command]
 async fn upsert_ai_provider(
+    app: tauri::AppHandle,
     state: tauri::State<'_, route_aggregation::RouteAggregationState>,
     payload: ai_provider::AiProviderUpsertPayload,
 ) -> Result<ai_provider::AiProviderActionResult, String> {
-    let result =
+    let mut result =
         tauri::async_runtime::spawn_blocking(move || ai_provider::upsert_provider(payload))
             .await
             .map_err(|e| format!("保存供应商任务失败: {e}"))??;
-    spawn_route_aggregation_pool_refresh(state.provider_router.clone());
+    if let Err(error) = refresh_sources(&state).await {
+        result
+            .message
+            .push_str(&format!("；来源已保存，但路由刷新或关联同步失败：{error}"));
+        result.sync_results.push(provider_sync::SyncResult {
+            target: "路由聚合".into(),
+            ok: false,
+            message: error,
+        });
+    }
+    {
+        use tauri::Emitter;
+        let _ = app.emit("provider-sources-changed", ());
+    }
     Ok(result)
 }
 
 #[tauri::command]
 async fn delete_ai_provider(
+    app: tauri::AppHandle,
     state: tauri::State<'_, route_aggregation::RouteAggregationState>,
     id: String,
+    confirmed: Option<bool>,
 ) -> Result<ai_provider::AiProviderActionResult, String> {
-    let result = tauri::async_runtime::spawn_blocking(move || ai_provider::delete_provider(id))
+    if confirmed != Some(true) {
+        return Err("请确认删除供应商及关联配置".into());
+    }
+    let mut result = tauri::async_runtime::spawn_blocking(move || ai_provider::delete_provider(id))
         .await
         .map_err(|e| format!("删除供应商任务失败: {e}"))??;
-    spawn_route_aggregation_pool_refresh(state.provider_router.clone());
+    if let Err(error) = refresh_sources(&state).await {
+        result
+            .message
+            .push_str(&format!("；来源已保存，但路由刷新或关联同步失败：{error}"));
+        result.sync_results.push(provider_sync::SyncResult {
+            target: "路由聚合".into(),
+            ok: false,
+            message: error,
+        });
+    }
+    {
+        use tauri::Emitter;
+        let _ = app.emit("provider-sources-changed", ());
+    }
     Ok(result)
 }
 
@@ -1217,14 +1312,101 @@ async fn get_ai_provider_secrets(id: String) -> Result<Vec<String>, String> {
 
 #[tauri::command]
 async fn reorder_ai_providers(
+    app: tauri::AppHandle,
     state: tauri::State<'_, route_aggregation::RouteAggregationState>,
     ids: Vec<String>,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || ai_provider::reorder_providers(ids))
         .await
         .map_err(|e| format!("供应商排序任务失败: {e}"))??;
-    spawn_route_aggregation_pool_refresh(state.provider_router.clone());
+    refresh_sources(&state).await?;
+    {
+        use tauri::Emitter;
+        let _ = app.emit("provider-sources-changed", ());
+    }
     Ok(())
+}
+
+async fn refresh_sources(state: &route_aggregation::RouteAggregationState) -> Result<(), String> {
+    for group in route_aggregation::RouteGroup::ALL {
+        state.provider_router.refresh_pool_fast(group).await?;
+    }
+    tauri::async_runtime::spawn_blocking(|| {
+        let _guard = provider_sync::lock()?;
+        db::mark_provider_sync(provider_sync::ROUTE_ID, false)?;
+        provider_sync::run_pending()
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(())
+}
+#[tauri::command]
+async fn get_provider_source_models(
+    source_id: String,
+    protocol: String,
+) -> Result<provider_sync::SourceView, String> {
+    provider_sync::source_view(&source_id, &protocol)
+}
+#[tauri::command]
+async fn get_provider_delete_impact(id: String) -> Result<Vec<String>, String> {
+    provider_sync::impact(&id)
+}
+#[tauri::command]
+async fn get_provider_sync_status() -> Result<Vec<provider_sync::SyncResult>, String> {
+    let mut results: Vec<provider_sync::SyncResult> = db::provider_sync_states()?
+        .into_iter()
+        .filter(|(_, _, pending, _)| *pending)
+        .map(|(target, deleting, _, message)| provider_sync::SyncResult {
+            target,
+            ok: false,
+            message: if message.is_empty() {
+                if deleting {
+                    "等待清理关联配置".into()
+                } else {
+                    "等待同步".into()
+                }
+            } else {
+                message
+            },
+        })
+        .collect();
+    let migration_error = db::binding_migration_error()?;
+    if !migration_error.is_empty() {
+        results.push(provider_sync::SyncResult {
+            target: "旧配置绑定迁移".into(),
+            ok: false,
+            message: migration_error,
+        });
+    }
+    for (target, path, message) in db::failed_sync_files()? {
+        results.push(provider_sync::SyncResult {
+            target: format!("{target}：{path}"),
+            ok: false,
+            message,
+        });
+    }
+    Ok(results)
+}
+#[tauri::command]
+async fn retry_provider_sync() -> Result<Vec<provider_sync::SyncResult>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let _guard = provider_sync::lock()?;
+        let _ = provider_sync::migrate_bindings();
+        for (id, deleting, pending, _) in db::provider_sync_states()? {
+            if pending {
+                db::mark_provider_sync(&id, deleting)?;
+            }
+        }
+        provider_sync::run_pending()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn unbind_agent_provider(agent: String, provider_id: String) -> Result<(), String> {
+    let _guard = provider_sync::lock()?;
+    agent_model_config::ModelConfigAgent::parse(&agent)?;
+    db::clear_agent_target_binding(&agent, &provider_id)
 }
 
 /* ===== Agent provider bindings (全局供应商 → opencode/pi 绑定) ===== */
@@ -1261,7 +1443,23 @@ async fn add_agent_provider_binding(
     agent_provider_id: String,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        db::upsert_agent_provider_binding(&ai_provider_id, &agent_type, &agent_provider_id)
+        let _guard = provider_sync::lock()?;
+        let agent = agent_model_config::ModelConfigAgent::parse(&agent_type)?;
+        let view = provider_sync::get_agent(agent)?;
+        let target = view
+            .providers
+            .iter()
+            .find(|p| p.id == agent_provider_id)
+            .ok_or("Agent 供应商不存在")?;
+        provider_sync::resolve(
+            &ai_provider_id,
+            provider_sync::protocol(target.api.as_deref())?,
+            false,
+        )?;
+        db::upsert_agent_provider_binding(&ai_provider_id, &agent_type, &agent_provider_id)?;
+        db::mark_provider_sync(&ai_provider_id, false)?;
+        provider_sync::run_source(&ai_provider_id)?;
+        Ok::<(), String>(())
     })
     .await
     .map_err(|e| format!("添加绑定任务失败: {e}"))??;
@@ -1275,7 +1473,9 @@ async fn remove_agent_provider_binding(
     agent_provider_id: String,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        db::delete_agent_provider_binding(&ai_provider_id, &agent_type, &agent_provider_id)
+        let _guard = provider_sync::lock()?;
+        db::delete_agent_provider_binding(&ai_provider_id, &agent_type, &agent_provider_id)?;
+        db::mark_binding_migrated(&format!("agent:{agent_type}:{agent_provider_id}"))
     })
     .await
     .map_err(|e| format!("删除绑定任务失败: {e}"))??;
@@ -1304,46 +1504,26 @@ async fn get_route_aggregation_config(
 
 #[tauri::command]
 async fn update_route_aggregation_config(
+    app: tauri::AppHandle,
     state: tauri::State<'_, route_aggregation::RouteAggregationState>,
     config: route_aggregation::RouteAggregationConfig,
 ) -> Result<route_aggregation::RouteAggregationStatus, String> {
+    let _lifecycle = state.lifecycle.lock().await;
     let config = route_aggregation::config::normalize_config(config)?;
     route_aggregation::config::save_config(&config)?;
 
-    // Check if listen address/port changed — only that requires a server restart.
-    // Group toggles and other non-structural changes are handled at runtime:
-    // handlers read the shared config on each request.
-    let needs_restart = {
-        let old = state.config.read().await;
-        let addr_changed =
-            old.listen_address != config.listen_address || old.listen_port != config.listen_port;
-        drop(old);
-        addr_changed && state.server.read().await.is_some()
-    };
-
-    // Update the shared config — handlers will see the new values immediately.
-    *state.config.write().await = config.clone();
-
-    if needs_restart {
-        // Stop existing server (await full shutdown so port is released)
-        if let Some(server) = state.server.write().await.take() {
-            server.stop().await;
-        }
-        // Restart on the new address/port
-        let server = route_aggregation::server::RouteAggregationServer::start(
-            state.config.clone(),
-            state.provider_router.clone(),
-            state.log_store.clone(),
-        )
-        .await?;
-        *state.server.write().await = Some(std::sync::Arc::new(server));
-    }
+    state.apply_runtime_config(config).await?;
 
     // Refresh provider pools for both API formats
     for group in route_aggregation::RouteGroup::ALL {
         state.provider_router.refresh_pool_fast(group).await?;
     }
 
+    refresh_sources(&state).await?;
+    {
+        use tauri::Emitter;
+        let _ = app.emit("provider-sources-changed", ());
+    }
     Ok(state.get_status().await)
 }
 
@@ -1351,17 +1531,10 @@ async fn update_route_aggregation_config(
 async fn start_route_aggregation(
     state: tauri::State<'_, route_aggregation::RouteAggregationState>,
 ) -> Result<route_aggregation::RouteAggregationStatus, String> {
-    let config = state.config.read().await.clone();
-
-    // Port pre-check
-    let test_addr = format!("{}:{}", config.listen_address, config.listen_port);
-    if std::net::TcpListener::bind(&test_addr).is_err() {
-        return Err(format!(
-            "端口 {} 被占用，请在路由聚合设置中更改监听端口",
-            config.listen_port
-        ));
+    let _lifecycle = state.lifecycle.lock().await;
+    if state.server.read().await.is_some() {
+        return Ok(state.get_status().await);
     }
-
     // Refresh provider pools for both API formats
     for group in route_aggregation::RouteGroup::ALL {
         state.provider_router.refresh_pool_fast(group).await?;
@@ -1389,7 +1562,9 @@ async fn start_route_aggregation(
 async fn stop_route_aggregation(
     state: tauri::State<'_, route_aggregation::RouteAggregationState>,
 ) -> Result<(), String> {
-    if let Some(server) = state.server.write().await.take() {
+    let _lifecycle = state.lifecycle.lock().await;
+    let previous = state.server.write().await.take();
+    if let Some(server) = previous {
         server.stop().await;
     }
     let mut config = state.config.write().await;
@@ -1400,6 +1575,7 @@ async fn stop_route_aggregation(
 
 #[tauri::command]
 async fn toggle_provider_route(
+    app: tauri::AppHandle,
     state: tauri::State<'_, route_aggregation::RouteAggregationState>,
     provider_id: String,
     enabled: bool,
@@ -1412,6 +1588,11 @@ async fn toggle_provider_route(
     // Refresh in-memory provider pools so status reflects the new toggle state
     for group in route_aggregation::RouteGroup::ALL {
         state.provider_router.refresh_pool_fast(group).await?;
+    }
+    refresh_sources(&state).await?;
+    {
+        use tauri::Emitter;
+        let _ = app.emit("provider-sources-changed", ());
     }
     Ok(())
 }
@@ -1436,6 +1617,7 @@ async fn reset_circuit_breaker(
 async fn add_route_aggregation_api_key(
     state: tauri::State<'_, route_aggregation::RouteAggregationState>,
 ) -> Result<String, String> {
+    let _lifecycle = state.lifecycle.lock().await;
     let api_key = route_aggregation::config::generate_api_key();
     let mut config = state.config.write().await;
     config.api_keys.push(api_key.clone());
@@ -1450,6 +1632,7 @@ async fn delete_route_aggregation_api_key(
     state: tauri::State<'_, route_aggregation::RouteAggregationState>,
     index: usize,
 ) -> Result<(), String> {
+    let _lifecycle = state.lifecycle.lock().await;
     let mut config = state.config.write().await;
     if index == 0 {
         return Err("主 API Key 不能删除，只能重新生成".to_string());
@@ -1466,9 +1649,11 @@ async fn delete_route_aggregation_api_key(
 /// Returns the newly generated key.
 #[tauri::command]
 async fn regenerate_route_aggregation_api_key(
+    app: tauri::AppHandle,
     state: tauri::State<'_, route_aggregation::RouteAggregationState>,
     index: usize,
 ) -> Result<String, String> {
+    let _lifecycle = state.lifecycle.lock().await;
     let api_key = route_aggregation::config::generate_api_key();
     let mut config = state.config.write().await;
     if index >= config.api_keys.len() {
@@ -1476,6 +1661,12 @@ async fn regenerate_route_aggregation_api_key(
     }
     config.api_keys[index] = api_key.clone();
     route_aggregation::config::save_config(&config)?;
+    drop(config);
+    refresh_sources(&state).await?;
+    {
+        use tauri::Emitter;
+        let _ = app.emit("provider-sources-changed", ());
+    }
     Ok(api_key)
 }
 
@@ -1629,15 +1820,35 @@ async fn get_route_provider_models(provider_id: String) -> Result<Vec<String>, S
 /// `custom_models_json` 有效模型 ID 的去重并集，与 `GET /v1/models` 暴露的
 /// 列表完全一致。唯一来源仍是供应商编辑页的自定义列表，**不**向远端拉取。
 #[tauri::command]
-async fn get_route_aggregation_models(
-    state: tauri::State<'_, route_aggregation::RouteAggregationState>,
-) -> Result<Vec<String>, String> {
-    // Refresh pools so recent toggles / custom-model edits are reflected
-    // (same contract as get_route_aggregation_status).
-    for group in route_aggregation::RouteGroup::ALL {
-        state.provider_router.refresh_pool_fast(group).await?;
+async fn get_route_aggregation_models(protocol: Option<String>) -> Result<Vec<String>, String> {
+    if let Some(api) = protocol {
+        return Ok(
+            provider_sync::resolve(provider_sync::ROUTE_ID, &api, false)?
+                .models
+                .into_iter()
+                .map(|m| m.id)
+                .collect(),
+        );
     }
-    Ok(state.provider_router.get_enabled_model_ids().await)
+    let toggles = db::load_provider_route_toggles()?;
+    let mut ids = Vec::new();
+    for row in db::load_ai_provider_rows()? {
+        if toggles
+            .iter()
+            .any(|t| t.provider_id == row.id && !t.enabled)
+        {
+            continue;
+        }
+        let custom: Vec<ai_provider::CustomModel> =
+            serde_json::from_str(&row.custom_models_json)
+                .map_err(|_| "供应商模型列表格式无效".to_string())?;
+        for id in ai_provider::effective_custom_model_ids(custom) {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    Ok(ids)
 }
 
 #[tauri::command]
@@ -1974,6 +2185,11 @@ pub fn run() {
             get_ai_provider_secret,
             get_ai_provider_secrets,
             reorder_ai_providers,
+            get_provider_source_models,
+            get_provider_delete_impact,
+            retry_provider_sync,
+            get_provider_sync_status,
+            unbind_agent_provider,
             list_agent_provider_bindings,
             add_agent_provider_binding,
             remove_agent_provider_binding,
@@ -2039,6 +2255,43 @@ pub fn run() {
                 eprintln!("[octopus] failed to run startup config upgrade: {}", err);
             }
 
+            let sync_app = _app.handle().clone();
+            std::thread::spawn(move || {
+                use tauri::Emitter;
+                let mut first = true;
+                let mut migration_pending = true;
+                loop {
+                    let outcome = (|| -> Result<Vec<provider_sync::SyncResult>, String> {
+                        let _guard = provider_sync::lock()?;
+                        if migration_pending {
+                            migration_pending = provider_sync::migrate_bindings().is_err();
+                        }
+                        if first {
+                            // Queue startup reconciliation once; migration errors must not reset retry backoff.
+                            for row in db::load_ai_provider_rows()? {
+                                db::mark_provider_sync(&row.id, false)?;
+                            }
+                            db::mark_provider_sync(provider_sync::ROUTE_ID, false)?;
+                            first = false;
+                        }
+                        provider_sync::run_pending()
+                    })();
+                    match outcome {
+                        Ok(items) if !items.is_empty() => {
+                            let _ = sync_app.emit("provider-sources-changed", items);
+                        }
+                        Err(_) => {
+                            let _ = sync_app.emit(
+                                "provider-sync-error",
+                                "供应商配置校验失败，请查看同步状态并重试",
+                            );
+                        }
+                        _ => {}
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                }
+            });
+
             // Models.dev 目录由后端统一维护：启动时优先使用 7 天内的磁盘缓存，
             // 过期或缺失时后台刷新一次，避免各页面首次打开时重复请求。
             tauri::async_runtime::spawn_blocking(|| {
@@ -2084,6 +2337,11 @@ pub fn run() {
                 let app_handle = _app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let state = app_handle.state::<route_aggregation::RouteAggregationState>();
+                    let _lifecycle = state.lifecycle.lock().await;
+                    if state.server.read().await.is_some() || !state.config.read().await.auto_start
+                    {
+                        return;
+                    }
                     let config = state.config.read().await.clone();
                     // Port pre-check
                     let test_addr = format!("{}:{}", config.listen_address, config.listen_port);

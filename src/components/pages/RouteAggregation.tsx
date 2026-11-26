@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLatestRequest } from "@/lib/useLatestRequest";
+import { useProviderSourceChanges } from "@/lib/providerSource";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   Check,
@@ -90,26 +92,38 @@ export default function RouteAggregation() {
     [providers, status],
   );
 
+  const dataRequest = useLatestRequest();
+  const logsRequest = useLatestRequest();
+  const actionRequest = useLatestRequest();
+  const actionPending = useRef(false);
+
   const loadData = useCallback(async () => {
+    if (actionPending.current) return;
+    const current = dataRequest.begin();
     try {
       const [cfg, sts, list] = await Promise.all([api.getConfig(), api.getStatus(), invokeList()]);
+      if (!current()) return;
       setConfig(cfg);
       setStatus(sts);
       setProviders(list);
     } catch (e) {
-      setError(String(e));
+      if (current()) setError(String(e));
     } finally {
-      setLoading(false);
+      if (current()) setLoading(false);
     }
   }, []);
 
+  useProviderSourceChanges(loadData);
+
   const loadLogs = useCallback(async () => {
+    const current = logsRequest.begin();
     setLogsLoading(true);
     try {
       const [list, currentLogPath] = await Promise.all([
         api.getRouteLogs(),
         api.getRouteLogFilePath(),
       ]);
+      if (!current()) return;
       setLogFilePath(currentLogPath);
       // 环形缓冲区满后数量不再变化，必须比较内容，不能只比较长度。
       setLogs((prev) => {
@@ -122,9 +136,9 @@ export default function RouteAggregation() {
       );
       setLogsError(null);
     } catch (e) {
-      setLogsError(String(e));
+      if (current()) setLogsError(String(e));
     } finally {
-      setLogsLoading(false);
+      if (current()) setLogsLoading(false);
     }
   }, []);
 
@@ -132,12 +146,7 @@ export default function RouteAggregation() {
     loadData();
     loadLogs();
     const interval = setInterval(async () => {
-      try {
-        const sts = await api.getStatus();
-        setStatus(sts);
-      } catch {
-        /* ignore */
-      }
+      await loadData();
       if (logAutoRefresh) {
         loadLogs();
       }
@@ -146,120 +155,192 @@ export default function RouteAggregation() {
   }, [loadData, loadLogs, logAutoRefresh]);
 
   const handleConfigUpdate = async (newConfig: RouteAggregationConfig) => {
+    const current = actionRequest.begin();
+    actionPending.current = true;
+    dataRequest.invalidate();
     setActionLoading(true);
     setError(null);
     try {
       const sts = await api.updateConfig(newConfig);
+      if (!current()) return;
       setConfig(newConfig);
+      dataRequest.invalidate();
       setStatus(sts);
     } catch (e) {
+      if (!current()) return;
       setError(String(e));
     } finally {
+      if (!current()) return;
+      actionPending.current = false;
       setActionLoading(false);
+      void loadData();
     }
   };
 
   const handleStartServer = async () => {
+    const current = actionRequest.begin();
+    actionPending.current = true;
+    dataRequest.invalidate();
     setActionLoading(true);
     setError(null);
     try {
       const sts = await api.startServer();
+      if (!current()) return;
+      dataRequest.invalidate();
       setStatus(sts);
       setConfig((prev) => ({ ...prev, autoStart: true }));
     } catch (e) {
+      if (!current()) return;
       setError(String(e));
     } finally {
+      if (!current()) return;
+      actionPending.current = false;
       setActionLoading(false);
+      void loadData();
     }
   };
 
   const handleStopServer = async () => {
+    const current = actionRequest.begin();
+    actionPending.current = true;
+    dataRequest.invalidate();
     setActionLoading(true);
     setError(null);
     try {
       await api.stopServer();
+      if (!current()) return;
       const sts = await api.getStatus();
+      if (!current()) return;
+      dataRequest.invalidate();
       setStatus(sts);
       setConfig((prev) => ({ ...prev, autoStart: false }));
     } catch (e) {
+      if (!current()) return;
       setError(String(e));
     } finally {
+      if (!current()) return;
+      actionPending.current = false;
       setActionLoading(false);
+      void loadData();
     }
   };
 
   const handleToggleProvider = async (providerId: string, enabled: boolean) => {
+    const current = actionRequest.begin();
+    actionPending.current = true;
+    dataRequest.invalidate();
     setActionLoading(true);
     setError(null);
     try {
       await api.toggleProviderRoute(providerId, enabled);
+      if (!current()) return;
       const sts = await api.getStatus();
+      if (!current()) return;
+      dataRequest.invalidate();
       setStatus(sts);
     } catch (e) {
+      if (!current()) return;
       setError(String(e));
     } finally {
+      if (!current()) return;
+      actionPending.current = false;
       setActionLoading(false);
+      void loadData();
     }
   };
 
   const handleResetCircuitBreaker = async (providerId: string) => {
+    const current = actionRequest.begin();
+    actionPending.current = true;
+    dataRequest.invalidate();
     setActionLoading(true);
     setError(null);
     try {
       await api.resetCircuitBreaker(providerId);
+      if (!current()) return;
       const sts = await api.getStatus();
+      if (!current()) return;
+      dataRequest.invalidate();
       setStatus(sts);
     } catch (e) {
+      if (!current()) return;
       setError(String(e));
     } finally {
+      if (!current()) return;
+      actionPending.current = false;
       setActionLoading(false);
+      void loadData();
     }
   };
 
   /* ===== API Key 管理 ===== */
 
   const handleAddApiKey = async () => {
+    const current = actionRequest.begin();
+    actionPending.current = true;
+    dataRequest.invalidate();
     setActionLoading(true);
     setError(null);
     try {
       const newKey = await api.addApiKey();
+      if (!current()) return;
       setConfig((prev) => ({ ...prev, apiKeys: [...prev.apiKeys, newKey] }));
     } catch (e) {
+      if (!current()) return;
       setError(String(e));
     } finally {
+      if (!current()) return;
+      actionPending.current = false;
       setActionLoading(false);
+      void loadData();
     }
   };
 
   const handleDeleteApiKey = async (index: number) => {
+    const current = actionRequest.begin();
+    actionPending.current = true;
+    dataRequest.invalidate();
     setActionLoading(true);
     setError(null);
     try {
       await api.deleteApiKey(index);
+      if (!current()) return;
       setConfig((prev) => ({
         ...prev,
         apiKeys: prev.apiKeys.filter((_, i) => i !== index),
       }));
     } catch (e) {
+      if (!current()) return;
       setError(String(e));
     } finally {
+      if (!current()) return;
+      actionPending.current = false;
       setActionLoading(false);
+      void loadData();
     }
   };
 
   const handleRegenerateApiKey = async (index: number) => {
+    const current = actionRequest.begin();
+    actionPending.current = true;
+    dataRequest.invalidate();
     setActionLoading(true);
     setError(null);
     try {
       const newKey = await api.regenerateApiKey(index);
+      if (!current()) return;
       setConfig((prev) => ({
         ...prev,
         apiKeys: prev.apiKeys.map((k, i) => (i === index ? newKey : k)),
       }));
     } catch (e) {
+      if (!current()) return;
       setError(String(e));
     } finally {
+      if (!current()) return;
+      actionPending.current = false;
       setActionLoading(false);
+      void loadData();
     }
   };
 

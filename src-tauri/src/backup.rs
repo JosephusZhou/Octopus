@@ -1053,6 +1053,7 @@ pub(crate) fn execute_backup(
     advance(&app, "collect", "正在收集备份文件…".into(), None);
 
     let mut warnings = Vec::new();
+    let sync_guard = crate::provider_sync::lock()?;
     let entries = collect_entries(&unit_ids, &mut warnings)?;
     if entries.is_empty() {
         return Err("所选范围内没有可备份的文件".to_string());
@@ -1121,6 +1122,7 @@ pub(crate) fn execute_backup(
         &warnings,
     )?;
 
+    drop(sync_guard);
     let final_path = if let Some(ref pass) = passphrase {
         advance(&app, "encrypt", "正在加密备份包…".into(), None);
         let zip_bytes = fs::read(&zip_path).map_err(|e| format!("读取 zip 失败: {}", e))?;
@@ -1469,6 +1471,8 @@ pub fn restore_remote_backup(
     app: AppHandle,
     payload: RestoreBackupPayload,
 ) -> Result<RestoreBackupResult, String> {
+    let _run_guard =
+        try_acquire_run_lock().ok_or_else(|| "已有备份或恢复正在进行，请稍后再试".to_string())?;
     let settings = config::load_backup_settings()?;
     let rel_dir = resolve_remote_prefix(&payload.remote_prefix, &settings)?;
     let cid = payload.connection_id.trim().to_string();
@@ -1540,7 +1544,26 @@ pub fn restore_remote_backup(
         };
 
         advance("restore", "正在还原文件…".into());
-        let (restored, skipped, mut warnings) = extract_backup_zip(&zip_path)?;
+        let (restored, skipped, mut warnings) = {
+            let _sync_guard = crate::provider_sync::lock()?;
+            let mut result = extract_backup_zip(&zip_path)?;
+            if let Err(error) = crate::provider_sync::migrate_bindings() {
+                result.2.push(format!("绑定迁移未完成：{error}"));
+            }
+            for row in db::load_ai_provider_rows()? {
+                db::mark_provider_sync(&row.id, false)?;
+            }
+            db::mark_provider_sync(crate::provider_sync::ROUTE_ID, false)?;
+            match crate::provider_sync::run_pending() {
+                Ok(items) => {
+                    for item in items.into_iter().filter(|r| !r.ok) {
+                        result.2.push(format!("{}：{}", item.target, item.message));
+                    }
+                }
+                Err(error) => result.2.push(format!("恢复后配置同步未完成：{error}")),
+            }
+            result
+        };
         advance("finalize", "正在清理临时文件…".into());
         let _ = fs::remove_dir_all(&staging);
 

@@ -3,7 +3,7 @@
 //! 独立的供应商库：API 类型集合（anthropic / openai_chat / openai_responses，
 //! 可多选）+ Anthropic 侧 Base URL + OpenAI 侧 Base URL + API Key + 两侧默认模型；
 //! Anthropic 类型额外支持按档位（haiku/sonnet/opus/fable）覆盖模型。
-//! 本期仅做管理，不做下发到 Agent/环境（后续可扩展为一键填充）。
+//! 通过 provider_sync 下发连接信息和已保存模型到绑定的环境与 Agent。
 
 use crate::config;
 use crate::crypto;
@@ -60,13 +60,6 @@ pub fn parse_api_types(raw: &str) -> Vec<String> {
 /// `provider_type` 列是否包含指定 API 类型。
 pub fn provider_types_contain(raw: &str, target: &str) -> bool {
     parse_api_types(raw).iter().any(|t| t == target)
-}
-
-/// `provider_type` 列是否包含任一 OpenAI 协议类型（chat 或 responses）。
-pub fn provider_types_have_openai(raw: &str) -> bool {
-    parse_api_types(raw)
-        .iter()
-        .any(|t| t == API_TYPE_OPENAI_CHAT || t == API_TYPE_OPENAI_RESPONSES)
 }
 
 /// 一条已加密的 API Key（salt + nonce + cipher 三元组）。
@@ -217,6 +210,7 @@ pub struct AiProviderActionResult {
     pub ok: bool,
     pub message: String,
     pub provider: Option<AiProvider>,
+    pub sync_results: Vec<crate::provider_sync::SyncResult>,
 }
 
 fn now_secs() -> i64 {
@@ -261,9 +255,17 @@ pub fn list_providers() -> Result<Vec<AiProvider>, String> {
 }
 
 pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderActionResult, String> {
+    let _guard = crate::provider_sync::lock()?;
     let id = payload.id.trim().to_string();
     let name = payload.name.trim().to_string();
     let types = normalize_api_types(&payload.provider_types)?;
+    crate::provider_sync::validate_change(&id, &types)?;
+    if db::provider_sync_states()?
+        .iter()
+        .any(|(s, deleting, _, _)| s == &id && *deleting)
+    {
+        return Err("该供应商正在删除，不能修改或复用 ID".into());
+    }
     let has_anthropic = types.iter().any(|t| t == API_TYPE_ANTHROPIC);
     let has_openai = types
         .iter()
@@ -290,7 +292,7 @@ pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderAct
     if id.is_empty() {
         return Err("供应商 ID 不能为空".to_string());
     }
-    if id == crate::codex_env::OFFICIAL_OAUTH_PROVIDER_ID {
+    if id == crate::codex_env::OFFICIAL_OAUTH_PROVIDER_ID || id == crate::provider_sync::ROUTE_ID {
         return Err("该供应商 ID 保留给 Codex 官方 OAuth 登录，不能用于供应商".to_string());
     }
     if name.is_empty() {
@@ -415,261 +417,59 @@ pub fn upsert_provider(payload: AiProviderUpsertPayload) -> Result<AiProviderAct
         "供应商已更新".to_string()
     };
 
-    // 更新路径：反向同步所有关联此供应商的环境。
-    if !is_new {
-        // 解密明文 API Key 用于同步写入。
-        let plain_key = if !row.api_key_cipher.is_empty() {
-            crypto::decrypt_secret(
-                &master,
-                &row.api_key_salt,
-                &row.api_key_nonce,
-                &row.api_key_cipher,
-            )
-            .unwrap_or_default()
-        } else {
-            String::new()
-        };
-
-        // 根据勾选的 API 类型决定同步到 Claude 环境 / Codex 环境的 Base URL。
-        // 供应商库不再保存模型/档位，同步时不回写模型，避免覆盖环境已配值。
-        let has_anthropic_row = provider_types_contain(&row.provider_type, API_TYPE_ANTHROPIC);
-        let has_openai_row = provider_types_have_openai(&row.provider_type);
-        let claude_base = if has_anthropic_row {
-            row.base_url.clone()
-        } else {
-            String::new()
-        };
-        let codex_base = if has_openai_row {
-            row.openai_base_url.clone()
-        } else {
-            String::new()
-        };
-
-        let mut sync_parts: Vec<String> = Vec::new();
-
-        if !claude_base.is_empty() {
-            match crate::claude_env::sync_provider_to_envs(&row.id, &claude_base, &plain_key, None)
-            {
-                Ok((synced, errs)) if synced > 0 || !errs.is_empty() => {
-                    let part = if errs.is_empty() {
-                        format!("已同步 {} 个 Claude 环境", synced)
-                    } else {
-                        format!(
-                            "已同步 {} 个 Claude 环境（失败: {}）",
-                            synced,
-                            errs.join("、")
-                        )
-                    };
-                    sync_parts.push(part);
-                }
-                Ok(_) => {} // 无关联环境
-                Err(e) => {
-                    sync_parts.push(format!("Claude 环境同步失败: {}", e));
-                }
-            }
-        }
-
-        if !codex_base.is_empty() {
-            match crate::codex_env::sync_provider_to_envs(&row.id, None, &codex_base, &plain_key) {
-                Ok((synced, errs)) if synced > 0 || !errs.is_empty() => {
-                    let part = if errs.is_empty() {
-                        format!("已同步 {} 个 Codex 环境", synced)
-                    } else {
-                        format!(
-                            "已同步 {} 个 Codex 环境（失败: {}）",
-                            synced,
-                            errs.join("、")
-                        )
-                    };
-                    sync_parts.push(part);
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    sync_parts.push(format!("Codex 环境同步失败: {}", e));
-                }
-            }
-        }
-
-        // 同步到绑定的 opencode / pi / oh-my-pi / omo provider
-        match db::load_agent_provider_bindings(&row.id) {
-            Err(e) => {
-                sync_parts.push(format!("加载 Agent 绑定失败: {}", e));
-            }
-            Ok(bindings) => {
-                use crate::agent_model_config::ModelConfigAgent;
-                use crate::opencode_config::{AgentModelConfigView, UpsertProviderPayload};
-
-                // 预加载各 agent 的配置（每个 agent 只读一次文件，避免循环里重复读）
-                let mut opencode_view: Option<Result<AgentModelConfigView, String>> = None;
-                let mut pi_view: Option<Result<AgentModelConfigView, String>> = None;
-                let mut omp_view: Option<Result<AgentModelConfigView, String>> = None;
-                let mut omo_view: Option<Result<AgentModelConfigView, String>> = None;
-
-                for binding in &bindings {
-                    // 步骤 1：从缓存里找目标 provider，确定它的 api 格式
-                    let target_api: Option<String> = match binding.agent_type.as_str() {
-                        "opencode" => {
-                            if opencode_view.is_none() {
-                                opencode_view = Some(crate::opencode_config::get_config());
-                            }
-                            match opencode_view.as_ref().unwrap() {
-                                Ok(view) => view
-                                    .providers
-                                    .iter()
-                                    .find(|p| p.id == binding.agent_provider_id)
-                                    .and_then(|p| p.api.clone()),
-                                // 读配置失败：跳过这个绑定，不要硬同步
-                                Err(_) => continue,
-                            }
-                        }
-                        "pi" => {
-                            if pi_view.is_none() {
-                                pi_view =
-                                    Some(crate::pi_model_config::get_config(ModelConfigAgent::Pi));
-                            }
-                            match pi_view.as_ref().unwrap() {
-                                Ok(view) => view
-                                    .providers
-                                    .iter()
-                                    .find(|p| p.id == binding.agent_provider_id)
-                                    .and_then(|p| p.api.clone()),
-                                Err(_) => continue,
-                            }
-                        }
-                        "oh-my-pi" => {
-                            if omp_view.is_none() {
-                                omp_view = Some(crate::pi_model_config::get_config(
-                                    ModelConfigAgent::OhMyPi,
-                                ));
-                            }
-                            match omp_view.as_ref().unwrap() {
-                                Ok(view) => view
-                                    .providers
-                                    .iter()
-                                    .find(|p| p.id == binding.agent_provider_id)
-                                    .and_then(|p| p.api.clone()),
-                                Err(_) => continue,
-                            }
-                        }
-                        "omo" => {
-                            if omo_view.is_none() {
-                                omo_view =
-                                    Some(crate::pi_model_config::get_config(ModelConfigAgent::Omo));
-                            }
-                            match omo_view.as_ref().unwrap() {
-                                Ok(view) => view
-                                    .providers
-                                    .iter()
-                                    .find(|p| p.id == binding.agent_provider_id)
-                                    .and_then(|p| p.api.clone()),
-                                Err(_) => continue,
-                            }
-                        }
-                        other => {
-                            sync_parts.push(format!("未知的 agent 类型: {}", other));
-                            continue;
-                        }
-                    };
-
-                    // 步骤 2：根据目标 provider 的 api 格式，从全局供应商选对应侧的 base_url
-                    let base_url = match target_api.as_deref() {
-                        // OpenCode 的 api 取值
-                        Some("openai") => codex_base.clone(),
-                        Some("anthropic") => claude_base.clone(),
-                        // Pi / Oh-My-Pi 的 api 取值（openai-chat-completions 为旧版误写兼容）
-                        Some("openai-completions")
-                        | Some("openai-chat-completions")
-                        | Some("openai-responses") => codex_base.clone(),
-                        Some("anthropic-messages") => claude_base.clone(),
-                        // provider 不存在或 api 字段为空（新建场景）：
-                        // 优先 anthropic 侧，否则走 openai 侧。
-                        None => {
-                            if has_anthropic_row {
-                                claude_base.clone()
-                            } else {
-                                codex_base.clone()
-                            }
-                        }
-                        // 其他 api 类型（google/azure 等）：不同步 base_url，只同步 api_key
-                        _ => String::new(),
-                    };
-
-                    // 步骤 3：构造 payload，不传 api 字段（不覆盖用户已选的格式）
-                    let payload = UpsertProviderPayload {
-                        id: binding.agent_provider_id.clone(),
-                        previous_id: None,
-                        name: None,
-                        package: None,
-                        api: None, // 不动用户已选的 api 格式
-                        base_url: if base_url.is_empty() {
-                            None
-                        } else {
-                            Some(base_url)
-                        },
-                        timeout: None,
-                        chunk_timeout: None,
-                        api_key: Some(plain_key.clone()),
-                    };
-
-                    let result = match binding.agent_type.as_str() {
-                        "opencode" => crate::opencode_config::upsert_provider(payload)
-                            .map(|_| "OpenCode".to_string()),
-                        "pi" => {
-                            crate::pi_model_config::upsert_provider(ModelConfigAgent::Pi, payload)
-                                .map(|_| "Pi".to_string())
-                        }
-                        "oh-my-pi" => crate::pi_model_config::upsert_provider(
-                            ModelConfigAgent::OhMyPi,
-                            payload,
-                        )
-                        .map(|_| "Oh-My-Pi".to_string()),
-                        "omo" => {
-                            crate::pi_model_config::upsert_provider(ModelConfigAgent::Omo, payload)
-                                .map(|_| "OmO".to_string())
-                        }
-                        _ => unreachable!(),
-                    };
-                    match result {
-                        Ok(label) => {
-                            sync_parts
-                                .push(format!("已同步 {} 的 {}", label, binding.agent_provider_id));
-                        }
-                        Err(e) => {
-                            sync_parts.push(format!(
-                                "{} 的 {} 同步失败: {}",
-                                binding.agent_type, binding.agent_provider_id, e
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        if !sync_parts.is_empty() {
-            message.push('；');
-            message.push_str(&sync_parts.join("；"));
-        }
+    let results = crate::provider_sync::run_source(&row.id)?;
+    let failures: Vec<_> = results
+        .iter()
+        .filter(|r| !r.ok)
+        .map(|r| format!("{}：{}", r.target, r.message))
+        .collect();
+    if !results.is_empty() {
+        message.push_str(&format!(
+            "；已同步 {} 项",
+            results.iter().filter(|r| r.ok).count()
+        ));
+    }
+    if !failures.is_empty() {
+        message.push_str(&format!(
+            "；部分同步失败（将重试）：{}",
+            failures.join("；")
+        ));
     }
 
     Ok(AiProviderActionResult {
         ok: true,
         message,
         provider: Some(AiProvider::from(row)),
+        sync_results: results,
     })
 }
 
 pub fn delete_provider(id: String) -> Result<AiProviderActionResult, String> {
+    let _guard = crate::provider_sync::lock()?;
     let id = id.trim().to_string();
     if db::get_ai_provider_row(&id)?.is_none() {
         return Err("供应商不存在".to_string());
     }
-    // 清除关联此供应商的环境的 provider_id，防止悬挂引用。
-    let _ = db::clear_provider_id_on_envs(&id);
-    db::delete_ai_provider_row(&id)?;
+    db::mark_provider_sync(&id, true)?;
+    db::mark_provider_sync(crate::provider_sync::ROUTE_ID, false)?;
+    let results = crate::provider_sync::run_source(&id)?;
+    let errors: Vec<_> = results
+        .iter()
+        .filter(|r| !r.ok)
+        .map(|r| format!("{}：{}", r.target, r.message))
+        .collect();
     Ok(AiProviderActionResult {
         ok: true,
-        message: "供应商已删除".to_string(),
+        message: if errors.is_empty() {
+            "供应商及关联配置已删除".into()
+        } else {
+            format!(
+                "供应商已停用，部分配置清理失败（将重试）：{}",
+                errors.join("；")
+            )
+        },
         provider: None,
+        sync_results: results,
     })
 }
 
@@ -708,6 +508,8 @@ pub fn get_provider_secrets(id: String) -> Result<Vec<String>, String> {
 
 /// 批量更新供应商排序。`ids` 按目标顺序排列，索引即为新 sort_order。
 pub fn reorder_providers(ids: Vec<String>) -> Result<(), String> {
+    let _guard = crate::provider_sync::lock()?;
+    db::mark_provider_sync(crate::provider_sync::ROUTE_ID, false)?;
     let orders: Vec<(String, i64)> = ids
         .into_iter()
         .enumerate()

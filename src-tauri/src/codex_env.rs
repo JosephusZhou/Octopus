@@ -470,7 +470,7 @@ fn read_auth_openai_api_key(config_dir: &Path) -> String {
     if !path.is_file() {
         return String::new();
     }
-    let Ok(raw) = fs::read_to_string(&path) else {
+    let Ok(raw) = crate::config_sync_io::read_to_string(&path) else {
         return String::new();
     };
     let Ok(val) = serde_json::from_str::<JsonValue>(&raw) else {
@@ -513,7 +513,8 @@ fn apply_auth_json_edit(config_dir: &Path, api_key: Option<&str>) -> Result<bool
         if !path.is_file() {
             return Ok(false);
         }
-        let raw = fs::read_to_string(&path).map_err(|e| format!("读取 auth.json 失败: {}", e))?;
+        let raw = crate::config_sync_io::read_to_string(&path)
+            .map_err(|e| format!("读取 auth.json 失败: {}", e))?;
         let mut val: JsonValue = if raw.trim().is_empty() {
             JsonValue::Object(Map::new())
         } else {
@@ -544,7 +545,8 @@ fn apply_auth_json_edit(config_dir: &Path, api_key: Option<&str>) -> Result<bool
     }
 
     let mut val: JsonValue = if path.is_file() {
-        let raw = fs::read_to_string(&path).map_err(|e| format!("读取 auth.json 失败: {}", e))?;
+        let raw = crate::config_sync_io::read_to_string(&path)
+            .map_err(|e| format!("读取 auth.json 失败: {}", e))?;
         if raw.trim().is_empty() {
             JsonValue::Object(Map::new())
         } else {
@@ -599,7 +601,7 @@ fn read_managed_config(config_dir: &Path) -> ManagedConfig {
             has_auth_file,
         };
     }
-    let Ok(raw) = fs::read_to_string(&path) else {
+    let Ok(raw) = crate::config_sync_io::read_to_string(&path) else {
         return ManagedConfig {
             model: String::new(),
             model_provider: String::new(),
@@ -692,7 +694,8 @@ fn apply_managed_config_edit(
 
     let path = env_config_path(config_dir);
     let mut doc = if path.is_file() {
-        let raw = fs::read_to_string(&path).map_err(|e| format!("读取 config.toml 失败: {}", e))?;
+        let raw = crate::config_sync_io::read_to_string(&path)
+            .map_err(|e| format!("读取 config.toml 失败: {}", e))?;
         if raw.trim().is_empty() {
             toml_edit::DocumentMut::new()
         } else {
@@ -824,7 +827,8 @@ fn apply_official_oauth_config(config_dir: &Path) -> Result<Vec<String>, String>
         apply_managed_config_edit(config_dir, Some(""), Some(""), Some(""), Some(""))?;
     let path = env_config_path(config_dir);
     if path.is_file() {
-        let raw = fs::read_to_string(&path).map_err(|e| format!("读取 config.toml 失败: {}", e))?;
+        let raw = crate::config_sync_io::read_to_string(&path)
+            .map_err(|e| format!("读取 config.toml 失败: {}", e))?;
         let mut doc = raw
             .parse::<toml_edit::DocumentMut>()
             .map_err(|e| format!("解析 config.toml 失败: {}", e))?;
@@ -844,7 +848,7 @@ fn read_mcp_server_names(path: &Path) -> (BTreeSet<String>, bool) {
     if !path.is_file() {
         return (BTreeSet::new(), false);
     }
-    let Ok(raw) = fs::read_to_string(path) else {
+    let Ok(raw) = crate::config_sync_io::read_to_string(path) else {
         return (BTreeSet::new(), true);
     };
     if raw.trim().is_empty() {
@@ -866,8 +870,8 @@ fn read_mcp_servers_item(path: &Path) -> Result<Option<toml_edit::Item>, String>
     if !path.is_file() {
         return Ok(None);
     }
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("读取 {} 失败: {}", path.display(), e))?;
+    let raw = crate::config_sync_io::read_to_string(path)
+        .map_err(|e| format!("读取 {} 失败: {}", path.display(), e))?;
     if raw.trim().is_empty() {
         return Ok(None);
     }
@@ -880,8 +884,8 @@ fn read_mcp_servers_item(path: &Path) -> Result<Option<toml_edit::Item>, String>
 /// Replace entire [mcp_servers] table in target config.toml, preserving other keys.
 fn write_mcp_servers_item(path: &Path, servers: Option<&toml_edit::Item>) -> Result<(), String> {
     let mut doc = if path.is_file() {
-        let raw =
-            fs::read_to_string(path).map_err(|e| format!("读取 {} 失败: {}", path.display(), e))?;
+        let raw = crate::config_sync_io::read_to_string(path)
+            .map_err(|e| format!("读取 {} 失败: {}", path.display(), e))?;
         if raw.trim().is_empty() {
             toml_edit::DocumentMut::new()
         } else {
@@ -1572,29 +1576,47 @@ fn parse_aliases_from_block(content: &str) -> Vec<String> {
 }
 
 fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("无效路径: {}", path.display()))?;
-    fs::create_dir_all(parent).map_err(|e| format!("创建目录 {} 失败: {}", parent.display(), e))?;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-    let tmp = parent.join(format!(
-        ".{}.agentbuddy-{}-{}.tmp",
-        path.file_name().and_then(|s| s.to_str()).unwrap_or("tmp"),
-        std::process::id(),
-        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    {
-        let mut f = fs::File::create(&tmp).map_err(|e| format!("创建临时文件失败: {}", e))?;
-        f.write_all(content.as_bytes())
-            .map_err(|e| format!("写入临时文件失败: {}", e))?;
-        f.sync_all().ok();
+    let result = (|| -> Result<(), String> {
+        if crate::config_sync_io::unchanged(path, content)? {
+            return Ok(());
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("无效路径: {}", path.display()))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("创建目录 {} 失败: {}", parent.display(), e))?;
+        // Per-call atomic sequence keeps the temp path unique even for concurrent writers
+        // in the same process, so they never share a temp file and corrupt each other's write.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+        let tmp = parent.join(format!(
+            ".{}.agentbuddy-{}-{}.tmp",
+            path.file_name().and_then(|s| s.to_str()).unwrap_or("tmp"),
+            std::process::id(),
+            TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        {
+            let mut f = fs::File::create(&tmp).map_err(|e| format!("创建临时文件失败: {}", e))?;
+            f.write_all(content.as_bytes())
+                .map_err(|e| format!("写入临时文件失败: {}", e))?;
+            f.sync_all().ok();
+        }
+        if let Err(error) = crate::config_sync_io::before_replace(path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(error);
+        }
+        match fs::rename(&tmp, path) {
+            Ok(()) => crate::config_sync_io::replaced(path),
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                Err(format!("写入 {} 失败: {}", path.display(), e))
+            }
+        }
+    })();
+    if result.is_err() {
+        crate::config_sync_io::record(path, result.clone());
     }
-    fs::rename(&tmp, path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        format!("写入 {} 失败: {}", path.display(), e)
-    })?;
-    Ok(())
+    result
 }
 
 /// 用户可见提示/结果消息中的真实路径（便于用户确认具体目录）。
@@ -1770,6 +1792,12 @@ pub fn import_environment(payload: CodexEnvImportPayload) -> Result<CodexEnvActi
 }
 
 pub fn clone_environment(payload: CodexEnvClonePayload) -> Result<CodexEnvActionResult, String> {
+    let _guard = crate::provider_sync::lock()?;
+    if let Some(id) = payload.provider_id.as_deref().filter(|s| !s.is_empty()) {
+        if id != OFFICIAL_OAUTH_PROVIDER_ID {
+            crate::provider_sync::resolve(id, "openai_responses", false)?;
+        }
+    }
     ensure_default_environment()?;
     let source = db::get_codex_environment_row(&payload.source_id)?
         .ok_or_else(|| format!("源环境不存在: {}", payload.source_id))?;
@@ -1918,6 +1946,20 @@ pub fn clone_environment(payload: CodexEnvClonePayload) -> Result<CodexEnvAction
         message.push_str("新环境不含 auth / 会话历史，首次启动可能需要重新登录。");
     }
 
+    db::mark_binding_migrated(&format!("codex:{}", row.id))?;
+    if !row.provider_id.is_empty() && row.provider_id != OFFICIAL_OAUTH_PROVIDER_ID {
+        db::mark_provider_sync(&row.provider_id, false)?;
+        let items = crate::provider_sync::run_source(&row.provider_id)?;
+        let errors: Vec<_> = items
+            .iter()
+            .filter(|r| !r.ok)
+            .map(|r| format!("{}：{}", r.target, r.message))
+            .collect();
+        if !errors.is_empty() {
+            message.push_str(&format!("；部分同步失败（将重试）：{}", errors.join("；")));
+        }
+    }
+
     Ok(CodexEnvActionResult {
         ok: true,
         message,
@@ -1926,6 +1968,12 @@ pub fn clone_environment(payload: CodexEnvClonePayload) -> Result<CodexEnvAction
 }
 
 pub fn upsert_environment(payload: CodexEnvUpsertPayload) -> Result<CodexEnvActionResult, String> {
+    let _guard = crate::provider_sync::lock()?;
+    if let Some(id) = payload.provider_id.as_deref().filter(|s| !s.is_empty()) {
+        if id != OFFICIAL_OAUTH_PROVIDER_ID {
+            crate::provider_sync::resolve(id, "openai_responses", false)?;
+        }
+    }
     ensure_default_environment()?;
     let name = validate_name(&payload.name)?;
     let notes = payload.notes.unwrap_or_default().trim().to_string();
@@ -1938,6 +1986,13 @@ pub fn upsert_environment(payload: CodexEnvUpsertPayload) -> Result<CodexEnvActi
 
     let existing =
         db::get_codex_environment_row(&id)?.ok_or_else(|| format!("环境不存在: {}", id))?;
+
+    if payload.provider_id.is_none()
+        && !existing.provider_id.is_empty()
+        && existing.provider_id != OFFICIAL_OAUTH_PROVIDER_ID
+    {
+        crate::provider_sync::resolve(&existing.provider_id, "openai_responses", false)?;
+    }
     let previous_config_dir = existing.config_dir.clone();
 
     let (slug, config_dir, alias_name, is_default, source) = if existing.is_default {
@@ -2087,6 +2142,20 @@ pub fn upsert_environment(payload: CodexEnvUpsertPayload) -> Result<CodexEnvActi
         message.push_str("；已切换为官方 OAuth 登录，请通过该环境的 Codex 命令执行登录");
     }
 
+    db::mark_binding_migrated(&format!("codex:{}", row.id))?;
+    if !row.provider_id.is_empty() && row.provider_id != OFFICIAL_OAUTH_PROVIDER_ID {
+        db::mark_provider_sync(&row.provider_id, false)?;
+        let items = crate::provider_sync::run_source(&row.provider_id)?;
+        let errors: Vec<_> = items
+            .iter()
+            .filter(|r| !r.ok)
+            .map(|r| format!("{}：{}", r.target, r.message))
+            .collect();
+        if !errors.is_empty() {
+            message.push_str(&format!("；部分同步失败（将重试）：{}", errors.join("；")));
+        }
+    }
+
     Ok(CodexEnvActionResult {
         ok: true,
         message,
@@ -2094,42 +2163,8 @@ pub fn upsert_environment(payload: CodexEnvUpsertPayload) -> Result<CodexEnvActi
     })
 }
 
-/// 反向同步：将供应商最新的 model / base_url / api_key 写入所有关联此供应商的环境（含默认）。
-/// 由 ai_provider::upsert_provider 在更新路径调用。
-/// 返回 (已同步数量, 失败列表)。
-///
-/// 目录不存在的环境视为「尚未初始化」：跳过而不记失败，避免默认环境目录
-/// （如 `~/.codex` 尚未创建）给用户报一条无法消除的噪音。此时也不计入同步数量。
-pub fn sync_provider_to_envs(
-    provider_id: &str,
-    model: Option<&str>,
-    base_url: &str,
-    api_key: &str,
-) -> Result<(usize, Vec<String>), String> {
-    let envs = db::load_codex_envs_by_provider(provider_id)?;
-    let mut synced = 0usize;
-    let mut errors = Vec::new();
-    for env in &envs {
-        let dir = PathBuf::from(&env.config_dir);
-        if !dir.is_dir() {
-            // 目录不存在 = 该环境尚未初始化，跳过（不写、不计失败、不计入同步数量）。
-            continue;
-        }
-        // model_provider 设为空串：让 Codex 使用顶层 model + base_url 而非自定义 provider 表。
-        // 供应商库不再保存模型：model 传 None，保留环境已配的顶层 model。
-        match apply_managed_config_edit(&dir, model, Some(""), Some(base_url), Some(api_key)) {
-            Ok(_) => {
-                synced += 1;
-            }
-            Err(e) => {
-                errors.push(format!("{}（{}）", env.name, e));
-            }
-        }
-    }
-    Ok((synced, errors))
-}
-
 pub fn delete_environment(id: String, delete_files: bool) -> Result<CodexEnvActionResult, String> {
+    let _guard = crate::provider_sync::lock()?;
     ensure_default_environment()?;
     let existing =
         db::get_codex_environment_row(&id)?.ok_or_else(|| format!("环境不存在: {}", id))?;
@@ -2172,7 +2207,8 @@ fn rewrite_shell_block_from_db() -> Result<CodexEnvShellStatus, String> {
     let aliases: Vec<String> = items.iter().map(|(a, _)| a.clone()).collect();
     let zshrc_exists = zshrc.is_file();
     let current = if zshrc_exists {
-        fs::read_to_string(&zshrc).map_err(|e| format!("读取 shell 配置失败: {}", e))?
+        crate::config_sync_io::read_to_string(&zshrc)
+            .map_err(|e| format!("读取 shell 配置失败: {}", e))?
     } else {
         String::new()
     };
@@ -2314,7 +2350,8 @@ pub fn remove_all_aliases() -> Result<CodexEnvShellStatus, String> {
             ),
         ));
     }
-    let current = fs::read_to_string(&zshrc).map_err(|e| format!("读取 shell 配置失败: {}", e))?;
+    let current = crate::config_sync_io::read_to_string(&zshrc)
+        .map_err(|e| format!("读取 shell 配置失败: {}", e))?;
     let (next, removed) = remove_marker_block(&current);
     if removed {
         atomic_write(&zshrc, &next)?;
@@ -2354,8 +2391,8 @@ pub fn get_shell_status() -> Result<CodexEnvShellStatus, String> {
     };
     let zshrc_exists = zshrc.is_file();
     let (block_present, aliases) = if zshrc_exists {
-        let content =
-            fs::read_to_string(&zshrc).map_err(|e| format!("读取 shell 配置失败: {}", e))?;
+        let content = crate::config_sync_io::read_to_string(&zshrc)
+            .map_err(|e| format!("读取 shell 配置失败: {}", e))?;
         let present = content.contains(MARKER_BEGIN) && content.contains(MARKER_END);
         let aliases = if present {
             parse_aliases_from_block(&content)
@@ -2641,146 +2678,47 @@ pub fn sync_mcp_to_all_environments() -> Result<CodexEnvMcpSyncResult, String> {
 
 /* ===== Tests ===== */
 
+/// 反向同步：按绑定来源重写 Codex 环境的连接与默认模型有效性。
+///
+/// 来源模型列表为空则清除顶层 model；当前 model 已不在列表中时回退到来源第一项，
+/// 仍有效则保持不动。自定义 `model_providers` 表与其它 TOML 键一律保留。
+pub(crate) fn sync_bound_source(
+    config_dir: &str,
+    source: Option<&crate::provider_sync::Source>,
+) -> Result<(), String> {
+    let dir = Path::new(config_dir);
+    let path = env_config_path(dir);
+    if path.exists() {
+        let _: toml_edit::DocumentMut = crate::config_sync_io::read_to_string(&path)
+            .map_err(|e| e.to_string())?
+            .parse()
+            .map_err(|_| "config.toml 格式无效".to_string())?;
+    }
+    let Some(source) = source else {
+        apply_managed_config_edit(dir, Some(""), None, Some(""), Some(""))?;
+        return Ok(());
+    };
+    let current = read_managed_config(dir).model;
+    let model = if source.models.is_empty() {
+        Some(String::new())
+    } else if !current.is_empty() && !source.models.iter().any(|m| m.id == current) {
+        source.models.first().map(|m| m.id.clone())
+    } else {
+        None
+    };
+    apply_managed_config_edit(
+        dir,
+        model.as_deref(),
+        None,
+        Some(&source.base_url),
+        Some(&source.key),
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 与既有 db / ai_provider 测试同款：持 HOME 锁 + 唯一 id + 结束（含 panic）清理，
-    /// **不交换 HOME**。交换 HOME 会与未持锁的 HOME 读取者（如 agent_open）产生竞态，
-    /// 使整套测试间歇性失败（该竞态在本次修改前已存在）。
-    ///
-    /// 本测试不需要换 HOME：`sync_provider_to_envs` 按每行自己的 `config_dir` 写入。
-    fn unique_tag(tag: &str) -> String {
-        format!(
-            "__agentbuddy_test_{}_{}",
-            tag,
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        )
-    }
-
-    /// Drop 时删除本测试插入的环境行（panic 展开也会执行）。
-    struct EnvRowsGuard(Vec<String>);
-
-    impl Drop for EnvRowsGuard {
-        fn drop(&mut self) {
-            for id in &self.0 {
-                let _ = db::delete_codex_environment_row(id);
-            }
-        }
-    }
-
-    fn env_row(
-        id: &str,
-        config_dir: &Path,
-        is_default: bool,
-        provider_id: &str,
-    ) -> CodexEnvironmentRow {
-        CodexEnvironmentRow {
-            id: id.into(),
-            name: format!("环境-{}", id),
-            slug: id.into(),
-            config_dir: config_dir.to_string_lossy().to_string(),
-            alias_name: format!("codex-{}", id),
-            is_default,
-            source: "managed".into(),
-            notes: String::new(),
-            alias_installed: false,
-            provider_id: provider_id.into(),
-            created_at: 0,
-            updated_at: 0,
-        }
-    }
-
-    /// 回归：供应商被编辑时，默认环境必须与非默认环境一起被反向同步。
-    /// 旧实现按 `is_default = 0` 查找环境，导致默认环境被静默跳过。
-    #[test]
-    fn sync_provider_to_envs_includes_default_environment() {
-        let _home_guard = crate::config::lock_home_for_test();
-        let tag = unique_tag("codex_sync_provider");
-        let provider_id = format!("{}-prov", tag);
-        let base = std::env::temp_dir().join(&tag);
-        let default_dir = base.join("default");
-        let work_dir = base.join("work");
-        let missing_dir = base.join("missing");
-        let mut rows = EnvRowsGuard(Vec::new());
-
-        for dir in [&default_dir, &work_dir] {
-            fs::create_dir_all(dir).unwrap();
-            fs::write(
-                dir.join("config.toml"),
-                "model = \"gpt-old\"\nopenai_base_url = \"https://old.example/v1\"\n",
-            )
-            .unwrap();
-            fs::write(dir.join("auth.json"), r#"{"OPENAI_API_KEY":"old-token"}"#).unwrap();
-        }
-
-        let default_id = format!("{}-default", tag);
-        let work_id = format!("{}-work", tag);
-        let missing_id = format!("{}-missing", tag);
-        for (id, dir, is_default) in [
-            (&default_id, &default_dir, true),
-            (&work_id, &work_dir, false),
-            // 目录不存在的环境（例如默认环境尚未初始化）不得计入同步数量或失败列表。
-            (&missing_id, &missing_dir, false),
-        ] {
-            db::upsert_codex_environment_row(&env_row(id, dir, is_default, &provider_id)).unwrap();
-            rows.0.push(id.clone());
-        }
-
-        // 供应商库不再保存模型：同步只回写 URL/Key，保留环境已配的顶层 model。
-        let (synced, errors) = sync_provider_to_envs(
-            &provider_id,
-            None,
-            "https://new.example/v1",
-            "new-secret-token",
-        )
-        .unwrap();
-
-        assert_eq!(
-            synced, 2,
-            "默认 + 非默认环境都应被同步；errors={:?}",
-            errors
-        );
-        assert!(
-            errors.is_empty(),
-            "不应有失败项（含目录不存在）: {:?}",
-            errors
-        );
-
-        for dir in [&default_dir, &work_dir] {
-            let cfg = read_managed_config(dir);
-            assert_eq!(cfg.model, "gpt-old", "{} 不应覆盖模型", dir.display());
-            assert_eq!(
-                cfg.base_url,
-                "https://new.example/v1",
-                "{} 未同步 Base URL",
-                dir.display()
-            );
-            assert_eq!(
-                cfg.bearer_token,
-                "new-secret-token",
-                "{} 未同步 API Key",
-                dir.display()
-            );
-        }
-
-        // 未关联任何环境时保持无副作用：清空关联后再同步，不写不报错。
-        db::clear_provider_id_on_envs(&provider_id).unwrap();
-        let (synced, errors) = sync_provider_to_envs(
-            &provider_id,
-            None,
-            "https://other.example/v1",
-            "other-token",
-        )
-        .unwrap();
-        assert_eq!(synced, 0, "无关联环境时不应同步");
-        assert!(errors.is_empty(), "无关联环境时不应报错: {:?}", errors);
-
-        let _ = fs::remove_dir_all(&base);
-    }
 
     #[test]
     fn marker_block_append_and_replace() {
@@ -2864,7 +2802,7 @@ command = "echo"
         let item = src_doc.get("mcp_servers").cloned();
 
         write_mcp_servers_item(&path, item.as_ref()).unwrap();
-        let raw = fs::read_to_string(&path).unwrap();
+        let raw = crate::config_sync_io::read_to_string(&path).unwrap();
         assert!(
             raw.contains("model = \"gpt-5.5\"")
                 || raw.contains("model=\"gpt-5.5\"")
@@ -2895,7 +2833,7 @@ command = "echo"
         assert!(apply_auth_json_edit(&dir, Some("sk-test-1")).unwrap());
         let auth = dir.join("auth.json");
         assert!(auth.is_file());
-        let raw = fs::read_to_string(&auth).unwrap();
+        let raw = crate::config_sync_io::read_to_string(&auth).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["OPENAI_API_KEY"], "sk-test-1");
         assert_eq!(read_auth_openai_api_key(&dir), "sk-test-1");
@@ -2911,7 +2849,7 @@ command = "echo"
         )
         .unwrap();
         assert!(apply_auth_json_edit(&dir, Some("sk-test-2")).unwrap());
-        let raw = fs::read_to_string(&auth).unwrap();
+        let raw = crate::config_sync_io::read_to_string(&auth).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["OPENAI_API_KEY"], "sk-test-2");
         assert_eq!(v["other"], "keep-me");
@@ -2921,7 +2859,7 @@ command = "echo"
 
         // 清除 OPENAI_API_KEY 但保留其它键
         assert!(apply_auth_json_edit(&dir, Some("")).unwrap());
-        let raw = fs::read_to_string(&auth).unwrap();
+        let raw = crate::config_sync_io::read_to_string(&auth).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert!(v.get("OPENAI_API_KEY").is_none());
         assert_eq!(v["other"], "keep-me");
@@ -2999,14 +2937,17 @@ experimental_bearer_token = "legacy-token"
         fs::write(dir.join("config.toml"), "model = \"gpt\"\nmodel_provider = \"custom\"\nopenai_base_url = \"https://example.invalid/v1\"\n\n[model_providers.custom]\nname = \"custom\"\nbase_url = \"https://example.invalid/v1\"\n").unwrap();
         let changed = apply_official_oauth_config(&dir).unwrap();
         assert!(changed.contains(&"Token".to_string()));
-        let auth: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(dir.join("auth.json")).unwrap()).unwrap();
+        let auth: serde_json::Value = serde_json::from_str(
+            &crate::config_sync_io::read_to_string(dir.join("auth.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(auth["tokens"]["id_token"], "oauth");
         assert!(auth.get("OPENAI_API_KEY").is_none());
-        let doc: toml_edit::DocumentMut = fs::read_to_string(dir.join("config.toml"))
-            .unwrap()
-            .parse()
-            .unwrap();
+        let doc: toml_edit::DocumentMut =
+            crate::config_sync_io::read_to_string(dir.join("config.toml"))
+                .unwrap()
+                .parse()
+                .unwrap();
         assert!(doc.get("model").is_none());
         assert!(doc.get("model_provider").is_none());
         assert!(doc.get("openai_base_url").is_none());
@@ -3031,10 +2972,11 @@ experimental_bearer_token = "legacy-token"
         .unwrap();
         copy_core(&source, &target, false, false, false).unwrap();
         apply_official_oauth_config(&target).unwrap();
-        let doc: toml_edit::DocumentMut = fs::read_to_string(target.join("config.toml"))
-            .unwrap()
-            .parse()
-            .unwrap();
+        let doc: toml_edit::DocumentMut =
+            crate::config_sync_io::read_to_string(target.join("config.toml"))
+                .unwrap()
+                .parse()
+                .unwrap();
         assert!(doc.get("model_provider").is_none());
         assert!(doc.get("model_providers").is_none());
         let _ = fs::remove_dir_all(&base);

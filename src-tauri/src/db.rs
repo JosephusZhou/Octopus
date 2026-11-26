@@ -125,6 +125,26 @@ fn get_connection() -> Result<Connection, String> {
             agent_provider_id TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             PRIMARY KEY (ai_provider_id, agent_type, agent_provider_id)
+         );
+         CREATE TABLE IF NOT EXISTS provider_sync_state (
+            source_id TEXT PRIMARY KEY, deleting INTEGER NOT NULL DEFAULT 0,
+            pending INTEGER NOT NULL DEFAULT 1, last_error TEXT NOT NULL DEFAULT ''
+         );
+         CREATE TABLE IF NOT EXISTS provider_binding_intents (
+            agent_type TEXT NOT NULL, target_id TEXT NOT NULL, source_id TEXT NOT NULL,
+            previous_id TEXT NOT NULL, payload_json TEXT NOT NULL,
+            PRIMARY KEY(agent_type, target_id)
+         );
+         CREATE TABLE IF NOT EXISTS provider_sync_files (
+            source_id TEXT NOT NULL, target TEXT NOT NULL, file_path TEXT NOT NULL,
+            pending INTEGER NOT NULL, last_error TEXT NOT NULL,
+            PRIMARY KEY(source_id, target, file_path)
+         );
+         CREATE TABLE IF NOT EXISTS provider_binding_migration_status (
+            id INTEGER PRIMARY KEY CHECK(id=1), last_error TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS provider_binding_migration (
+            target TEXT PRIMARY KEY
          );",
     )
     .map_err(|e| format!("Failed to create table: {}", e))?;
@@ -204,6 +224,18 @@ fn get_connection() -> Result<Connection, String> {
         "TEXT NOT NULL DEFAULT ''",
     );
 
+    ensure_column(
+        &conn,
+        "provider_sync_state",
+        "attempts",
+        "INTEGER NOT NULL DEFAULT 0",
+    );
+    ensure_column(
+        &conn,
+        "provider_sync_state",
+        "next_retry",
+        "INTEGER NOT NULL DEFAULT 0",
+    );
     // Migration: provider route toggles are now unified (no per-route-group
     // switch). Fold legacy 'claude_code'/'codex' rows into a single 'unified'
     // row per provider. Idempotent and cheap; runs on every open.
@@ -1132,30 +1164,6 @@ pub fn load_codex_envs_by_provider(provider_id: &str) -> Result<Vec<CodexEnviron
     Ok(rows)
 }
 
-/// Clear provider_id on all environments linked to the given provider (used on provider delete).
-///
-/// Deliberately has **no** `is_default` filter: deleting a provider must not leave
-/// a dangling `provider_id` on the default environment either. Locked by
-/// `envs_by_provider_include_default_and_clear_covers_default`.
-pub fn clear_provider_id_on_envs(provider_id: &str) -> Result<(), String> {
-    let conn = get_connection()?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-    conn.execute(
-        "UPDATE claude_environments SET provider_id = '', updated_at = ?1 WHERE provider_id = ?2",
-        params![now, provider_id],
-    )
-    .map_err(|e| format!("Failed to clear claude_env provider_id: {}", e))?;
-    conn.execute(
-        "UPDATE codex_environments SET provider_id = '', updated_at = ?1 WHERE provider_id = ?2",
-        params![now, provider_id],
-    )
-    .map_err(|e| format!("Failed to clear codex_env provider_id: {}", e))?;
-    Ok(())
-}
-
 /* ===== AI providers persistence ===== */
 
 fn row_to_ai_provider(row: &rusqlite::Row<'_>) -> rusqlite::Result<AiProviderRow> {
@@ -1189,7 +1197,8 @@ pub fn load_ai_provider_rows() -> Result<Vec<AiProviderRow>, String> {
                     notes, created_at, updated_at, sort_order, api_keys_json, custom_models_json,
                     openai_base_url
              FROM ai_providers
-             ORDER BY sort_order ASC, created_at ASC",
+             WHERE id NOT IN (SELECT source_id FROM provider_sync_state WHERE deleting = 1)
+             ORDER BY sort_order ASC, id ASC",
         )
         .map_err(|e| format!("Failed to prepare ai_providers query: {}", e))?;
 
@@ -1221,7 +1230,8 @@ pub fn get_ai_provider_row(id: &str) -> Result<Option<AiProviderRow>, String> {
 }
 
 pub fn upsert_ai_provider_row(row: &AiProviderRow) -> Result<(), String> {
-    let conn = get_connection()?;
+    let mut connection = get_connection()?;
+    let conn = connection.transaction().map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT INTO ai_providers
             (id, name, provider_type, base_url, api_key_salt, api_key_nonce,
@@ -1267,11 +1277,29 @@ pub fn upsert_ai_provider_row(row: &AiProviderRow) -> Result<(), String> {
         ],
     )
     .map_err(|e| format!("Failed to upsert ai_provider {}: {}", row.id, e))?;
-    Ok(())
+    conn.execute("INSERT INTO provider_sync_state(source_id, pending) VALUES (?1, 1) ON CONFLICT(source_id) DO UPDATE SET pending = 1", [&row.id]).map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO provider_sync_state(source_id, pending) VALUES ('__route_aggregation__', 1) ON CONFLICT(source_id) DO UPDATE SET pending = 1", []).map_err(|e| e.to_string())?;
+    conn.commit().map_err(|e| e.to_string())
 }
 
 pub fn delete_ai_provider_row(id: &str) -> Result<(), String> {
-    let conn = get_connection()?;
+    let mut connection = get_connection()?;
+    let conn = connection.transaction().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE claude_environments SET provider_id='',updated_at=unixepoch() WHERE provider_id=?1",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE codex_environments SET provider_id='',updated_at=unixepoch() WHERE provider_id=?1",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM provider_route_toggle WHERE provider_id=?1",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM ai_providers WHERE id = ?1", params![id])
         .map_err(|e| format!("Failed to delete ai_provider {}: {}", id, e))?;
     // Cascade: remove all agent bindings for this provider.
@@ -1280,7 +1308,16 @@ pub fn delete_ai_provider_row(id: &str) -> Result<(), String> {
         params![id],
     )
     .map_err(|e| format!("Failed to delete agent bindings for {}: {}", id, e))?;
-    Ok(())
+    conn.execute(
+        "DELETE FROM provider_binding_intents WHERE source_id=?1",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM provider_sync_files WHERE source_id=?1", [id])
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM provider_sync_state WHERE source_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    conn.commit().map_err(|e| e.to_string())
 }
 
 /// Batch-update sort_order for ai_providers. `orders` is a list of (id, sort_order).
@@ -1336,7 +1373,9 @@ pub fn upsert_provider_route_toggle(
     enabled: bool,
     sort_order: i32,
 ) -> Result<(), String> {
-    let conn = get_connection()?;
+    let _guard = crate::provider_sync::lock()?;
+    let mut connection = get_connection()?;
+    let conn = connection.transaction().map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT INTO provider_route_toggle (provider_id, route_group, enabled, sort_order)
          VALUES (?1, 'unified', ?2, ?3)
@@ -1346,19 +1385,8 @@ pub fn upsert_provider_route_toggle(
         params![provider_id, enabled as i32, sort_order],
     )
     .map_err(|e| format!("Failed to upsert route_toggle for {}: {}", provider_id, e))?;
-    Ok(())
-}
-
-/// Delete toggle rows for a provider that no longer exists.
-#[allow(dead_code)]
-pub fn delete_provider_route_toggles(provider_id: &str) -> Result<(), String> {
-    let conn = get_connection()?;
-    conn.execute(
-        "DELETE FROM provider_route_toggle WHERE provider_id = ?1",
-        params![provider_id],
-    )
-    .map_err(|e| format!("Failed to delete route_toggle for {}: {}", provider_id, e))?;
-    Ok(())
+    conn.execute("INSERT INTO provider_sync_state(source_id,pending) VALUES ('__route_aggregation__',1) ON CONFLICT(source_id) DO UPDATE SET pending=1,attempts=0,next_retry=0", []).map_err(|e|e.to_string())?;
+    conn.commit().map_err(|e| e.to_string())
 }
 
 /* ===== Agent provider bindings (全局供应商 → opencode/pi provider) ===== */
@@ -1381,7 +1409,13 @@ pub fn upsert_agent_provider_binding(
     agent_type: &str,
     agent_provider_id: &str,
 ) -> Result<(), String> {
-    let conn = get_connection()?;
+    let mut connection = get_connection()?;
+    let conn = connection.transaction().map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM agent_provider_bindings WHERE agent_type = ?1 AND agent_provider_id = ?2",
+        params![agent_type, agent_provider_id],
+    )
+    .map_err(|e| e.to_string())?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| format!("Clock error: {}", e))?
@@ -1394,7 +1428,7 @@ pub fn upsert_agent_provider_binding(
         params![ai_provider_id, agent_type, agent_provider_id, now],
     )
     .map_err(|e| format!("Failed to upsert agent binding: {}", e))?;
-    Ok(())
+    conn.commit().map_err(|e| e.to_string())
 }
 
 /// Remove a single binding.
@@ -1591,8 +1625,8 @@ mod tests {
     }
 
     /// 回归：默认环境同样可以绑定供应商，按供应商查找环境时必须包含它；
-    /// 同时锁定 `clear_provider_id_on_envs` 不带 `is_default` 过滤（删除供应商后
-    /// 默认环境不得留下悬挂 provider_id）。
+    /// 同时锁定真实删除路径 `delete_ai_provider_row` 不带 `is_default` 过滤
+    /// （删除供应商后默认环境不得留下悬挂 provider_id）。
     #[test]
     fn envs_by_provider_include_default_and_clear_covers_default() {
         let _home_guard = crate::config::lock_home_for_test();
@@ -1678,7 +1712,7 @@ mod tests {
         );
 
         // 删除供应商路径：默认环境的 provider_id 也必须被清空。
-        clear_provider_id_on_envs(&prov).unwrap();
+        delete_ai_provider_row(&prov).unwrap();
         for id in [
             &claude_default_id,
             &claude_work_id,
@@ -1764,4 +1798,185 @@ mod tests {
         assert_eq!(manual.display_name, "My Private Agent");
         assert_eq!(manual.icon, "MP");
     }
+}
+
+/// Retry metadata contains no credentials or file contents.
+pub fn mark_provider_sync(source: &str, deleting: bool) -> Result<(), String> {
+    let conn = get_connection()?;
+    conn.execute("INSERT INTO provider_sync_state(source_id, deleting, pending) VALUES (?1, ?2, 1) ON CONFLICT(source_id) DO UPDATE SET deleting = MAX(deleting, excluded.deleting), pending = 1, attempts = 0, next_retry = 0", params![source, deleting as i32]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+pub fn provider_sync_states() -> Result<Vec<(String, bool, bool, String)>, String> {
+    let conn = get_connection()?;
+    let mut stmt = conn.prepare("SELECT source_id, deleting, pending, last_error FROM provider_sync_state ORDER BY source_id").map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get::<_, i32>(1)? != 0,
+                r.get::<_, i32>(2)? != 0,
+                r.get(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+pub fn finish_provider_sync(source: &str, error: &str) -> Result<(), String> {
+    get_connection()?
+        .execute(
+            "UPDATE provider_sync_state SET pending = ?2, last_error = ?3, attempts = CASE WHEN ?2 = 0 THEN 0 ELSE attempts + 1 END, next_retry = CASE WHEN ?2 = 0 THEN 0 ELSE unixepoch() + MIN(300, 30 * (1 << MIN(attempts, 4))) END WHERE source_id = ?1",
+            params![source, (!error.is_empty()) as i32, error],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+pub fn clear_agent_target_binding(agent: &str, target: &str) -> Result<(), String> {
+    let mut connection = get_connection()?;
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM provider_binding_intents WHERE agent_type=?1 AND target_id=?2",
+        params![agent, target],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM agent_provider_bindings WHERE agent_type = ?1 AND agent_provider_id = ?2",
+        params![agent, target],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    mark_binding_migrated(&format!("agent:{agent}:{target}"))
+}
+pub fn agent_target_source(agent: &str, target: &str) -> Result<Option<String>, String> {
+    let conn = get_connection()?;
+    let mut stmt = conn.prepare("SELECT ai_provider_id FROM agent_provider_bindings WHERE agent_type = ?1 AND agent_provider_id = ?2").map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![agent, target], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    match rows.len() {
+        0 => Ok(None),
+        1 => Ok(rows.into_iter().next()),
+        _ => Err(format!("{agent}/{target} 存在多个历史绑定，请重新选择来源")),
+    }
+}
+pub fn binding_migrated(target: &str) -> Result<bool, String> {
+    get_connection()?
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM provider_binding_migration WHERE target = ?1)",
+            [target],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+}
+pub fn mark_binding_migrated(target: &str) -> Result<(), String> {
+    get_connection()?
+        .execute(
+            "INSERT OR IGNORE INTO provider_binding_migration(target) VALUES (?1)",
+            [target],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn provider_sync_due(id: &str) -> Result<bool, String> {
+    get_connection()?
+        .query_row(
+            "SELECT next_retry <= unixepoch() FROM provider_sync_state WHERE source_id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+}
+
+/// Journal only non-secret provider metadata before the first native file write.
+/// Binding, pending source and recovery intent are committed together.
+pub fn begin_binding_intent(
+    source: &str,
+    agent: &str,
+    target: &str,
+    previous: &str,
+    payload: &str,
+) -> Result<(), String> {
+    let mut connection = get_connection()?;
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM provider_binding_intents WHERE agent_type=?1 AND target_id IN (?2,?3)",
+        params![agent, target, previous],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM agent_provider_bindings WHERE agent_type=?1 AND agent_provider_id IN (?2,?3)",
+        params![agent, target, previous],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute("INSERT INTO agent_provider_bindings(ai_provider_id,agent_type,agent_provider_id,created_at) VALUES (?1,?2,?3,unixepoch())",params![source,agent,target]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO provider_binding_intents(agent_type,target_id,source_id,previous_id,payload_json) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(agent_type,target_id) DO UPDATE SET source_id=excluded.source_id,previous_id=excluded.previous_id,payload_json=excluded.payload_json",params![agent,target,source,previous,payload]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO provider_sync_state(source_id,pending) VALUES (?1,1) ON CONFLICT(source_id) DO UPDATE SET pending=1,attempts=0,next_retry=0",[source]).map_err(|e|e.to_string())?;
+    for id in [previous, target] {
+        tx.execute(
+            "INSERT OR IGNORE INTO provider_binding_migration(target) VALUES (?1)",
+            [format!("agent:{agent}:{id}")],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+pub fn binding_intents(source: &str) -> Result<Vec<(String, String, String)>, String> {
+    let conn = get_connection()?;
+    let mut stmt=conn.prepare("SELECT agent_type,target_id,payload_json FROM provider_binding_intents WHERE source_id=?1 ORDER BY agent_type,target_id").map_err(|e|e.to_string())?;
+    let rows = stmt
+        .query_map([source], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+pub fn finish_binding_intent(agent: &str, target: &str) -> Result<(), String> {
+    get_connection()?
+        .execute(
+            "DELETE FROM provider_binding_intents WHERE agent_type=?1 AND target_id=?2",
+            params![agent, target],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+pub fn record_sync_file(
+    source: &str,
+    target: &str,
+    path: &str,
+    result: &Result<(), String>,
+) -> Result<(), String> {
+    let error = result.as_ref().err().map(String::as_str).unwrap_or("");
+    get_connection()?.execute("INSERT INTO provider_sync_files(source_id,target,file_path,pending,last_error) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(source_id,target,file_path) DO UPDATE SET pending=excluded.pending,last_error=excluded.last_error",params![source,target,path,result.is_err() as i32,error]).map_err(|e|e.to_string())?;
+    Ok(())
+}
+pub fn failed_sync_files() -> Result<Vec<(String, String, String)>, String> {
+    let conn = get_connection()?;
+    let mut stmt=conn.prepare("SELECT target,file_path,last_error FROM provider_sync_files WHERE pending=1 ORDER BY source_id,target,file_path").map_err(|e|e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+pub fn clear_target_file_errors(source: &str, target: &str) -> Result<(), String> {
+    get_connection()?.execute("UPDATE provider_sync_files SET pending=0,last_error='' WHERE source_id=?1 AND target=?2",params![source,target]).map_err(|e|e.to_string())?;
+    Ok(())
+}
+
+pub fn set_binding_migration_error(error: &str) -> Result<(), String> {
+    get_connection()?.execute("INSERT INTO provider_binding_migration_status(id,last_error) VALUES (1,?1) ON CONFLICT(id) DO UPDATE SET last_error=excluded.last_error",[error]).map_err(|e|e.to_string())?;
+    Ok(())
+}
+pub fn binding_migration_error() -> Result<String, String> {
+    get_connection()?
+        .query_row(
+            "SELECT last_error FROM provider_binding_migration_status WHERE id=1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map(|v| v.unwrap_or_default())
+        .map_err(|e| e.to_string())
 }

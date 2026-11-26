@@ -16,7 +16,7 @@ export async function invokeUpsert(
 
 export async function invokeDelete(id: string): Promise<AiProviderActionResult> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke("delete_ai_provider", { id }) as Promise<AiProviderActionResult>;
+  return invoke("delete_ai_provider", { id, confirmed: true }) as Promise<AiProviderActionResult>;
 }
 
 /** 按需拉取明文 API Key（编辑表单用）；列表永不调用。 */

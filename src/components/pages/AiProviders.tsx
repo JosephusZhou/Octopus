@@ -1,3 +1,5 @@
+import { useLatestRequest } from "@/lib/useLatestRequest";
+import { useProviderSourceChanges } from "@/lib/providerSource";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useStatusMessage } from "@/lib/useStatusMessage";
 import { Toast } from "@/components/Toast";
@@ -139,13 +141,21 @@ export default function AiProviders() {
   const [typeFilter, setTypeFilter] = useState<"all" | ApiType>("all");
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<
+    Array<{ target: string; ok: boolean; message: string }>
+  >([]);
+  const [syncRetrying, setSyncRetrying] = useState(false);
+  const [deleteImpact, setDeleteImpact] = useState<string[] | null>(null);
+  const [deleteImpactError, setDeleteImpactError] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useStatusMessage();
   const [formError, setFormError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const formDismiss = useOverlayDismiss(() => setShowForm(false), !isSaving);
+  const formDismiss = useOverlayDismiss(() => {
+    closeForm();
+  }, !isSaving);
   const deleteDismiss = useOverlayDismiss(() => setDeleteTarget(null), !isDeleting);
 
   const [formName, setFormName] = useState("");
@@ -171,7 +181,6 @@ export default function AiProviders() {
 
   const idCounter = useRef(0);
   const nameInputRef = useRef<HTMLInputElement>(null);
-  const hasLoaded = useRef(false);
 
   // 拖拽排序状态（基于 Pointer Events）
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -194,21 +203,43 @@ export default function AiProviders() {
     return `provider-${Date.now()}-${idCounter.current}`;
   }, []);
 
+  const saveRequest = useLatestRequest(showForm);
+  const deleteRequest = useLatestRequest(deleteTarget);
+  const listRequest = useLatestRequest();
+  const secretRequest = useLatestRequest(`${showForm}:${editingId}`);
+  const pickerRequest = useLatestRequest(
+    `${showForm}:${editingId}:${formBaseUrl}:${formOpenaiBaseUrl}:${formApiKeys.join("\u0000")}`,
+  );
+  useEffect(() => {
+    setPickerLoading(false);
+  }, [showForm, editingId, formBaseUrl, formOpenaiBaseUrl, formApiKeys]);
+
+  const closeForm = () => {
+    secretRequest.invalidate();
+    pickerRequest.invalidate();
+    setShowForm(false);
+  };
+
   const loadProviders = useCallback(async () => {
+    const current = listRequest.begin();
     try {
       const rows = await invokeList();
+      if (!current()) return;
       setProviders(rows);
+      const { invoke } = await import("@tauri-apps/api/core");
+      const status = await invoke<Array<{ target: string; ok: boolean; message: string }>>(
+        "get_provider_sync_status",
+      );
+      if (current()) setSyncStatus(status);
     } catch (err) {
-      setStatusMsg(`加载供应商失败：${err instanceof Error ? err.message : String(err)}`);
-      setProviders([]);
+      if (current())
+        setStatusMsg(`加载供应商失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      setLoaded(true);
+      if (current()) setLoaded(true);
     }
   }, []);
 
   useEffect(() => {
-    if (hasLoaded.current) return;
-    hasLoaded.current = true;
     void loadProviders();
   }, [loadProviders]);
 
@@ -266,7 +297,7 @@ export default function AiProviders() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (!isSaving) setShowForm(false);
+        if (!isSaving) closeForm();
         if (!isDeleting) setDeleteTarget(null);
       }
     };
@@ -292,12 +323,18 @@ export default function AiProviders() {
   }, []);
 
   const openAdd = useCallback(() => {
+    secretRequest.setScope("true:null");
+    secretRequest.invalidate();
+    pickerRequest.invalidate();
     setEditingId(null);
     resetForm();
     setShowForm(true);
   }, [resetForm]);
 
   const openEdit = useCallback((p: AiProvider) => {
+    secretRequest.setScope(`true:${p.id}`);
+    const current = secretRequest.begin();
+    pickerRequest.invalidate();
     setEditingId(p.id);
     setFormName(p.name);
     setFormTypes(new Set(p.providerTypes));
@@ -318,16 +355,21 @@ export default function AiProviders() {
     if (p.hasApiKey) {
       invokeGetSecrets(p.id)
         .then((secrets) => {
-          if (secrets.length > 0) {
+          if (current() && secrets.length > 0) {
             setFormApiKeys(secrets);
           }
         })
-        .catch(() => setFormError("读取密钥失败，请手动填写 API Key"));
+        .catch(() => {
+          if (current()) setFormError("读取密钥失败，请手动填写 API Key");
+        });
     }
   }, []);
 
   // 复制：以新建弹窗打开并回填原供应商数据；API Key 自动载入
   const openClone = useCallback((p: AiProvider) => {
+    secretRequest.setScope("true:null");
+    const current = secretRequest.begin();
+    pickerRequest.invalidate();
     setEditingId(null);
     setFormName(`${p.name} 副本`);
     setFormTypes(new Set(p.providerTypes));
@@ -347,11 +389,13 @@ export default function AiProviders() {
     if (p.hasApiKey) {
       invokeGetSecrets(p.id)
         .then((secrets) => {
-          if (secrets.length > 0) {
+          if (current() && secrets.length > 0) {
             setFormApiKeys(secrets);
           }
         })
-        .catch(() => setFormError("原供应商密钥读取失败，请手动填写 API Key"));
+        .catch(() => {
+          if (current()) setFormError("原供应商密钥读取失败，请手动填写 API Key");
+        });
     }
   }, []);
 
@@ -360,6 +404,7 @@ export default function AiProviders() {
   // 结果仅在选择面板里暂存，"应用"按钮才会把它落到 formCustomModels 并由
   // invokeUpsert 写入 DB。保存后再次打开表单依然只显示 customModels。）。
   const fetchModelsForPicker = useCallback(async () => {
+    const current = pickerRequest.begin();
     // 优先 Anthropic 侧 Base URL；仅勾 OpenAI 时用 OpenAI 侧。
     const baseUrl = (formHasAnthropic ? formBaseUrl : formOpenaiBaseUrl).trim();
     if (!baseUrl) {
@@ -374,7 +419,9 @@ export default function AiProviders() {
         const secrets = await invokeGetSecrets(editingId);
         apiKey = secrets[0]?.trim() || "";
       }
+      if (!current()) return;
       const models = await invokeFetchRemoteModels(baseUrl, apiKey || undefined);
+      if (!current()) return;
       if (models.length === 0) {
         setStatusMsg("远端未返回可用模型");
         return;
@@ -386,9 +433,10 @@ export default function AiProviders() {
       setShowModelPicker(true);
       setStatusMsg(`已拉取 ${models.length} 个远端模型`);
     } catch (err) {
+      if (!current()) return;
       setStatusMsg(`拉取模型失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      setPickerLoading(false);
+      if (current()) setPickerLoading(false);
     }
   }, [
     formHasAnthropic,
@@ -478,6 +526,7 @@ export default function AiProviders() {
       return;
     }
 
+    const current = saveRequest.begin();
     setIsSaving(true);
     setFormError("");
     try {
@@ -492,8 +541,10 @@ export default function AiProviders() {
         customModels: formCustomModels,
         notes: formNotes.trim(),
       });
+      if (!current()) return;
       const saved = result.provider;
       if (saved) {
+        listRequest.invalidate();
         setProviders((prev) => {
           const exists = prev.some((p) => p.id === saved.id);
           if (exists) {
@@ -502,12 +553,14 @@ export default function AiProviders() {
           return [...prev, saved];
         });
       }
-      setShowForm(false);
+      setIsSaving(false);
+      closeForm();
       setStatusMsg(result.message || (editingId ? "供应商已更新" : "供应商已创建"));
     } catch (err) {
+      if (!current()) return;
       setFormError(err instanceof Error ? err.message : String(err));
     } finally {
-      setIsSaving(false);
+      if (current()) setIsSaving(false);
     }
   }, [
     formName,
@@ -525,16 +578,21 @@ export default function AiProviders() {
 
   const handleDelete = useCallback(async () => {
     if (deleteTarget === null) return;
+    const current = deleteRequest.begin();
     setIsDeleting(true);
     try {
-      await invokeDelete(deleteTarget);
+      const result = await invokeDelete(deleteTarget);
+      if (!current()) return;
+      listRequest.invalidate();
       setProviders((prev) => prev.filter((p) => p.id !== deleteTarget));
+      setIsDeleting(false);
       setDeleteTarget(null);
-      setStatusMsg("供应商已删除");
+      setStatusMsg(result.message);
     } catch (err) {
+      if (!current()) return;
       setStatusMsg(`删除失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      setIsDeleting(false);
+      if (current()) setIsDeleting(false);
     }
   }, [deleteTarget]);
 
@@ -666,6 +724,25 @@ export default function AiProviders() {
     [dragIndex, dragDeltaY],
   );
 
+  useProviderSourceChanges(loadProviders);
+  useEffect(() => {
+    let cancelled = false;
+    setDeleteImpact(null);
+    setDeleteImpactError("");
+    if (deleteTarget !== null) {
+      void import("@tauri-apps/api/core")
+        .then(({ invoke }) => invoke<string[]>("get_provider_delete_impact", { id: deleteTarget }))
+        .then((items) => {
+          if (!cancelled) setDeleteImpact(items);
+        })
+        .catch((e) => {
+          if (!cancelled) setDeleteImpactError(String(e));
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [deleteTarget]);
   const deleteName = providers.find((p) => p.id === deleteTarget)?.name;
 
   return (
@@ -687,6 +764,41 @@ export default function AiProviders() {
       </div>
       <div className="content-body">
         <Toast message={statusMsg} />
+        {syncStatus.length > 0 && (
+          <div className="form-error" style={{ overflowWrap: "anywhere" }}>
+            <strong>部分配置等待同步或清理</strong>
+            {syncStatus.map((item) => (
+              <div key={item.target}>
+                {item.target}：{item.message}
+              </div>
+            ))}
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={syncRetrying}
+              onClick={async () => {
+                setSyncRetrying(true);
+                try {
+                  const { invoke } = await import("@tauri-apps/api/core");
+                  const items =
+                    await invoke<Array<{ target: string; ok: boolean; message: string }>>(
+                      "retry_provider_sync",
+                    );
+                  setStatusMsg(
+                    items.some((item) => !item.ok) ? "仍有配置同步失败，请查看详情" : "同步已完成",
+                  );
+                  await loadProviders();
+                } catch (e) {
+                  setStatusMsg(`同步失败：${String(e)}`);
+                } finally {
+                  setSyncRetrying(false);
+                }
+              }}
+            >
+              {syncRetrying ? "重试中…" : "立即重试"}
+            </button>
+          </div>
+        )}
 
         {loaded && providers.length > 0 && (
           <div className="mcp-summary">
@@ -873,7 +985,7 @@ export default function AiProviders() {
             <h2 className="modal-title">{editingId ? "编辑供应商" : "添加供应商"}</h2>
             <button
               className="modal-close"
-              onClick={() => !isSaving && setShowForm(false)}
+              onClick={() => !isSaving && closeForm()}
               disabled={isSaving}
             >
               <IconClose />
@@ -958,6 +1070,7 @@ export default function AiProviders() {
                       }
                       value={key}
                       onChange={(e) => {
+                        secretRequest.invalidate();
                         const next = [...formApiKeys];
                         next[index] = e.target.value;
                         setFormApiKeys(next);
@@ -1185,7 +1298,9 @@ export default function AiProviders() {
           <div className="modal-footer">
             <button
               className="btn btn-secondary"
-              onClick={() => setShowForm(false)}
+              onClick={() => {
+                closeForm();
+              }}
               disabled={isSaving}
             >
               取消
@@ -1221,7 +1336,16 @@ export default function AiProviders() {
             <div className="confirm-text">
               确定要删除{deleteName ? `「${deleteName}」` : "此供应商"}吗？
             </div>
-            <div className="confirm-subtext">删除后其 API Key 将一并清除，无法恢复。</div>
+            <div className="confirm-subtext">
+              删除后其 API Key 将一并清除，关联 Agent
+              供应商块将删除；环境保留，但关联连接和模型清空。
+            </div>
+            <div
+              className="confirm-subtext"
+              style={{ overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}
+            >
+              {deleteImpactError || (deleteImpact ? deleteImpact.join("\n") : "正在核实影响范围…")}
+            </div>
           </div>
           <div className="modal-footer">
             <button
@@ -1234,7 +1358,7 @@ export default function AiProviders() {
             <button
               className="btn btn-danger"
               onClick={() => void handleDelete()}
-              disabled={isDeleting}
+              disabled={isDeleting || deleteImpact === null || !!deleteImpactError}
             >
               {isDeleting ? "删除中…" : "删除"}
             </button>

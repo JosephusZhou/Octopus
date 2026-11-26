@@ -1,3 +1,5 @@
+import { useLatestRequest } from "@/lib/useLatestRequest";
+import { getProviderSource, useProviderSourceChanges } from "@/lib/providerSource";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStatusMessage } from "@/lib/useStatusMessage";
 import { formatDisplayPath } from "@/lib/formatPath";
@@ -27,9 +29,7 @@ import {
 import { invokeList as invokeProviderList } from "./ai-providers/api";
 import {
   fetchRouteAggregationProvider,
-  isRouteAggregationProvider,
   openaiProviderBaseUrl,
-  resolveProviderSecret,
 } from "./route-aggregation/virtual-provider";
 import { apiTypesLabel, hasApiType, type AiProvider } from "./ai-providers/types";
 import { OFFICIAL_OAUTH_PROVIDER_ID } from "./codex-env/types";
@@ -225,7 +225,7 @@ function customModelOptionsOf(p: AiProvider | null): string[] {
   const seen = new Set<string>();
   const opts: string[] = [];
   for (const cm of p.customModels) {
-    const values = cm.aliasId ? [cm.aliasId, cm.model] : [cm.model];
+    const values = [cm.aliasId.trim() || cm.model.trim()].filter(Boolean);
     for (const v of values) {
       if (!seen.has(v)) {
         seen.add(v);
@@ -339,36 +339,96 @@ export default function CodexEnv() {
   // Shell preview modal
   const [showShellPreview, setShowShellPreview] = useState(false);
 
-  const hasLoaded = useRef(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const cloneSourceRef = useRef<HTMLDivElement>(null);
 
-  const cloneDismiss = useOverlayDismiss(() => setShowClone(false), !busy);
-  const editDismiss = useOverlayDismiss(() => setShowEdit(false), !busy);
+  const cloneDismiss = useOverlayDismiss(() => {
+    closeClone();
+  }, !busy);
+  const editDismiss = useOverlayDismiss(() => {
+    closeEdit();
+  }, !busy);
   const scanDismiss = useOverlayDismiss(() => setShowScan(false), !busy);
   const deleteDismiss = useOverlayDismiss(() => setDeleteTarget(null), !busy);
   const shellPreviewDismiss = useOverlayDismiss(() => setShowShellPreview(false));
   const migrateConfirmDismiss = useOverlayDismiss(() => setShowMigrateConfirm(false), !busy);
 
+  const cloneSaveRequest = useLatestRequest(showClone);
+  const editSaveRequest = useLatestRequest(`${showEdit}:${editId}`);
+  const listRequest = useLatestRequest();
+  const cloneRequest = useLatestRequest(showClone);
+  const editRequest = useLatestRequest(`${showEdit}:${editId}`);
+  const cloneModelRequest = useLatestRequest(
+    `${showClone}:${cloneSelectedProvider?.id}:${cloneBaseUrl}:${cloneApiKey}`,
+  );
+  const editModelRequest = useLatestRequest(
+    `${showEdit}:${editId}:${editSelectedProvider?.id}:${editBaseUrl}:${editApiKey}`,
+  );
+  const editSecretRequest = useLatestRequest(`${showEdit}:${editId}`);
+  const sourceRefreshRequest = useLatestRequest(
+    `${showClone}:${showEdit}:${editId}:${cloneSelectedProvider?.id}:${editSelectedProvider?.id}`,
+  );
+  const [editSourceReady, setEditSourceReady] = useState(false);
+
+  const closeClone = () => {
+    cloneRequest.invalidate();
+    cloneModelRequest.invalidate();
+    sourceRefreshRequest.invalidate();
+    setShowClone(false);
+  };
+  const closeEdit = () => {
+    editRequest.invalidate();
+    editSecretRequest.invalidate();
+    editModelRequest.invalidate();
+    sourceRefreshRequest.invalidate();
+    setShowEdit(false);
+  };
+
   const refresh = useCallback(async () => {
+    const current = listRequest.begin();
     const [list, status] = await Promise.all([invokeList(), invokeShellStatus()]);
+    if (!current()) return;
     setEnvs(list);
     setShell(status);
   }, []);
 
+  useProviderSourceChanges(
+    useCallback(async () => {
+      const current = sourceRefreshRequest.begin();
+      await refresh();
+      const rows = await invokeProviderList();
+      const eligible = rows.filter((p) => hasApiType(p.providerTypes, "openai_responses"));
+      const route = await fetchRouteAggregationProvider("openai_responses");
+      const all = route ? [route, ...eligible] : eligible;
+      if (!current()) return;
+      setCloneProviders([OFFICIAL_OAUTH_PROVIDER, ...all]);
+      setEditProviders([OFFICIAL_OAUTH_PROVIDER, ...all]);
+      if (cloneSelectedProvider && cloneSelectedProvider.id !== OFFICIAL_OAUTH_PROVIDER_ID) {
+        const current = all.find((p) => p.id === cloneSelectedProvider.id);
+        setCloneRemoteModels(current ? customModelOptionsOf(current) : []);
+      }
+      if (editSelectedProvider && editSelectedProvider.id !== OFFICIAL_OAUTH_PROVIDER_ID) {
+        const current = all.find((p) => p.id === editSelectedProvider.id);
+        setEditRemoteModels(current ? customModelOptionsOf(current) : []);
+      }
+    }, [refresh, cloneSelectedProvider, editSelectedProvider]),
+  );
+
   useEffect(() => {
-    if (hasLoaded.current) return;
-    hasLoaded.current = true;
+    let cancelled = false;
     (async () => {
       try {
         await refresh();
       } catch (err) {
-        setStatusMsg(`加载失败：${err instanceof Error ? err.message : String(err)}`);
-        setEnvs([]);
+        if (!cancelled)
+          setStatusMsg(`加载失败：${err instanceof Error ? err.message : String(err)}`);
       } finally {
-        setLoaded(true);
+        if (!cancelled) setLoaded(true);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [refresh]);
 
   useEffect(() => {
@@ -378,8 +438,8 @@ export default function CodexEnv() {
         setCloneSourceOpen(false);
         return;
       }
-      setShowClone(false);
-      setShowEdit(false);
+      closeClone();
+      closeEdit();
       setShowScan(false);
       setDeleteTarget(null);
       setShowShellPreview(false);
@@ -407,6 +467,13 @@ export default function CodexEnv() {
     if (!showClone) setCloneSourceOpen(false);
   }, [showClone, showEdit]);
 
+  useEffect(() => {
+    setCloneModelsLoading(false);
+  }, [showClone, cloneSelectedProvider?.id, cloneBaseUrl, cloneApiKey]);
+  useEffect(() => {
+    setEditModelsLoading(false);
+  }, [showEdit, editId, editSelectedProvider?.id, editBaseUrl, editApiKey]);
+
   const cloneSourceEnv = useMemo(
     () => envs.find((e) => e.id === cloneSourceId) ?? null,
     [envs, cloneSourceId],
@@ -417,6 +484,10 @@ export default function CodexEnv() {
 
   const openClone = useCallback(
     (source?: CodexEnvironment) => {
+      sourceRefreshRequest.invalidate();
+      cloneRequest.setScope(true);
+      const current = cloneRequest.begin();
+      cloneModelRequest.invalidate();
       const src = source ?? envs.find((e) => e.isDefault) ?? envs[0];
       setCloneSourceId(src?.id ?? "default");
       setCloneSourceOpen(false);
@@ -448,13 +519,16 @@ export default function CodexEnv() {
       void invokeProviderList()
         .then(async (rows) => {
           const eligible = rows.filter((p) => hasApiType(p.providerTypes, "openai_responses"));
-          const routeAgg = await fetchRouteAggregationProvider();
+          const routeAgg = await fetchRouteAggregationProvider("openai_responses");
+          if (!current()) return;
           setCloneProviders([
             OFFICIAL_OAUTH_PROVIDER,
             ...(routeAgg ? [routeAgg, ...eligible] : eligible),
           ]);
         })
-        .catch(() => setCloneProviders([]));
+        .catch((e) => {
+          if (current()) setCloneError(`读取供应商失败：${String(e)}`);
+        });
     },
     [envs],
   );
@@ -491,6 +565,7 @@ export default function CodexEnv() {
   //    `invokeFetchRemoteModels` 远端拉取（这是"临时配置"路径，供应商库规则不适用）。
   const fetchModels = useCallback(
     async (mode: "clone" | "edit") => {
+      const current = (mode === "clone" ? cloneModelRequest : editModelRequest).begin();
       const baseUrl = mode === "clone" ? cloneBaseUrl : editBaseUrl;
       const apiKey = mode === "clone" ? cloneApiKey : editApiKey;
       const setLoading = mode === "clone" ? setCloneModelsLoading : setEditModelsLoading;
@@ -500,18 +575,27 @@ export default function CodexEnv() {
       // 关联供应商后，customModels 是唯一来源；只有未关联供应商的临时配置
       // 才允许通过 Base URL 拉取远端列表。
       const provider = mode === "clone" ? cloneSelectedProvider : editSelectedProvider;
-      const customOptions = customModelOptionsOf(provider);
+      if (mode === "edit" && !editSourceReady) {
+        setStatusMsg("绑定来源尚未读取成功，不能拉取远端模型");
+        return;
+      }
       if (provider) {
-        setModels(customOptions);
-        if (customOptions.length > 0) {
-          setModel(customOptions[0]);
-          setStatusMsg(`已使用供应商自定义模型列表（${customOptions.length} 个）`);
-        } else {
+        if (provider.id === OFFICIAL_OAUTH_PROVIDER_ID) return;
+        setLoading(true);
+        try {
+          const source = await getProviderSource(provider.id, "openai_responses");
+          if (!current()) return;
+          const options = source.models.map((model) => model.id);
+          setModels(options);
           setStatusMsg(
-            isRouteAggregationProvider(provider.id)
-              ? "路由聚合暂无可用模型：请先在路由聚合页勾选供应商，并在供应商页为其配置自定义模型"
-              : "该供应商未配置自定义模型，请先在供应商页添加",
+            options.length
+              ? `已读取 ${options.length} 个已配置模型`
+              : "来源未配置可用模型，请到供应商管理中配置",
           );
+        } catch (error) {
+          if (current()) setStatusMsg(`读取来源模型失败，已保留原候选：${String(error)}`);
+        } finally {
+          if (current()) setLoading(false);
         }
         return;
       }
@@ -519,6 +603,7 @@ export default function CodexEnv() {
       setLoading(true);
       try {
         const models = await invokeFetchRemoteModels(baseUrl, apiKey || undefined);
+        if (!current()) return;
         if (models.length === 0) {
           setStatusMsg("远端未返回可用模型，仍可手动输入");
           return;
@@ -527,9 +612,10 @@ export default function CodexEnv() {
         setModel(models[0]);
         setStatusMsg(`已拉取 ${models.length} 个远端模型`);
       } catch (err) {
+        if (!current()) return;
         setStatusMsg(`拉取模型失败：${err instanceof Error ? err.message : String(err)}`);
       } finally {
-        setLoading(false);
+        if (current()) setLoading(false);
       }
     },
     [
@@ -539,11 +625,13 @@ export default function CodexEnv() {
       editBaseUrl,
       cloneSelectedProvider,
       editSelectedProvider,
+      editSourceReady,
       setStatusMsg,
     ],
   );
 
   const handleClone = useCallback(async () => {
+    const current = cloneSaveRequest.begin();
     setBusy(true);
     setCloneError("");
     try {
@@ -566,17 +654,20 @@ export default function CodexEnv() {
         installAlias: cloneInstallAlias,
         providerId: cloneSelectedProvider?.id || undefined,
       });
+      if (!current()) return;
       if (!result.ok) {
         setCloneError(result.message);
         return;
       }
-      setShowClone(false);
+      setBusy(false);
+      closeClone();
       setStatusMsg(result.message);
       await refresh();
     } catch (err) {
+      if (!current()) return;
       setCloneError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }, [
     cloneSourceId,
@@ -600,6 +691,13 @@ export default function CodexEnv() {
   ]);
 
   const openEdit = useCallback(async (env: CodexEnvironment) => {
+    sourceRefreshRequest.invalidate();
+    editRequest.setScope(`true:${env.id}`);
+    const current = editRequest.begin();
+    editSecretRequest.setScope(`true:${env.id}`);
+    const secretCurrent = editSecretRequest.begin();
+    editModelRequest.invalidate();
+    setEditSourceReady(false);
     setEditId(env.id);
     setEditName(env.name);
     setEditSlug(env.slug);
@@ -633,37 +731,57 @@ export default function CodexEnv() {
     if (env.hasAuth && env.id) {
       try {
         const secret = await invokeGetSecret(env.id);
-        setEditApiKey(secret);
-        editEnvOriginalRef.current = {
-          baseUrl,
-          apiKey: secret,
-          model,
-          modelProvider,
-          providerId: env.providerId ?? "",
-        };
+        if (current() && secretCurrent()) {
+          setEditApiKey(secret);
+          editEnvOriginalRef.current = {
+            baseUrl,
+            apiKey: secret,
+            model,
+            modelProvider,
+            providerId: env.providerId ?? "",
+          };
+        }
       } catch {
         // 拉取失败则保持空，用户可重新输入
       }
     }
     // 加载供应商列表；路由聚合运行时置顶虚拟供应商
+    if (!current()) return;
     void invokeProviderList()
       .then(async (rows) => {
         const eligible = rows.filter((p) => hasApiType(p.providerTypes, "openai_responses"));
-        const routeAgg = await fetchRouteAggregationProvider();
+        const routeAgg = await fetchRouteAggregationProvider("openai_responses");
+        if (!current()) return;
         const all = routeAgg ? [routeAgg, ...eligible] : eligible;
         setEditProviders([OFFICIAL_OAUTH_PROVIDER, ...all]);
         // 预选关联的供应商；其自定义模型列表直接作为模型下拉选项
         const linked =
           [OFFICIAL_OAUTH_PROVIDER, ...all].find((p) => p.id === env.providerId) ?? null;
+        if (env.providerId && !linked) {
+          setEditError("已绑定来源不存在或不支持当前协议，请明确切换供应商或解除绑定");
+          setEditSourceReady(false);
+          return;
+        }
         setEditSelectedProvider(linked);
+        setEditSourceReady(true);
         setEditRemoteModels(customModelOptionsOf(linked));
       })
-      .catch(() => setEditProviders([]));
+      .catch((e) => {
+        if (current()) {
+          setEditError(`读取绑定供应商失败，未更改原绑定：${String(e)}`);
+          setEditSourceReady(false);
+        }
+      });
   }, []);
 
   const handleEdit = useCallback(async () => {
     if (!editId) return;
+    if (!editSourceReady) {
+      setEditError("供应商绑定尚未读取成功，请重新打开编辑后保存");
+      return;
+    }
     setShowMigrateConfirm(false);
+    const current = editSaveRequest.begin();
     setBusy(true);
     setEditError("");
     try {
@@ -687,17 +805,20 @@ export default function CodexEnv() {
         notes: editNotes.trim() || undefined,
         ...envPayload,
       });
+      if (!current()) return;
       if (!result.ok) {
         setEditError(result.message);
         return;
       }
-      setShowEdit(false);
+      setBusy(false);
+      closeEdit();
       setStatusMsg(result.message);
       await refresh();
     } catch (err) {
+      if (!current()) return;
       setEditError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }, [
     editId,
@@ -710,6 +831,8 @@ export default function CodexEnv() {
     editBaseUrl,
     editApiKey,
     editModel,
+    editSelectedProvider,
+    editSourceReady,
     editModelProvider,
     refresh,
   ]);
@@ -1138,11 +1261,7 @@ export default function CodexEnv() {
         <div className="modal modal-lg claude-env-modal">
           <div className="modal-header">
             <h2 className="modal-title">从现有环境复制</h2>
-            <button
-              className="modal-close"
-              onClick={() => !busy && setShowClone(false)}
-              disabled={busy}
-            >
+            <button className="modal-close" onClick={() => !busy && closeClone()} disabled={busy}>
               <IconClose />
             </button>
           </div>
@@ -1296,6 +1415,8 @@ export default function CodexEnv() {
                   providers={cloneProviders}
                   value={cloneSelectedProvider}
                   onChange={async (p) => {
+                    sourceRefreshRequest.invalidate();
+                    cloneModelRequest.invalidate();
                     setCloneSelectedProvider(p);
                     if (p) {
                       if (p.id === OFFICIAL_OAUTH_PROVIDER_ID) {
@@ -1311,16 +1432,7 @@ export default function CodexEnv() {
                       // 模型由环境自身配置，不从供应商带入。
                       // 自定义模型列表：已配置时直接作为模型下拉选项；未配置时清空（无远端拉取回退）
                       setCloneRemoteModels(customModelOptionsOf(p));
-                      if (p.hasApiKey) {
-                        try {
-                          const secret = await resolveProviderSecret(p);
-                          setCloneApiKey(secret);
-                        } catch {
-                          // 拉取失败则保持原值
-                        }
-                      } else {
-                        setCloneApiKey("");
-                      }
+                      setCloneApiKey(""); // Rust resolves bound credentials when saving.
                     } else {
                       setCloneRemoteModels([]);
                     }
@@ -1344,6 +1456,7 @@ export default function CodexEnv() {
                   type="url"
                   placeholder="留空则复用源环境 base_url"
                   value={cloneBaseUrl}
+                  readOnly={!!cloneSelectedProvider}
                   onChange={(e) => setCloneBaseUrl(e.target.value)}
                   disabled={busy}
                   autoComplete="off"
@@ -1363,6 +1476,7 @@ export default function CodexEnv() {
                     type={showCloneApiKey ? "text" : "password"}
                     placeholder="留空不写 auth.json；填写则写入 OPENAI_API_KEY"
                     value={cloneApiKey}
+                    readOnly={!!cloneSelectedProvider}
                     onChange={(e) => setCloneApiKey(e.target.value)}
                     disabled={busy}
                     autoComplete="new-password"
@@ -1403,7 +1517,11 @@ export default function CodexEnv() {
                 <ModelComboBox
                   id="xe-model"
                   value={cloneModel}
-                  onChange={setCloneModel}
+                  onChange={(value) => {
+                    cloneModelRequest.invalidate();
+                    setCloneModelsLoading(false);
+                    setCloneModel(value);
+                  }}
                   options={cloneRemoteModels}
                   disabled={busy}
                   placeholder="留空则复用源环境 model"
@@ -1572,7 +1690,9 @@ export default function CodexEnv() {
           <div className="modal-footer claude-env-clone-footer">
             <button
               className="btn btn-secondary"
-              onClick={() => setShowClone(false)}
+              onClick={() => {
+                closeClone();
+              }}
               disabled={busy}
             >
               取消
@@ -1589,11 +1709,7 @@ export default function CodexEnv() {
         <div className="modal claude-env-modal">
           <div className="modal-header">
             <h2 className="modal-title">编辑环境</h2>
-            <button
-              className="modal-close"
-              onClick={() => !busy && setShowEdit(false)}
-              disabled={busy}
-            >
+            <button className="modal-close" onClick={() => !busy && closeEdit()} disabled={busy}>
               <IconClose />
             </button>
           </div>
@@ -1655,6 +1771,30 @@ export default function CodexEnv() {
               </>
             )}
             {/* 供应商选择 */}
+            {!editSourceReady && (
+              <div className="form-group">
+                <p className="claude-env-form-hint">
+                  绑定来源尚未读取成功，不会自动解除绑定或改成远端拉取。可重新打开编辑重试，或明确改为手动配置。
+                </p>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={busy}
+                  onClick={() => {
+                    editRequest.invalidate();
+                    editSecretRequest.invalidate();
+                    editModelRequest.invalidate();
+                    sourceRefreshRequest.invalidate();
+                    setEditSelectedProvider(null);
+                    setEditRemoteModels([]);
+                    setEditSourceReady(true);
+                    setEditError("");
+                  }}
+                >
+                  改为手动配置（保存后解绑）
+                </button>
+              </div>
+            )}
             {editProviders.length > 0 && (
               <div className="form-group">
                 <label className="form-label" htmlFor="xe-edit-provider">
@@ -1665,6 +1805,11 @@ export default function CodexEnv() {
                   providers={editProviders}
                   value={editSelectedProvider}
                   onChange={async (p) => {
+                    sourceRefreshRequest.invalidate();
+                    editModelRequest.invalidate();
+                    editRequest.invalidate();
+                    editSecretRequest.invalidate();
+                    setEditSourceReady(true);
                     setEditSelectedProvider(p);
                     if (p) {
                       if (p.id === OFFICIAL_OAUTH_PROVIDER_ID) {
@@ -1680,16 +1825,7 @@ export default function CodexEnv() {
                       // 模型由环境自身配置，不从供应商带入。
                       // 自定义模型列表：已配置时直接作为模型下拉选项；未配置时清空（无远端拉取回退）
                       setEditRemoteModels(customModelOptionsOf(p));
-                      if (p.hasApiKey) {
-                        try {
-                          const secret = await resolveProviderSecret(p);
-                          setEditApiKey(secret);
-                        } catch {
-                          // 拉取失败则保持原值
-                        }
-                      } else {
-                        setEditApiKey("");
-                      }
+                      setEditApiKey(""); // Rust resolves bound credentials when saving.
                     } else {
                       setEditRemoteModels([]);
                     }
@@ -1710,6 +1846,7 @@ export default function CodexEnv() {
                   type="url"
                   placeholder="留空即删除 base_url / openai_base_url"
                   value={editBaseUrl}
+                  readOnly={!!editSelectedProvider}
                   onChange={(e) => setEditBaseUrl(e.target.value)}
                   disabled={busy}
                   autoComplete="off"
@@ -1729,7 +1866,11 @@ export default function CodexEnv() {
                     type={editApiKeyVisible ? "text" : "password"}
                     placeholder="留空即删除 auth.json 中的 OPENAI_API_KEY"
                     value={editApiKey}
-                    onChange={(e) => setEditApiKey(e.target.value)}
+                    readOnly={!!editSelectedProvider}
+                    onChange={(e) => {
+                      editSecretRequest.invalidate();
+                      setEditApiKey(e.target.value);
+                    }}
                     disabled={busy}
                     autoComplete="new-password"
                     spellCheck={false}
@@ -1769,7 +1910,11 @@ export default function CodexEnv() {
                 <ModelComboBox
                   id="xe-edit-model"
                   value={editModel}
-                  onChange={setEditModel}
+                  onChange={(value) => {
+                    editModelRequest.invalidate();
+                    setEditModelsLoading(false);
+                    setEditModel(value);
+                  }}
                   options={editRemoteModels}
                   disabled={busy}
                   placeholder="留空即删除 model 键"
@@ -1821,7 +1966,9 @@ export default function CodexEnv() {
           <div className="modal-footer">
             <button
               className="btn btn-secondary"
-              onClick={() => setShowEdit(false)}
+              onClick={() => {
+                closeEdit();
+              }}
               disabled={busy}
             >
               取消

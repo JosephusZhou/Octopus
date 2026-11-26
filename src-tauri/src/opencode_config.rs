@@ -117,6 +117,8 @@ pub struct AgentProviderView {
     pub chunk_timeout: Option<i64>,
     pub whitelist: Vec<String>,
     pub blacklist: Vec<String>,
+    #[serde(default)]
+    pub source_id: Option<String>,
     pub models: Vec<AgentModelView>,
 }
 
@@ -306,32 +308,44 @@ pub(crate) fn display_path(path: &Path) -> String {
 /* ===== IO helpers ===== */
 
 pub(crate) fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("无效路径: {}", path.display()))?;
-    fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-    let tmp = parent.join(format!(
-        ".{}.agentbuddy-{}-{}.tmp",
-        path.file_name().and_then(|s| s.to_str()).unwrap_or("tmp"),
-        std::process::id(),
-        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    {
-        let mut f = fs::File::create(&tmp).map_err(|e| format!("创建临时文件失败: {e}"))?;
-        f.write_all(content.as_bytes())
-            .map_err(|e| format!("写入临时文件失败: {e}"))?;
-        f.sync_all().ok();
-    }
-    match fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let direct = fs::write(path, content);
-            let _ = fs::remove_file(&tmp);
-            direct.map_err(|e2| format!("写入失败: {e} / {e2}"))
+    let result = (|| -> Result<(), String> {
+        if crate::config_sync_io::unchanged(path, content)? {
+            return Ok(());
         }
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("无效路径: {}", path.display()))?;
+        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+        let tmp = parent.join(format!(
+            ".{}.agentbuddy-{}-{}.tmp",
+            path.file_name().and_then(|s| s.to_str()).unwrap_or("tmp"),
+            std::process::id(),
+            TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        {
+            let mut f = fs::File::create(&tmp).map_err(|e| format!("创建临时文件失败: {e}"))?;
+            f.write_all(content.as_bytes())
+                .map_err(|e| format!("写入临时文件失败: {e}"))?;
+            f.sync_all().ok();
+        }
+        if let Err(error) = crate::config_sync_io::before_replace(path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(error);
+        }
+        match fs::rename(&tmp, path) {
+            Ok(()) => crate::config_sync_io::replaced(path),
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                Err(format!("原子替换配置失败，原文件未修改: {e}"))
+            }
+        }
+    })();
+    if result.is_err() {
+        crate::config_sync_io::record(path, result.clone());
     }
+    result
 }
 
 pub(crate) fn atomic_write_secret(path: &Path, content: &str) -> Result<(), String> {
@@ -341,7 +355,8 @@ pub(crate) fn atomic_write_secret(path: &Path, content: &str) -> Result<(), Stri
 }
 
 pub(crate) fn read_json_value(path: &Path) -> Result<Value, String> {
-    let raw = fs::read_to_string(path).map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+    let raw = crate::config_sync_io::read_to_string(path)
+        .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
     json5::from_str(&raw).map_err(|e| format!("解析 {} 失败: {e}", path.display()))
 }
 
@@ -360,6 +375,7 @@ fn ensure_schema(root: &mut Value) {
 
 fn load_or_empty_config() -> Result<(PathBuf, bool, Value, bool), String> {
     let (resolved, is_jsonc) = config_path()?;
+    crate::config_sync_io::observe(&resolved)?;
     if resolved.exists() {
         let v = read_json_value(&resolved)?;
         let root = match v {
@@ -370,6 +386,7 @@ fn load_or_empty_config() -> Result<(PathBuf, bool, Value, bool), String> {
     }
     // Prefer creating plain json when nothing exists.
     let path = default_config_path()?;
+    crate::config_sync_io::observe(&path)?;
     Ok((path, false, json!({}), false))
 }
 
@@ -383,11 +400,14 @@ fn save_auth(map: &Map<String, Value>) -> Result<(), String> {
 
 /// 读取任意 auth.json：`{ providerId: { type, key } }`；不存在时返回空映射。
 pub(crate) fn load_auth_file(path: &Path) -> Result<Map<String, Value>, String> {
+    crate::config_sync_io::observe(path)?;
     if !path.exists() {
         return Ok(Map::new());
     }
     let v = read_json_value(path)?;
-    Ok(v.as_object().cloned().unwrap_or_default())
+    v.as_object()
+        .cloned()
+        .ok_or_else(|| "凭据配置根节点必须是对象".into())
 }
 
 pub(crate) fn save_auth_file(path: &Path, map: &Map<String, Value>) -> Result<(), String> {
@@ -715,6 +735,7 @@ fn parse_provider(id: &str, raw: &Value, auth: &Map<String, Value>) -> AgentProv
         .unwrap_or_default();
 
     AgentProviderView {
+        source_id: None,
         id: id.to_string(),
         name: str_opt(raw, "name"),
         api: protocol_of(package.as_deref(), raw.get("api").and_then(|a| a.as_str())),
@@ -809,6 +830,12 @@ fn collect_providers(
 /* ===== Public API ===== */
 
 pub fn get_config() -> Result<AgentModelConfigView, String> {
+    get_config_inner(true)
+}
+pub(crate) fn get_config_for_sync() -> Result<AgentModelConfigView, String> {
+    get_config_inner(false)
+}
+fn get_config_inner(check_installation: bool) -> Result<AgentModelConfigView, String> {
     // Highest priority for the UI: is OpenCode App/CLI actually installed?
     // Config dir alone (e.g. leftover ~/.config/opencode) is not enough —
     // same rule as agent sniff (`found` requires install paths).
@@ -826,7 +853,7 @@ pub fn get_config() -> Result<AgentModelConfigView, String> {
 
     // Not installed → still return path metadata so empty-state copy can mention it,
     // but never surface provider inventory (UI shows not-installed empty state).
-    if !installed {
+    if check_installation && !installed {
         return Ok(AgentModelConfigView {
             agent: "opencode".into(),
             config_path: display_path(&path),
@@ -1308,20 +1335,22 @@ pub fn delete_provider(
         return Err("供应商 ID 不能为空".into());
     }
     let (path, _, mut root, exists) = load_or_empty_config()?;
-    if !exists {
+    if !exists && !crate::config_sync_io::active() {
         return Err("配置文件不存在".into());
     }
 
     let removed_v2 = take_from_container(&mut root, PROVIDERS_KEY, &id).is_some();
     let removed_legacy = take_from_container(&mut root, LEGACY_PROVIDERS_KEY, &id).is_some();
-    if !removed_v2 && !removed_legacy {
+    if !removed_v2 && !removed_legacy && !crate::config_sync_io::active() {
         return Err(format!("未找到供应商 `{id}`"));
     }
     // 清掉变空的容器，避免留下 `"providers": {}` / `"provider": {}` 噪音
     drop_empty_container(&mut root, PROVIDERS_KEY);
     drop_empty_container(&mut root, LEGACY_PROVIDERS_KEY);
 
-    write_json_value(&path, &root)?;
+    if exists && (removed_v2 || removed_legacy) {
+        write_json_value(&path, &root)?;
+    }
     if delete_auth {
         let mut auth = load_auth()?;
         if auth.remove(&id).is_some() {
@@ -2021,7 +2050,7 @@ fn load_file_cache() -> Option<ModelsDevCatalog> {
             .join("cache")
             .join("models-dev.json")
     };
-    let raw = fs::read_to_string(&path).ok()?;
+    let raw = crate::config_sync_io::read_to_string(&path).ok()?;
     let v: Value = serde_json::from_str(&raw).ok()?;
     // Stored as already-slim catalog
     let mut cat: ModelsDevCatalog = serde_json::from_value(v).ok()?;
@@ -2216,7 +2245,8 @@ mod tests {
     }
 
     fn load_root(h: &TempHome) -> Value {
-        serde_json::from_str(&fs::read_to_string(h.config_file()).unwrap()).unwrap()
+        serde_json::from_str(&crate::config_sync_io::read_to_string(h.config_file()).unwrap())
+            .unwrap()
     }
 
     fn view() -> AgentModelConfigView {
@@ -2449,7 +2479,7 @@ mod tests {
                 .and_then(|x| x.as_str()),
             Some("sk-test-secret")
         );
-        assert!(!fs::read_to_string(h.auth_file())
+        assert!(!crate::config_sync_io::read_to_string(h.auth_file())
             .unwrap_or_default()
             .contains("sk-test-secret"));
 
@@ -2521,7 +2551,8 @@ mod tests {
             Some("sk-legacy")
         );
         let auth: Value =
-            serde_json::from_str(&fs::read_to_string(h.auth_file()).unwrap()).unwrap();
+            serde_json::from_str(&crate::config_sync_io::read_to_string(h.auth_file()).unwrap())
+                .unwrap();
         assert!(auth.get("oldprov").is_none());
     }
 
@@ -2910,8 +2941,10 @@ mod tests {
 
         let h_dir = std::env::var("HOME").unwrap();
         let raw: Value = serde_json::from_str(
-            &fs::read_to_string(PathBuf::from(h_dir).join(".config/opencode/opencode.json"))
-                .unwrap(),
+            &crate::config_sync_io::read_to_string(
+                PathBuf::from(h_dir).join(".config/opencode/opencode.json"),
+            )
+            .unwrap(),
         )
         .unwrap();
         let variants = raw
@@ -2973,8 +3006,10 @@ mod tests {
 
         let h_dir = std::env::var("HOME").unwrap();
         let raw: Value = serde_json::from_str(
-            &fs::read_to_string(PathBuf::from(h_dir).join(".config/opencode/opencode.json"))
-                .unwrap(),
+            &crate::config_sync_io::read_to_string(
+                PathBuf::from(h_dir).join(".config/opencode/opencode.json"),
+            )
+            .unwrap(),
         )
         .unwrap();
         let reasoning = raw
@@ -3325,7 +3360,8 @@ mod tests {
             Some("sk-legacy")
         );
         let auth: Value =
-            serde_json::from_str(&fs::read_to_string(h.auth_file()).unwrap()).unwrap();
+            serde_json::from_str(&crate::config_sync_io::read_to_string(h.auth_file()).unwrap())
+                .unwrap();
         assert!(auth.get("oldprov").is_none());
 
         let after = res.view.expect("迁移后应返回刷新后的视图");
@@ -3349,10 +3385,13 @@ mod tests {
         .unwrap();
 
         migrate_legacy_config().unwrap();
-        let after_first = fs::read_to_string(h.config_file()).unwrap();
+        let after_first = crate::config_sync_io::read_to_string(h.config_file()).unwrap();
         let res = migrate_legacy_config().unwrap();
         assert_eq!(res.message, "没有可迁移的 OpenCode 1.x 配置");
-        assert_eq!(fs::read_to_string(h.config_file()).unwrap(), after_first);
+        assert_eq!(
+            crate::config_sync_io::read_to_string(h.config_file()).unwrap(),
+            after_first
+        );
         assert!(res.view.unwrap().legacy_migration.is_none());
     }
 
@@ -3397,5 +3436,58 @@ mod tests {
         );
         assert!(read_model_ref(None).is_none());
         assert!(read_model_ref(Some(&json!(null))).is_none());
+    }
+}
+
+/// Synchronize the entire model set in one native config write.
+pub(crate) fn sync_model_set(
+    provider: &str,
+    models: &[crate::provider_sync::SourceModel],
+) -> Result<(), String> {
+    let (path, _, mut root, _) = load_or_empty_config()?;
+    let p = provider_object_mut(&mut root, provider)?;
+    if p.get("models").is_some_and(|v| !v.is_object()) {
+        return Err("models 必须是对象，未覆盖原配置".into());
+    }
+    let previous = p.get("models").cloned().unwrap_or_else(|| json!({}));
+    let mut next = Map::new();
+    for model in models {
+        let value = previous.get(&model.id).cloned().unwrap_or_else(|| {
+            let mut v = json!({"name": model.id, "capabilities": {"input": ["text"], "output": ["text"], "tools": false, "reasoning": {"supported": false}}});
+            if let Some(hit) = crate::provider_sync::catalog_model(provider, &model.original) {
+                v["name"] = json!(hit.name);
+                let mut limits = Map::new();
+                if let Some(n) = hit.limit_context { limits.insert("context".into(), json!(n)); }
+                if let Some(n) = hit.limit_output { limits.insert("output".into(), json!(n)); }
+                if let Some(n) = hit.limit_input { limits.insert("input".into(), json!(n)); }
+                if !limits.is_empty() { v["limit"] = Value::Object(limits); }
+                v["capabilities"] = json!({"input": hit.modalities_input, "output": hit.modalities_output, "tools": hit.tool_call, "reasoning": {"supported": hit.reasoning}});
+            }
+            v
+        });
+        next.insert(model.id.clone(), value);
+    }
+    p.insert("models".into(), Value::Object(next));
+    write_json_value(&path, &root)?;
+    platform::set_owner_only_file(&path);
+    Ok(())
+}
+/// Catalog snapshot for synchronous writers: memory cache first, then the disk cache.
+/// Never triggers a network request — syncing must not depend on models.dev availability.
+pub(crate) fn local_catalog() -> Option<ModelsDevCatalog> {
+    if let Ok(guard) = CATALOG_CACHE.lock() {
+        if let Some(cached) = guard.as_ref() {
+            let mut catalog = cached.catalog.clone();
+            catalog.from_cache = true;
+            return Some(catalog);
+        }
+    }
+    load_file_cache()
+}
+
+#[cfg(test)]
+pub(crate) fn set_catalog_cache_for_tests(catalog: Option<ModelsDevCatalog>) {
+    if let Ok(mut guard) = CATALOG_CACHE.lock() {
+        *guard = catalog.map(|catalog| CatalogCache { catalog });
     }
 }
